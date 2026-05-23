@@ -160,9 +160,9 @@ async def refresh_signals():
         tick = sym['ticker']
         api  = sym['schwab_symbol']
 
-        q        = quotes.get(api, {})
-        last     = q.get('last', 0)
-        day_open = q.get('open', 0)
+        q         = quotes.get(api, {})
+        last      = q.get('last', 0)
+        prev_close = q.get('close', 0)
         if not last:
             continue
 
@@ -182,7 +182,7 @@ async def refresh_signals():
             for s in sigs:
                 s['symbol_id']   = sid
                 s['signal_hour'] = signal_hour.isoformat()
-                s['day_open']    = round(day_open, 4)
+                s['prev_close']  = round(prev_close, 4)
             rows.extend(sigs)
         await asyncio.sleep(0.1)
 

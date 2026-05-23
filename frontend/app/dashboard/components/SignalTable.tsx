@@ -11,7 +11,7 @@ export interface Signal {
   stop: number
   target: number
   last: number
-  day_open: number
+  prev_close: number
   swing_pct: number
   current_range: number
   typical_range: number
@@ -48,7 +48,7 @@ const COLS = [
   { label: '#',           align: 'left'  },
   { label: 'SYMBOL',      align: 'left'  },
   { label: 'LAST',        align: 'right' },
-  { label: 'CHANGE',      align: 'right' },
+  { label: 'CHG',         align: 'right' },
   { label: 'SIDE',        align: 'left'  },
   { label: 'ENTRY',       align: 'right' },
   { label: 'STOP',        align: 'right' },
@@ -90,8 +90,8 @@ interface ActiveRowProps {
 }
 
 function ActiveRow({ sig, rank }: ActiveRowProps) {
-  const change    = sig.day_open > 0 ? sig.last - sig.day_open : 0
-  const changePct = sig.day_open > 0 ? (change / sig.day_open) * 100 : 0
+  const change    = sig.prev_close > 0 ? sig.last - sig.prev_close : 0
+  const changePct = sig.prev_close > 0 ? (change / sig.prev_close) * 100 : 0
   const isUp      = change >= 0
   const changeColor = isUp ? '#4ade80' : '#f87171'
 
@@ -121,7 +121,7 @@ function ActiveRow({ sig, rank }: ActiveRowProps) {
 
       {/* CHANGE from day open */}
       <td className="px-3 py-2.5 text-right tabular-nums" style={{ fontSize: '12px' }}>
-        {sig.day_open > 0 ? (
+        {sig.prev_close > 0 ? (
           <span style={{ color: changeColor }}>
             {isUp ? '+' : ''}{change.toFixed(2)}{' '}
             <span style={{ opacity: 0.75 }}>({isUp ? '+' : ''}{changePct.toFixed(2)}%)</span>
