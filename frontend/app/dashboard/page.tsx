@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Sidebar from './components/Sidebar'
-import SignalTable, { Signal } from './components/SignalTable'
+import SignalTable, { Signal, SymbolInfo } from './components/SignalTable'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL = 60_000
@@ -73,6 +73,7 @@ export default function DashboardPage() {
   const [authChecked, setAuthChecked] = useState(false)
 
   const [data, setData] = useState<ApiResponse | null>(null)
+  const [allSymbols, setAllSymbols] = useState<SymbolInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
@@ -96,15 +97,21 @@ export default function DashboardPage() {
 
   const fetchSignals = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/signals?model=all&side=all`, {
-        cache: 'no-store',
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const json: ApiResponse = await res.json()
+      const [sigRes, symRes] = await Promise.all([
+        fetch(`${API_URL}/api/signals?model=all&side=all`, { cache: 'no-store' }),
+        fetch(`${API_URL}/api/symbols`, { cache: 'no-store' }),
+      ])
+      if (!sigRes.ok) throw new Error(`HTTP ${sigRes.status}`)
+      const json: ApiResponse = await sigRes.json()
       setData(json)
       setLastUpdated(formatLastUpdated(json.last_updated))
       setError(null)
       setLoading(false)
+
+      if (symRes.ok) {
+        const symJson = await symRes.json()
+        setAllSymbols(symJson.symbols ?? [])
+      }
 
       timerRef.current = setTimeout(fetchSignals, REFRESH_INTERVAL)
     } catch {
@@ -266,6 +273,7 @@ export default function DashboardPage() {
         <div className="flex-1 overflow-auto">
           <SignalTable
             signals={filteredSignals}
+            allSymbols={allSymbols}
             loading={loading}
             error={error}
             onRetry={handleRefresh}

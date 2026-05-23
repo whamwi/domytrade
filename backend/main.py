@@ -280,6 +280,14 @@ def health():
     }
 
 
+@app.get('/api/symbols')
+def get_symbols_list():
+    return {'symbols': [
+        {'id': s['id'], 'ticker': s['ticker'], 'asset_type': s.get('asset_type', 'equity')}
+        for s in state['symbols']
+    ]}
+
+
 @app.post('/api/refresh-stats')
 async def force_refresh():
     asyncio.create_task(compute_all_stats())
