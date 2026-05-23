@@ -132,7 +132,7 @@ async def compute_all_stats():
                     })
             upsert_vbh_stats(stat_rows)
 
-            log.info('  %-8s  bars=%d', tick, len(candles))
+            log.info('  %-8s  bars=%d', tick, len(con_candles))
             await asyncio.sleep(0.4)
 
         except Exception as e:
