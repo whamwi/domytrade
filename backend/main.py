@@ -35,11 +35,28 @@ state = {
     'symbols'          : [],   # [{id, ticker, schwab_symbol, asset_type}]
     'stats_agg'        : {},   # {symbol_id: {hour: (L1,L2,L3,L4)}}
     'stats_con'        : {},
+    'prev_close'       : {},   # {symbol_id: float}  — last RTH close from candles
     'signals'          : [],
     'last_stats_update': None,
     'last_signal_update': None,
     'status'           : 'starting',
 }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _prev_rth_close(candles: list[dict]) -> float:
+    """Return the close of the most recent completed RTH bar (weekday 9:30–16:00 ET)."""
+    if not candles:
+        return 0.0
+    rth = [
+        (c['datetime'], c['close'])
+        for c in candles
+        if (lambda dt: dt.weekday() < 5 and 9 * 60 + 30 <= dt.hour * 60 + dt.minute < 16 * 60)(
+            datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        )
+    ]
+    return float(sorted(rth)[-1][1]) if rth else 0.0
 
 
 # ── OHLC helpers ──────────────────────────────────────────────────────────────
@@ -109,8 +126,9 @@ async def compute_all_stats():
             cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=AGG_DAYS)).timestamp() * 1000)
             agg_candles = [c for c in con_candles if c['datetime'] >= cutoff_ms]
 
-            state['stats_agg'][sid] = compute_stats(agg_candles)
-            state['stats_con'][sid] = compute_stats(con_candles)
+            state['stats_agg'][sid]   = compute_stats(agg_candles)
+            state['stats_con'][sid]   = compute_stats(con_candles)
+            state['prev_close'][sid]  = _prev_rth_close(con_candles)
 
             # Persist stats to DB
             stat_rows = []
@@ -160,9 +178,9 @@ async def refresh_signals():
         tick = sym['ticker']
         api  = sym['schwab_symbol']
 
-        q         = quotes.get(api, {})
-        last      = q.get('last', 0)
-        prev_close = q.get('close', 0)
+        q          = quotes.get(api, {})
+        last       = q.get('last', 0)
+        prev_close = state['prev_close'].get(sid, 0)   # last RTH close from candles
         if not last:
             continue
 
