@@ -179,6 +179,12 @@ async def compute_all_stats():
             state['stats_con'][sid]    = compute_stats(con_candles)
             state['prev_close'][sid]   = _prev_rth_close(con_candles)
             state['market_bias'][sid]  = _rth_bias(con_candles)
+            # Seed last_price with the absolute last candle close (any session).
+            # For futures this captures the true last trade before the weekend
+            # shutdown, not just the RTH close. refresh_signals() will overwrite
+            # with the live quote once CME reopens.
+            if con_candles:
+                state['last_price'][sid] = round(con_candles[-1]['close'], 4)
 
             # Persist stats to DB
             stat_rows = []
@@ -232,8 +238,10 @@ async def refresh_signals():
         last       = q.get('last', 0)
         prev_close = state['prev_close'].get(sid, 0)   # last RTH close from candles
 
-        # Always record the best available price (live quote or candle close fallback)
-        display_price = last if last else prev_close
+        # Always record the best available price.
+        # Priority: live quote → last candle close (set by compute_all_stats) → RTH prev_close
+        candle_last = state['last_price'].get(sid)   # seeded from absolute last candle
+        display_price = last if last else (candle_last or prev_close)
         if display_price:
             state['last_price'][sid] = round(display_price, 4)
 
