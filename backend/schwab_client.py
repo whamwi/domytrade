@@ -120,8 +120,13 @@ def get_quotes(symbols: list[str]) -> dict:
     out = {}
     for sym, payload in resp.json().items():
         q = payload.get('quote', {})
+        # Futures: never use mark as fallback — mark is synthetic (mid bid/ask).
+        # When CME is closed lastPrice=0; caller will fall back to candle prev_close.
+        # Equities: mark is a reliable mid-price during extended hours.
+        is_futures = sym.startswith('/')
+        last_price = (q.get('lastPrice') or 0) if is_futures else (q.get('lastPrice') or q.get('mark', 0))
         out[sym] = {
-            'last'      : q.get('lastPrice') or q.get('mark', 0),
+            'last'      : last_price,
             'open'      : q.get('openPrice', 0),
             'high'      : q.get('highPrice', 0),
             'low'       : q.get('lowPrice', 0),
