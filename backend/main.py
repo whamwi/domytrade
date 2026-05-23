@@ -37,6 +37,7 @@ state = {
     'stats_con'        : {},
     'prev_close'       : {},   # {symbol_id: float}  — last RTH close from candles
     'market_bias'      : {},   # {symbol_id: {bias, pts, rth_open, prev_close}}
+    'last_price'       : {},   # {symbol_id: float}  — latest price (live quote or prev_close fallback)
     'signals'          : [],
     'last_stats_update': None,
     'last_signal_update': None,
@@ -231,6 +232,11 @@ async def refresh_signals():
         last       = q.get('last', 0)
         prev_close = state['prev_close'].get(sid, 0)   # last RTH close from candles
 
+        # Always record the best available price (live quote or candle close fallback)
+        display_price = last if last else prev_close
+        if display_price:
+            state['last_price'][sid] = round(display_price, 4)
+
         # Market bias for the 4 equity index futures.
         # Use Schwab's net_change (last - prev CME settlement) as the reliable
         # previous-close reference. Bias = session open vs prev settlement.
@@ -406,7 +412,13 @@ def get_market_bias():
 @app.get('/api/symbols')
 def get_symbols_list():
     return {'symbols': [
-        {'id': s['id'], 'ticker': s['ticker'], 'asset_type': s.get('asset_type', 'equity')}
+        {
+            'id'        : s['id'],
+            'ticker'    : s['ticker'],
+            'asset_type': s.get('asset_type', 'equity'),
+            'last_price': state['last_price'].get(s['id']),   # None if not yet fetched
+            'prev_close': state['prev_close'].get(s['id']),
+        }
         for s in state['symbols']
     ]}
 

@@ -27,6 +27,8 @@ export interface SymbolInfo {
   id: number
   ticker: string
   asset_type: string
+  last_price?: number | null
+  prev_close?: number | null
 }
 
 interface SignalTableProps {
@@ -209,21 +211,41 @@ function ActiveRow({ sig, rank }: ActiveRowProps) {
 }
 
 interface NoSignalRowProps {
-  ticker: string
+  sym: SymbolInfo
   rank: number
 }
 
-function NoSignalRow({ ticker, rank }: NoSignalRowProps) {
+function NoSignalRow({ sym, rank }: NoSignalRowProps) {
+  const last      = sym.last_price ?? null
+  const prevClose = sym.prev_close ?? null
+  const change    = last && prevClose && prevClose > 0 ? last - prevClose : null
+  const changePct = change !== null && prevClose ? (change / prevClose) * 100 : null
+  const isUp      = change !== null ? change >= 0 : true
+
   return (
     <tr style={{ borderBottom: '1px solid var(--border)', opacity: 0.38 }}>
       <td className="px-3 py-2" style={{ color: 'var(--text-dim)', fontSize: '12px' }}>{rank}</td>
+      {/* SYMBOL */}
       <td className="px-3 py-2">
         <span className="font-bold tracking-wider" style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-          {ticker}
+          {sym.ticker}
         </span>
       </td>
-      {/* Fill remaining 16 columns with dashes */}
-      {Array.from({ length: 16 }).map((_, i) => (
+      {/* LAST */}
+      <td className="px-3 py-2 text-right tabular-nums" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
+        {last != null ? last.toFixed(2) : <Dash />}
+      </td>
+      {/* CHG */}
+      <td className="px-3 py-2 text-right tabular-nums" style={{ fontSize: '12px', color: change !== null ? (isUp ? '#4ade80' : '#f87171') : 'var(--text-dim)' }}>
+        {change !== null && changePct !== null ? (
+          <>
+            {isUp ? '+' : ''}{change.toFixed(2)}{' '}
+            <span style={{ opacity: 0.75 }}>({isUp ? '+' : ''}{changePct.toFixed(2)}%)</span>
+          </>
+        ) : <Dash />}
+      </td>
+      {/* Fill remaining 13 columns with dashes */}
+      {Array.from({ length: 13 }).map((_, i) => (
         <td key={i} className="px-3 py-2 text-center">
           <Dash />
         </td>
@@ -276,7 +298,7 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
             <ActiveRow key={`${sig.symbol}-${sig.model}`} sig={sig} rank={rank++} />
           ))}
           {silentSymbols.map((sym) => (
-            <NoSignalRow key={sym.ticker} ticker={sym.ticker} rank={rank++} />
+            <NoSignalRow key={sym.ticker} sym={sym} rank={rank++} />
           ))}
           {signals.length === 0 && silentSymbols.length === 0 && (
             <tr>
