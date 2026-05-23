@@ -1,35 +1,72 @@
-"""Schwab API client — quotes and intraday candles."""
-import sys, time
-import requests
+"""
+Schwab API client — quotes and intraday candles.
+Token management is self-contained: reads from env vars, refreshes in memory.
+No dependency on local token.json or market_hours.py.
+"""
+import os, time, base64, requests
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
 
-sys.path.insert(0, '/Users/wassim')
-from market_hours import get_valid_token
+load_dotenv()
 
 PRICE_HISTORY_URL = 'https://api.schwabapi.com/marketdata/v1/pricehistory'
 QUOTES_URL        = 'https://api.schwabapi.com/marketdata/v1/quotes'
+TOKEN_URL         = 'https://api.schwabapi.com/v1/oauth/token'
+
+API_KEY    = os.environ['SCHWAB_API_KEY']
+API_SECRET = os.environ['SCHWAB_API_SECRET']
+
+# In-memory token cache
+_token_cache = {
+    'access_token' : None,
+    'refresh_token': os.environ.get('SCHWAB_REFRESH_TOKEN', ''),
+    'expires_at'   : 0,
+}
 
 
-def _headers():
-    return {'Authorization': f'Bearer {get_valid_token()}', 'accept': 'application/json'}
+def _refresh_access_token() -> str:
+    """Use refresh token to get a new access token."""
+    creds = base64.b64encode(f'{API_KEY}:{API_SECRET}'.encode()).decode()
+    r = requests.post(TOKEN_URL,
+        headers={'Authorization': f'Basic {creds}',
+                 'Content-Type': 'application/x-www-form-urlencoded'},
+        data={'grant_type'   : 'refresh_token',
+              'refresh_token': _token_cache['refresh_token']},
+        timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    _token_cache['access_token'] = data['access_token']
+    _token_cache['expires_at']   = time.time() + data.get('expires_in', 1800) - 120
+    if 'refresh_token' in data:
+        _token_cache['refresh_token'] = data['refresh_token']
+    return _token_cache['access_token']
+
+
+def _get_token() -> str:
+    if not _token_cache['access_token'] or time.time() >= _token_cache['expires_at']:
+        return _refresh_access_token()
+    return _token_cache['access_token']
+
+
+def _headers() -> dict:
+    return {'Authorization': f'Bearer {_get_token()}', 'accept': 'application/json'}
 
 
 def get_quotes(symbols: list[str]) -> dict:
-    """Return {symbol: {mark, lastPrice, openPrice, highPrice, lowPrice, ...}}"""
-    # Schwab quotes accept comma-separated symbols
+    """Return {symbol: {last, open, high, low, close, volume}}"""
     resp = requests.get(QUOTES_URL,
         headers=_headers(),
         params={'symbols': ','.join(symbols), 'fields': 'quote'},
         timeout=15)
     if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
         resp = requests.get(QUOTES_URL,
             headers=_headers(),
             params={'symbols': ','.join(symbols), 'fields': 'quote'},
             timeout=15)
     resp.raise_for_status()
-    data = resp.json()
     out = {}
-    for sym, payload in data.items():
+    for sym, payload in resp.json().items():
         q = payload.get('quote', {})
         out[sym] = {
             'last'  : q.get('lastPrice') or q.get('mark', 0),
@@ -55,6 +92,7 @@ def get_candles(symbol: str, lookback_days: int, freq_min: int = 30) -> list[dic
     }
     resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=30)
     if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
         resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=30)
     resp.raise_for_status()
     return resp.json().get('candles', [])
@@ -63,13 +101,10 @@ def get_candles(symbol: str, lookback_days: int, freq_min: int = 30) -> list[dic
 def get_current_hour_ohlc(symbol: str) -> dict | None:
     """Fetch the current ET hour's running OHLC from 1-min bars."""
     from zoneinfo import ZoneInfo
-    now_et = datetime.now(ZoneInfo('America/New_York'))
-    hour_start_et = now_et.replace(minute=0, second=0, microsecond=0)
-    hour_start_utc = hour_start_et.astimezone(timezone.utc)
-
-    start_ms = int(hour_start_utc.timestamp() * 1000)
-    end_ms   = int(datetime.now(timezone.utc).timestamp() * 1000)
-
+    now_et     = datetime.now(ZoneInfo('America/New_York'))
+    hour_start = now_et.replace(minute=0, second=0, microsecond=0)
+    start_ms   = int(hour_start.astimezone(timezone.utc).timestamp() * 1000)
+    end_ms     = int(datetime.now(timezone.utc).timestamp() * 1000)
     params = {
         'symbol'               : symbol,
         'frequencyType'        : 'minute',
@@ -80,6 +115,7 @@ def get_current_hour_ohlc(symbol: str) -> dict | None:
     }
     resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=15)
     if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
         resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=15)
     if not resp.ok:
         return None
