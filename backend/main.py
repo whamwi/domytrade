@@ -219,13 +219,25 @@ async def compute_all_stats():
 
 async def refresh_signals():
     symbols = state['symbols']
-    api_syms = [s['schwab_symbol'] for s in symbols]
+    # For futures, use the specific contract month symbol for quotes (e.g. /ESM26)
+    # — the continuous symbol (/ES:XCME) may return zero net_change when CME is closed.
+    # For equities, use the schwab_symbol as-is.
+    def _quote_sym(s):
+        tick = s['ticker']
+        return front_month_code(tick) if tick.startswith('/') else s['schwab_symbol']
+
+    quote_syms = [_quote_sym(s) for s in symbols]
+    # Map back: quote_symbol → schwab_symbol so we can look up the right key
+    quote_key = {_quote_sym(s): s['schwab_symbol'] for s in symbols}
 
     try:
-        quotes = await asyncio.to_thread(get_quotes, api_syms)
+        quotes_raw = await asyncio.to_thread(get_quotes, quote_syms)
     except Exception as e:
         log.warning('Quote fetch error: %s', e)
         return
+
+    # Normalize: keyed by schwab_symbol (continuous) for the rest of the code
+    quotes = {quote_key.get(qs, qs): v for qs, v in quotes_raw.items()}
 
     signal_hour = datetime.now(ET).replace(minute=0, second=0, microsecond=0)
     rows = []
