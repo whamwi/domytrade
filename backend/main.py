@@ -36,6 +36,7 @@ state = {
     'stats_agg'        : {},   # {symbol_id: {hour: (L1,L2,L3,L4)}}
     'stats_con'        : {},
     'prev_close'       : {},   # {symbol_id: float}  — last RTH close from candles
+    'market_bias'      : {},   # {symbol_id: {bias, pts, rth_open, prev_close}}
     'signals'          : [],
     'last_stats_update': None,
     'last_signal_update': None,
@@ -57,6 +58,49 @@ def _prev_rth_close(candles: list[dict]) -> float:
         )
     ]
     return float(sorted(rth)[-1][1]) if rth else 0.0
+
+
+NEUTRAL_BAND = 4.0   # points — within ±4 pts of prev close = NEUTRAL
+
+def _rth_bias(candles: list[dict]) -> dict:
+    """
+    Compare most recent RTH session open (9:30 ET) vs previous RTH session close (16:00 ET).
+    Returns {'bias': BULL|BEAR|NEUTRAL, 'pts': float, 'rth_open': float, 'prev_close': float}
+    Off-hours: stays frozen at last completed session's result.
+    """
+    if not candles:
+        return {'bias': 'NEUTRAL', 'pts': 0.0, 'rth_open': 0.0, 'prev_close': 0.0}
+
+    # Group RTH bars by date {date: {'open': first_bar_open, 'close': last_bar_close}}
+    sessions: dict = {}
+    for c in sorted(candles, key=lambda x: x['datetime']):
+        dt  = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        if dt.weekday() >= 5:
+            continue
+        t   = dt.hour * 60 + dt.minute
+        day = dt.date()
+        if 9 * 60 + 30 <= t < 16 * 60:
+            if day not in sessions:
+                sessions[day] = {'open': c['open'], 'close': c['close']}
+            else:
+                sessions[day]['close'] = c['close']   # keep last bar
+
+    if len(sessions) < 2:
+        return {'bias': 'NEUTRAL', 'pts': 0.0, 'rth_open': 0.0, 'prev_close': 0.0}
+
+    dates      = sorted(sessions.keys())
+    rth_open   = sessions[dates[-1]]['open']
+    prev_close = sessions[dates[-2]]['close']
+    pts        = round(rth_open - prev_close, 2)
+
+    if abs(pts) <= NEUTRAL_BAND:
+        bias = 'NEUTRAL'
+    elif pts > 0:
+        bias = 'BULL'
+    else:
+        bias = 'BEAR'
+
+    return {'bias': bias, 'pts': pts, 'rth_open': rth_open, 'prev_close': prev_close}
 
 
 # ── OHLC helpers ──────────────────────────────────────────────────────────────
@@ -126,9 +170,10 @@ async def compute_all_stats():
             cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=AGG_DAYS)).timestamp() * 1000)
             agg_candles = [c for c in con_candles if c['datetime'] >= cutoff_ms]
 
-            state['stats_agg'][sid]   = compute_stats(agg_candles)
-            state['stats_con'][sid]   = compute_stats(con_candles)
-            state['prev_close'][sid]  = _prev_rth_close(con_candles)
+            state['stats_agg'][sid]    = compute_stats(agg_candles)
+            state['stats_con'][sid]    = compute_stats(con_candles)
+            state['prev_close'][sid]   = _prev_rth_close(con_candles)
+            state['market_bias'][sid]  = _rth_bias(con_candles)
 
             # Persist stats to DB
             stat_rows = []
@@ -298,6 +343,31 @@ def health():
         'signals': len(state['signals']),
         'symbols': len(state['symbols']),
     }
+
+
+MARKET_TICKERS = {'/ES', '/NQ', '/YM', '/RTY'}
+
+@app.get('/api/market-bias')
+def get_market_bias():
+    result = []
+    for sym in state['symbols']:
+        if sym['ticker'] not in MARKET_TICKERS:
+            continue
+        sid  = sym['id']
+        bias = state['market_bias'].get(sid, {
+            'bias': 'NEUTRAL', 'pts': 0.0, 'rth_open': 0.0, 'prev_close': 0.0
+        })
+        result.append({
+            'symbol'    : sym['ticker'],
+            'bias'      : bias['bias'],
+            'pts'       : bias['pts'],
+            'rth_open'  : bias['rth_open'],
+            'prev_close': bias['prev_close'],
+        })
+    # Fixed display order
+    order = ['/ES', '/NQ', '/YM', '/RTY']
+    result.sort(key=lambda r: order.index(r['symbol']) if r['symbol'] in order else 99)
+    return {'markets': result}
 
 
 @app.get('/api/symbols')

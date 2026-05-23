@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Sidebar from './components/Sidebar'
 import SignalTable, { Signal, SymbolInfo } from './components/SignalTable'
+import MarketBias, { MarketBiasItem } from './components/MarketBias'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL = 60_000
@@ -74,6 +75,7 @@ export default function DashboardPage() {
 
   const [data, setData] = useState<ApiResponse | null>(null)
   const [allSymbols, setAllSymbols] = useState<SymbolInfo[]>([])
+  const [marketBias, setMarketBias] = useState<MarketBiasItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
@@ -97,9 +99,10 @@ export default function DashboardPage() {
 
   const fetchSignals = useCallback(async () => {
     try {
-      const [sigRes, symRes] = await Promise.all([
+      const [sigRes, symRes, biasRes] = await Promise.all([
         fetch(`${API_URL}/api/signals?model=all&side=all`, { cache: 'no-store' }),
-        fetch(`${API_URL}/api/symbols`, { cache: 'no-store' }),
+        fetch(`${API_URL}/api/symbols`,                    { cache: 'no-store' }),
+        fetch(`${API_URL}/api/market-bias`,                { cache: 'no-store' }),
       ])
       if (!sigRes.ok) throw new Error(`HTTP ${sigRes.status}`)
       const json: ApiResponse = await sigRes.json()
@@ -111,6 +114,10 @@ export default function DashboardPage() {
       if (symRes.ok) {
         const symJson = await symRes.json()
         setAllSymbols(symJson.symbols ?? [])
+      }
+      if (biasRes.ok) {
+        const biasJson = await biasRes.json()
+        setMarketBias(biasJson.markets ?? [])
       }
 
       timerRef.current = setTimeout(fetchSignals, REFRESH_INTERVAL)
@@ -268,6 +275,9 @@ export default function DashboardPage() {
             ))}
           </div>
         </div>
+
+        {/* Market bias strip */}
+        <MarketBias markets={marketBias} />
 
         {/* Table */}
         <div className="flex-1 overflow-auto">
