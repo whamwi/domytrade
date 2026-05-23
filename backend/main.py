@@ -226,6 +226,33 @@ async def refresh_signals():
         q          = quotes.get(api, {})
         last       = q.get('last', 0)
         prev_close = state['prev_close'].get(sid, 0)   # last RTH close from candles
+
+        # Market bias for the 4 equity index futures.
+        # Use Schwab's net_change (last - prev CME settlement) as the reliable
+        # previous-close reference. Bias = session open vs prev settlement.
+        # During off-hours openPrice is 0 → fall back to net_change direction.
+        if sym['ticker'] in MARKET_TICKERS:
+            net_chg  = q.get('net_change', 0)
+            q_open   = q.get('open', 0)
+            q_last   = last
+            # prev_settle is always accurate for futures (official CME settlement)
+            prev_settle = round(q_last - net_chg, 2) if net_chg else 0
+            if q_open > 0 and prev_settle > 0:
+                pts = round(q_open - prev_settle, 2)   # open vs prev settlement
+            elif prev_settle > 0:
+                pts = round(net_chg, 2)                 # off-hours: use running change
+            else:
+                pts = 0.0
+            if abs(pts) <= NEUTRAL_BAND:
+                mbias = 'NEUTRAL'
+            elif pts > 0:
+                mbias = 'BULL'
+            else:
+                mbias = 'BEAR'
+            state['market_bias'][sid] = {
+                'bias': mbias, 'pts': pts,
+                'rth_open': q_open, 'prev_close': prev_settle,
+            }
         if not last:
             continue
 
@@ -346,6 +373,7 @@ def health():
 
 
 MARKET_TICKERS = {'/ES', '/NQ', '/YM', '/RTY'}
+
 
 @app.get('/api/market-bias')
 def get_market_bias():

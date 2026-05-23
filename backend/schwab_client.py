@@ -69,12 +69,14 @@ def get_quotes(symbols: list[str]) -> dict:
     for sym, payload in resp.json().items():
         q = payload.get('quote', {})
         out[sym] = {
-            'last'  : q.get('lastPrice') or q.get('mark', 0),
-            'open'  : q.get('openPrice', 0),
-            'high'  : q.get('highPrice', 0),
-            'low'   : q.get('lowPrice', 0),
-            'close' : q.get('closePrice', 0),
-            'volume': q.get('totalVolume', 0),
+            'last'      : q.get('lastPrice') or q.get('mark', 0),
+            'open'      : q.get('openPrice', 0),
+            'high'      : q.get('highPrice', 0),
+            'low'       : q.get('lowPrice', 0),
+            'close'     : q.get('closePrice', 0),
+            'volume'    : q.get('totalVolume', 0),
+            # Futures-specific: change from previous CME settlement price
+            'net_change': q.get('netChange', 0),
         }
     return out
 
