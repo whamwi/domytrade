@@ -38,6 +38,7 @@ state = {
     'prev_close'       : {},   # {symbol_id: float}  — last RTH close from candles
     'market_bias'      : {},   # {symbol_id: {bias, pts, rth_open, prev_close}}
     'last_price'       : {},   # {symbol_id: float}  — latest price (live quote or prev_close fallback)
+    'net_change'       : {},   # {symbol_id: float}  — Schwab net_change (vs CME settlement / prev close)
     'signals'          : [],
     'last_stats_update': None,
     'last_signal_update': None,
@@ -245,6 +246,12 @@ async def refresh_signals():
         if display_price:
             state['last_price'][sid] = round(display_price, 4)
 
+        # Store net_change from Schwab — matches TOS "Change" column.
+        # Futures: change vs previous CME settlement. Equities: change vs prev close.
+        net_chg_raw = q.get('net_change', 0)
+        if net_chg_raw:
+            state['net_change'][sid] = round(net_chg_raw, 4)
+
         # Market bias for the 4 equity index futures.
         # Use Schwab's net_change (last - prev CME settlement) as the reliable
         # previous-close reference. Bias = session open vs prev settlement.
@@ -292,6 +299,7 @@ async def refresh_signals():
                 s['symbol_id']   = sid
                 s['signal_hour'] = signal_hour.isoformat()
                 s['prev_close']  = round(prev_close, 4)
+                s['net_change']  = round(net_chg_raw, 4)
             rows.extend(sigs)
         await asyncio.sleep(0.1)
 
@@ -424,8 +432,9 @@ def get_symbols_list():
             'id'        : s['id'],
             'ticker'    : s['ticker'],
             'asset_type': s.get('asset_type', 'equity'),
-            'last_price': state['last_price'].get(s['id']),   # None if not yet fetched
+            'last_price': state['last_price'].get(s['id']),
             'prev_close': state['prev_close'].get(s['id']),
+            'net_change': state['net_change'].get(s['id']),
         }
         for s in state['symbols']
     ]}

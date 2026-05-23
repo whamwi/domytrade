@@ -12,6 +12,7 @@ export interface Signal {
   target: number
   last: number
   prev_close: number
+  net_change?: number | null
   swing_pct: number
   current_range: number
   typical_range: number
@@ -29,6 +30,7 @@ export interface SymbolInfo {
   asset_type: string
   last_price?: number | null
   prev_close?: number | null
+  net_change?: number | null
 }
 
 interface SignalTableProps {
@@ -92,8 +94,11 @@ interface ActiveRowProps {
 }
 
 function ActiveRow({ sig, rank }: ActiveRowProps) {
-  const change    = sig.prev_close > 0 ? sig.last - sig.prev_close : 0
-  const changePct = sig.prev_close > 0 ? (change / sig.prev_close) * 100 : 0
+  // Use Schwab net_change (matches TOS) — falls back to last-prev_close if unavailable
+  const change    = sig.net_change != null ? sig.net_change
+                  : sig.prev_close > 0 ? sig.last - sig.prev_close : 0
+  const ref       = sig.last - change   // reference price (settlement or prev close)
+  const changePct = ref > 0 ? (change / ref) * 100 : 0
   const isUp      = change >= 0
   const changeColor = isUp ? '#4ade80' : '#f87171'
 
@@ -217,9 +222,11 @@ interface NoSignalRowProps {
 
 function NoSignalRow({ sym, rank }: NoSignalRowProps) {
   const last      = sym.last_price ?? null
-  const prevClose = sym.prev_close ?? null
-  const change    = last && prevClose && prevClose > 0 ? last - prevClose : null
-  const changePct = change !== null && prevClose ? (change / prevClose) * 100 : null
+  // Use Schwab net_change (matches TOS) — falls back to last-prev_close if unavailable
+  const change    = sym.net_change != null ? sym.net_change
+                  : (last && sym.prev_close && sym.prev_close > 0 ? last - sym.prev_close : null)
+  const ref       = last && change != null ? last - change : null
+  const changePct = change !== null && ref ? (change / ref) * 100 : null
   const isUp      = change !== null ? change >= 0 : true
 
   return (
