@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from schwab_client import get_quotes, get_candles, get_current_hour_ohlc
+from schwab_client import get_quotes, get_candles, get_current_hour_ohlc, front_month_code
 from vbh_engine import compute_stats, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals)
@@ -160,7 +160,10 @@ async def compute_all_stats():
         api   = sym['schwab_symbol']
         try:
             # Fetch 90d candles from Schwab and persist to DB
-            con_candles = await asyncio.to_thread(get_candles, api, CON_DAYS)
+            # Futures price history requires a specific contract month symbol (e.g. /ESM26)
+            # Continuous symbols like /ES:XCME are rejected by Schwab's price history API
+            candle_sym = front_month_code(tick) if tick.startswith('/') else api
+            con_candles = await asyncio.to_thread(get_candles, candle_sym, CON_DAYS)
             rows = _candles_to_rows(sid, con_candles)
             if rows:
                 upsert_ohlc(rows)
@@ -257,7 +260,8 @@ async def refresh_signals():
             continue
 
         try:
-            ohlc = await asyncio.to_thread(get_current_hour_ohlc, api)
+            ohlc_sym = front_month_code(tick) if tick.startswith('/') else api
+            ohlc = await asyncio.to_thread(get_current_hour_ohlc, ohlc_sym)
         except Exception:
             ohlc = None
         if not ohlc:
