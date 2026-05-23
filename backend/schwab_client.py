@@ -148,8 +148,16 @@ def get_candles(symbol: str, lookback_days: int, freq_min: int = 30) -> list[dic
     if resp.status_code == 401:
         _token_cache['expires_at'] = 0
         resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=30)
+    if not resp.ok:
+        import logging; logging.getLogger(__name__).warning(
+            'get_candles(%s) HTTP %s: %s', symbol, resp.status_code, resp.text[:200])
+        return []
+    data = resp.json()
+    if not data.get('candles'):
+        import logging; logging.getLogger(__name__).warning(
+            'get_candles(%s) empty — response: %s', symbol, str(data)[:300])
     resp.raise_for_status()
-    return resp.json().get('candles', [])
+    return data.get('candles', [])
 
 
 def get_current_hour_ohlc(symbol: str) -> dict | None:

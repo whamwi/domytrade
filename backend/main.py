@@ -163,6 +163,7 @@ async def compute_all_stats():
             # Futures price history requires a specific contract month symbol (e.g. /ESM26)
             # Continuous symbols like /ES:XCME are rejected by Schwab's price history API
             candle_sym = front_month_code(tick) if tick.startswith('/') else api
+            log.info('  %-8s  fetching candles as %s', tick, candle_sym)
             con_candles = await asyncio.to_thread(get_candles, candle_sym, CON_DAYS)
             rows = _candles_to_rows(sid, con_candles)
             if rows:
