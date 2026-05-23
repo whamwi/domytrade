@@ -11,6 +11,7 @@ export interface Signal {
   stop: number
   target: number
   last: number
+  day_open: number
   swing_pct: number
   current_range: number
   typical_range: number
@@ -46,6 +47,8 @@ function fmt(price: number): string {
 const COLS = [
   { label: '#',           align: 'left'  },
   { label: 'SYMBOL',      align: 'left'  },
+  { label: 'LAST',        align: 'right' },
+  { label: 'CHANGE',      align: 'right' },
   { label: 'SIDE',        align: 'left'  },
   { label: 'ENTRY',       align: 'right' },
   { label: 'STOP',        align: 'right' },
@@ -59,7 +62,6 @@ const COLS = [
   { label: 'WIN%',        align: 'right' },
   { label: 'EV',          align: 'right' },
   { label: 'SCORE',       align: 'left'  },
-  { label: 'LAST',        align: 'right' },
 ]
 
 function HeaderRow() {
@@ -88,6 +90,11 @@ interface ActiveRowProps {
 }
 
 function ActiveRow({ sig, rank }: ActiveRowProps) {
+  const change    = sig.day_open > 0 ? sig.last - sig.day_open : 0
+  const changePct = sig.day_open > 0 ? (change / sig.day_open) * 100 : 0
+  const isUp      = change >= 0
+  const changeColor = isUp ? '#4ade80' : '#f87171'
+
   return (
     <tr
       className="transition-colors"
@@ -105,6 +112,21 @@ function ActiveRow({ sig, rank }: ActiveRowProps) {
         <span className="font-bold tracking-wider" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
           {sig.symbol}
         </span>
+      </td>
+
+      {/* LAST */}
+      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-primary)', fontSize: '13px', fontWeight: 600 }}>
+        {fmt(sig.last)}
+      </td>
+
+      {/* CHANGE from day open */}
+      <td className="px-3 py-2.5 text-right tabular-nums" style={{ fontSize: '12px' }}>
+        {sig.day_open > 0 ? (
+          <span style={{ color: changeColor }}>
+            {isUp ? '+' : ''}{fmt(change)}{' '}
+            <span style={{ opacity: 0.75 }}>({isUp ? '+' : ''}{changePct.toFixed(2)}%)</span>
+          </span>
+        ) : <Dash />}
       </td>
 
       {/* SIDE */}
@@ -182,11 +204,6 @@ function ActiveRow({ sig, rank }: ActiveRowProps) {
 
       {/* SCORE — Phase 2 */}
       <td className="px-3 py-2.5"><Dash /></td>
-
-      {/* LAST */}
-      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-        {fmt(sig.last)}
-      </td>
     </tr>
   )
 }
@@ -205,8 +222,8 @@ function NoSignalRow({ ticker, rank }: NoSignalRowProps) {
           {ticker}
         </span>
       </td>
-      {/* Fill remaining 14 columns with dashes */}
-      {Array.from({ length: 14 }).map((_, i) => (
+      {/* Fill remaining 16 columns with dashes */}
+      {Array.from({ length: 16 }).map((_, i) => (
         <td key={i} className="px-3 py-2 text-center">
           <Dash />
         </td>
