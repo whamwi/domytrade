@@ -123,7 +123,7 @@ function ActiveRow({ sig, rank }: ActiveRowProps) {
       <td className="px-3 py-2.5 text-right tabular-nums" style={{ fontSize: '12px' }}>
         {sig.day_open > 0 ? (
           <span style={{ color: changeColor }}>
-            {isUp ? '+' : ''}{fmt(change)}{' '}
+            {isUp ? '+' : ''}{change.toFixed(2)}{' '}
             <span style={{ opacity: 0.75 }}>({isUp ? '+' : ''}{changePct.toFixed(2)}%)</span>
           </span>
         ) : <Dash />}
