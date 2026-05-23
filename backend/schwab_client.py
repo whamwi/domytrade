@@ -5,7 +5,59 @@ No dependency on local token.json or market_hours.py.
 """
 import os, time, base64, requests
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+
+# ── Futures contract month codes ───────────────────────────────────────────────
+# Standard CME/CBOT month letter codes (all months)
+MONTH_CODES = {
+    1: 'F',   # January
+    2: 'G',   # February
+    3: 'H',   # March
+    4: 'J',   # April
+    5: 'K',   # May
+    6: 'M',   # June
+    7: 'N',   # July
+    8: 'Q',   # August
+    9: 'U',   # September
+    10: 'V',  # October
+    11: 'X',  # November
+    12: 'Z',  # December
+}
+
+# Quarterly contract months for equity index futures (ES, NQ, YM, RTY)
+# Rolls approximately on the 3rd Friday of the expiry month
+QUARTERLY = [3, 6, 9, 12]   # H, M, U, Z
+
+def front_month_code(base: str, ref_date: datetime | None = None) -> str:
+    """
+    Return the current front-month contract symbol for a futures root.
+    e.g. front_month_code('/ES')  →  '/ESM26'
+
+    Uses quarterly roll schedule (H/M/U/Z).
+    Assumes roll happens on the 15th of the expiry month (conservative — actual
+    roll is 3rd Friday, ~15–21st; adjust ROLL_DAY if needed).
+    """
+    ROLL_DAY = 15
+    now = ref_date or datetime.now(ZoneInfo('America/New_York'))
+    m, y = now.month, now.year
+
+    # Find next quarterly month that hasn't rolled yet
+    for qm in QUARTERLY:
+        if qm > m:
+            break
+        if qm == m and now.day < ROLL_DAY:
+            break
+    else:
+        # All quarterly months this year have passed → first quarterly next year
+        qm = QUARTERLY[0]
+        y += 1
+
+    code = MONTH_CODES[qm]
+    year_2d = str(y)[-2:]
+    # Strip exchange suffix if present, then re-append root
+    root = base.split(':')[0]   # '/ES:XCME' → '/ES'
+    return f'{root}{code}{year_2d}'
 
 load_dotenv()
 
