@@ -52,7 +52,7 @@ def _candles_to_rows(symbol_id: int, candles: list[dict]) -> list[dict]:
     df['dt'] = pd.to_datetime(df['datetime'], unit='ms', utc=True)
     df = df.set_index('dt')[['open', 'high', 'low', 'close', 'volume']]
     hourly = df.resample('1h').agg(
-        open='first', high='max', low='min', close='last', volume='sum'
+        {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
     ).dropna(subset=['open'])
     hourly.index = hourly.index.tz_convert(ET)
     hourly['hour_et'] = hourly.index.hour
@@ -98,20 +98,18 @@ async def compute_all_stats():
         tick  = sym['ticker']
         api   = sym['schwab_symbol']
         try:
-            # Fetch & persist OHLC (use longer lookback)
-            candles = await asyncio.to_thread(get_candles, api, CON_DAYS)
-            rows    = _candles_to_rows(sid, candles)
+            # Fetch 90d candles from Schwab and persist to DB
+            con_candles = await asyncio.to_thread(get_candles, api, CON_DAYS)
+            rows = _candles_to_rows(sid, con_candles)
             if rows:
                 upsert_ohlc(rows)
 
-            # AGG stats from DB (30d)
-            agg_rows = get_ohlc(sid, AGG_DAYS)
-            agg_candles = _ohlc_rows_to_candles(agg_rows)
-            state['stats_agg'][sid] = compute_stats(agg_candles)
+            # Compute stats directly from fresh candles (no DB round-trip needed)
+            # AGG = last 30 days subset of the 90d fetch
+            cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=AGG_DAYS)).timestamp() * 1000)
+            agg_candles = [c for c in con_candles if c['datetime'] >= cutoff_ms]
 
-            # CON stats from DB (90d)
-            con_rows = get_ohlc(sid, CON_DAYS)
-            con_candles = _ohlc_rows_to_candles(con_rows)
+            state['stats_agg'][sid] = compute_stats(agg_candles)
             state['stats_con'][sid] = compute_stats(con_candles)
 
             # Persist stats to DB

@@ -55,7 +55,7 @@ def _build_hourly(candles: list[dict]) -> pd.DataFrame:
     df['dt'] = pd.to_datetime(df['datetime'], unit='ms', utc=True)
     df = df.set_index('dt')[['open', 'high', 'low', 'close', 'volume']]
     hourly = df.resample('1h').agg(
-        open='first', high='max', low='min', close='last', volume='sum'
+        {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
     ).dropna(subset=['open'])
     hourly.index = hourly.index.tz_convert(ET)
     hourly['hour_et'] = hourly.index.hour
@@ -71,6 +71,8 @@ def compute_stats(candles: list[dict]) -> dict[int, tuple]:
     Same formula as confirmed in original 2022 VBH study.
     """
     df = _build_hourly(candles)
+    if df.empty or 'hour_et' not in df.columns:
+        return {h: (0.0, 0.0, 0.0, 0.0) for h in range(24)}
     result = {}
     for h in range(24):
         vals = df[df['hour_et'] == h]['range'].dropna().values
