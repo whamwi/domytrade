@@ -32,6 +32,21 @@ CON_DAYS = 90
 STATS_REFRESH_HOURS = 24
 SIGNAL_REFRESH_SECS = 60
 
+# S&P 500 sector ETFs — ordered by index weight (April 2026)
+SECTORS = [
+    {'symbol': 'XLK',  'name': 'Tech',       'weight': 27.0},
+    {'symbol': 'XLV',  'name': 'Healthcare', 'weight': 14.0},
+    {'symbol': 'XLF',  'name': 'Financials', 'weight': 13.0},
+    {'symbol': 'XLC',  'name': 'Comms',      'weight': 10.8},
+    {'symbol': 'XLY',  'name': 'Cons.Disc',  'weight': 10.6},
+    {'symbol': 'XLI',  'name': 'Industrials','weight':  8.6},
+    {'symbol': 'XLP',  'name': 'Staples',    'weight':  5.9},
+    {'symbol': 'XLE',  'name': 'Energy',     'weight':  3.2},
+    {'symbol': 'XLB',  'name': 'Materials',  'weight':  2.5},
+    {'symbol': 'XLU',  'name': 'Utilities',  'weight':  2.4},
+    {'symbol': 'XLRE', 'name': 'Real Estate','weight':  2.3},
+]
+
 # ── In-memory cache (rebuilt from DB on startup) ───────────────────────────────
 state = {
     'symbols'          : [],   # [{id, ticker, schwab_symbol, asset_type}]
@@ -42,6 +57,7 @@ state = {
     'last_price'       : {},   # {symbol_id: float}  — latest price (live quote or prev_close fallback)
     'net_change'       : {},   # {symbol_id: float}  — Schwab net_change (vs CME settlement / prev close)
     'volatility'       : {'vix': None},   # $VIX — Fear Index
+    'sectors'          : [],              # [{symbol, name, weight, pct}] — SPDR sector ETFs
     'signals'          : [],
     'last_stats_update': None,
     'last_signal_update': None,
@@ -308,7 +324,7 @@ async def refresh_signals():
     # Normalize: keyed by schwab_symbol (continuous) for the rest of the code
     quotes = {quote_key.get(qs, qs): v for qs, v in quotes_raw.items()}
 
-    # Fetch $VIX (Fear Index) + $PCALL current value
+    # Fetch $VIX (Fear Index)
     try:
         vol_quotes = await asyncio.to_thread(get_quotes, ['$VIX'])
         vix_last   = vol_quotes.get('$VIX', {}).get('last') or None
@@ -317,6 +333,31 @@ async def refresh_signals():
         }
     except Exception as e:
         log.warning('VIX quote error: %s', e)
+
+    # Fetch sector ETF quotes — single batch call
+    try:
+        sector_syms   = [s['symbol'] for s in SECTORS]
+        sector_quotes = await asyncio.to_thread(get_quotes, sector_syms)
+        updated = []
+        for s in SECTORS:
+            q    = sector_quotes.get(s['symbol'], {})
+            last = q.get('last', 0)
+            open_ = q.get('open', 0)
+            if last and open_:
+                pct = round(100 * (last - open_) / open_, 2)
+            else:
+                # Keep previous value if market is closed / data missing
+                prev = next((x for x in state['sectors'] if x['symbol'] == s['symbol']), {})
+                pct  = prev.get('pct', 0.0)
+            updated.append({
+                'symbol': s['symbol'],
+                'name'  : s['name'],
+                'weight': s['weight'],
+                'pct'   : pct,
+            })
+        state['sectors'] = updated
+    except Exception as e:
+        log.warning('Sector quote error: %s', e)
 
     signal_hour = datetime.now(ET).replace(minute=0, second=0, microsecond=0)
     rows = []
@@ -532,6 +573,7 @@ def get_market_bias():
     return {
         'markets'   : result,
         'volatility': state['volatility'],
+        'sectors'   : state['sectors'],
     }
 
 
