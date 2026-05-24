@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from schwab_client import get_quotes, get_candles, get_current_hour_ohlc, front_month_code
+from schwab_client import get_quotes, get_candles, get_current_hour_ohlc, get_session_bars, front_month_code
 from vbh_engine import compute_stats, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals)
@@ -103,6 +103,35 @@ def _rth_bias(candles: list[dict]) -> dict:
         bias = 'BEAR'
 
     return {'bias': bias, 'pts': pts, 'rth_open': rth_open, 'prev_close': prev_close}
+
+
+# ── VWAP / POC ────────────────────────────────────────────────────────────────
+
+MARKET_TICK = {'/ES': 0.25, '/NQ': 0.25, '/YM': 1.0, '/RTY': 0.10}
+
+def _compute_vwap_poc(bars: list[dict], tick_size: float) -> dict:
+    """Compute session VWAP and Point of Control from 1-min bars."""
+    if not bars:
+        return {'vwap': None, 'poc': None}
+    total_tpv = sum(((b['high'] + b['low'] + b['close']) / 3) * b['volume'] for b in bars)
+    total_vol  = sum(b['volume'] for b in bars)
+    vwap = round(total_tpv / total_vol, 2) if total_vol > 0 else None
+
+    # Volume profile — distribute each bar's volume across its price ticks
+    tick_vol: dict[float, float] = {}
+    for bar in bars:
+        lo = round(round(bar['low']  / tick_size) * tick_size, 6)
+        hi = round(round(bar['high'] / tick_size) * tick_size, 6)
+        n  = max(1, round((hi - lo) / tick_size) + 1)
+        vpt = bar['volume'] / n
+        t = lo
+        for _ in range(n):
+            k = round(t, 6)
+            tick_vol[k] = tick_vol.get(k, 0) + vpt
+            t = round(t + tick_size, 6)
+
+    poc = round(max(tick_vol, key=tick_vol.get), 2) if tick_vol else None
+    return {'vwap': vwap, 'poc': poc}
 
 
 # ── OHLC helpers ──────────────────────────────────────────────────────────────
@@ -286,9 +315,18 @@ async def refresh_signals():
                 mbias = 'BULL'
             else:
                 mbias = 'BEAR'
+            # Fetch today's session bars for VWAP / POC
+            try:
+                session_sym  = front_month_code(tick)
+                session_bars = await asyncio.to_thread(get_session_bars, session_sym)
+                vp = _compute_vwap_poc(session_bars, MARKET_TICK.get(tick, 0.25))
+            except Exception:
+                vp = {'vwap': None, 'poc': None}
+
             state['market_bias'][sid] = {
                 'bias': mbias, 'pts': pts,
                 'rth_open': q_open, 'prev_close': prev_settle,
+                'vwap': vp['vwap'], 'poc': vp['poc'],
             }
         if not last:
             continue
@@ -430,6 +468,8 @@ def get_market_bias():
             'pts'       : bias['pts'],
             'rth_open'  : bias['rth_open'],
             'prev_close': bias['prev_close'],
+            'vwap'      : bias.get('vwap'),
+            'poc'       : bias.get('poc'),
         })
     # Fixed display order
     order = ['/ES', '/NQ', '/YM', '/RTY']

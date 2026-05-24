@@ -165,6 +165,29 @@ def get_candles(symbol: str, lookback_days: int, freq_min: int = 30) -> list[dic
     return data.get('candles', [])
 
 
+def get_session_bars(symbol: str) -> list[dict]:
+    """Fetch 1-min bars from midnight ET today — used for VWAP/POC computation."""
+    now_et     = datetime.now(ZoneInfo('America/New_York'))
+    midnight   = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_ms   = int(midnight.astimezone(timezone.utc).timestamp() * 1000)
+    end_ms     = int(datetime.now(timezone.utc).timestamp() * 1000)
+    params = {
+        'symbol'               : symbol,
+        'frequencyType'        : 'minute',
+        'frequency'            : 1,
+        'startDate'            : start_ms,
+        'endDate'              : end_ms,
+        'needExtendedHoursData': 'true',
+    }
+    resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=15)
+    if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
+        resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=15)
+    if not resp.ok:
+        return []
+    return resp.json().get('candles', [])
+
+
 def get_current_hour_ohlc(symbol: str) -> dict | None:
     """Fetch the current ET hour's running OHLC from 1-min bars."""
     from zoneinfo import ZoneInfo

@@ -6,6 +6,8 @@ export interface MarketBiasItem {
   pts: number
   rth_open: number
   prev_close: number
+  vwap?: number | null
+  poc?: number | null
 }
 
 interface MarketBiasProps {
@@ -61,10 +63,20 @@ export default function MarketBias({ markets }: MarketBiasProps) {
               className="text-xs font-semibold tabular-nums"
               style={{ color: s.text }}
             >
-              {m.bias === 'NEUTRAL'
-                ? `${pos ? '+' : ''}${m.pts.toFixed(2)}`
-                : `${pos ? '+' : ''}${m.pts.toFixed(2)}`}
+              {`${pos ? '+' : ''}${m.pts.toFixed(2)}`}
             </span>
+
+            {/* VWAP / POC — shown when available */}
+            {(m.vwap || m.poc) && (
+              <span
+                className="text-xs tabular-nums"
+                style={{ color: 'var(--text-dim)', borderLeft: '1px solid var(--border)', paddingLeft: '8px', marginLeft: '2px' }}
+              >
+                {m.vwap && <span>V <span style={{ color: 'var(--text-muted)' }}>{m.vwap.toFixed(2)}</span></span>}
+                {m.vwap && m.poc && <span style={{ margin: '0 4px', opacity: 0.4 }}>·</span>}
+                {m.poc  && <span>P <span style={{ color: 'var(--text-muted)' }}>{m.poc.toFixed(2)}</span></span>}
+              </span>
+            )}
           </div>
         )
       })}
