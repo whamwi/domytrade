@@ -22,6 +22,7 @@ interface ApiResponse {
 
 type SideFilter = 'all' | 'longs' | 'shorts'
 type ModelFilter = 'all' | 'AGG' | 'CON'
+type AssetFilter = 'all' | 'equities' | 'futures'
 
 function getSessionLabel(): { label: string; color: string; bg: string } {
   const now = new Date()
@@ -82,6 +83,7 @@ export default function DashboardPage() {
 
   const [sideFilter, setSideFilter] = useState<SideFilter>('all')
   const [modelFilter, setModelFilter] = useState<ModelFilter>('all')
+  const [assetFilter, setAssetFilter] = useState<AssetFilter>('all')
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -144,14 +146,24 @@ export default function DashboardPage() {
 
   // Filter signals
   const filteredSignals = (data?.signals ?? []).filter((sig) => {
+    const isFuture = sig.symbol.startsWith('/')
     const sideOk =
       sideFilter === 'all' ||
       (sideFilter === 'longs' && sig.side === 'LONG') ||
       (sideFilter === 'shorts' && sig.side === 'SHORT')
     const modelOk =
       modelFilter === 'all' || sig.model === modelFilter
-    return sideOk && modelOk
+    const assetOk =
+      assetFilter === 'all' ||
+      (assetFilter === 'futures' && isFuture) ||
+      (assetFilter === 'equities' && !isFuture)
+    return sideOk && modelOk && assetOk
   })
+
+  // Also filter the silent symbols list by asset type
+  const filteredSymbols = assetFilter === 'all' ? allSymbols
+    : assetFilter === 'futures' ? allSymbols.filter(s => s.ticker.startsWith('/'))
+    : allSymbols.filter(s => !s.ticker.startsWith('/'))
 
   const session = getSessionLabel()
 
@@ -274,6 +286,27 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
+
+          {/* Asset filter */}
+          <div
+            className="flex items-center rounded-lg p-0.5 gap-0.5"
+            style={{ background: 'var(--bg-panel)' }}
+          >
+            {(['all', 'equities', 'futures'] as AssetFilter[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => setAssetFilter(f)}
+                className="rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
+                style={
+                  assetFilter === f
+                    ? { background: 'var(--accent-blue)', color: '#fff' }
+                    : { background: 'transparent', color: 'var(--text-muted)' }
+                }
+              >
+                {f === 'all' ? 'All Assets' : f === 'equities' ? 'Equities' : 'Futures'}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Market bias strip */}
@@ -283,7 +316,7 @@ export default function DashboardPage() {
         <div className="flex-1 overflow-auto">
           <SignalTable
             signals={filteredSignals}
-            allSymbols={allSymbols}
+            allSymbols={filteredSymbols}
             loading={loading}
             error={error}
             onRetry={handleRefresh}
