@@ -6,6 +6,9 @@ import { supabase } from '@/lib/supabase'
 import Sidebar from './components/Sidebar'
 import SignalTable, { Signal, SymbolInfo } from './components/SignalTable'
 import MarketBias, { MarketBiasItem } from './components/MarketBias'
+import BriefingModal from './components/BriefingModal'
+import AlertToast from './components/AlertToast'
+import { useEconomicAlerts, EconAlert } from './hooks/useEconomicAlerts'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL = 60_000
@@ -77,9 +80,15 @@ export default function DashboardPage() {
   const [data, setData] = useState<ApiResponse | null>(null)
   const [allSymbols, setAllSymbols] = useState<SymbolInfo[]>([])
   const [marketBias, setMarketBias] = useState<MarketBiasItem[]>([])
+  const [vix, setVix] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
+
+  const [briefingOpen, setBriefingOpen] = useState(false)
+  const [activeAlert, setActiveAlert] = useState<EconAlert | null>(null)
+
+  useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
 
   const [sideFilter, setSideFilter] = useState<SideFilter>('all')
   const [modelFilter, setModelFilter] = useState<ModelFilter>('all')
@@ -120,6 +129,7 @@ export default function DashboardPage() {
       if (biasRes.ok) {
         const biasJson = await biasRes.json()
         setMarketBias(biasJson.markets ?? [])
+        setVix(biasJson.volatility?.vix ?? null)
       }
 
       timerRef.current = setTimeout(fetchSignals, REFRESH_INTERVAL)
@@ -208,15 +218,30 @@ export default function DashboardPage() {
             <Chip label="Bull" value={data?.longs ?? 0} color="#4ade80" />
             <span style={{ color: 'var(--border)' }}>·</span>
             <Chip label="Bear" value={data?.shorts ?? 0} color="#f87171" />
+            {vix != null && (
+              <>
+                <span style={{ color: 'var(--border)' }}>·</span>
+                <FearIndexChip value={vix} />
+              </>
+            )}
           </div>
 
-          {/* Right: last updated + refresh */}
+          {/* Right: last updated + briefing + refresh */}
           <div className="flex items-center gap-3">
             {lastUpdated && (
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 {lastUpdated}
               </span>
             )}
+            <button
+              onClick={() => setBriefingOpen(true)}
+              className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
+              style={{ color: 'var(--text-muted)', background: 'var(--bg-row)', border: '1px solid var(--border)' }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.borderColor = 'var(--accent-blue)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border)' }}
+            >
+              Calendar
+            </button>
             <button
               onClick={handleRefresh}
               title="Refresh"
@@ -323,6 +348,14 @@ export default function DashboardPage() {
           />
         </div>
       </div>
+
+      {/* Economic Briefing modal */}
+      {briefingOpen && <BriefingModal onClose={() => setBriefingOpen(false)} />}
+
+      {/* Economic event alert toast */}
+      {activeAlert && (
+        <AlertToast alert={activeAlert} onDismiss={() => setActiveAlert(null)} />
+      )}
     </div>
   )
 }
@@ -344,6 +377,18 @@ function Chip({
         style={{ color: color ?? 'var(--text-primary)' }}
       >
         {value}
+      </span>
+    </span>
+  )
+}
+
+function FearIndexChip({ value }: { value: number }) {
+  const color = value <= 20 ? '#4ade80' : value <= 30 ? '#fbbf24' : '#f87171'
+  return (
+    <span className="flex items-center gap-1.5 text-xs">
+      <span style={{ color: 'var(--text-muted)' }}>Fear Index:</span>
+      <span className="font-bold tabular-nums" style={{ color }}>
+        {value.toFixed(2)}
       </span>
     </span>
   )

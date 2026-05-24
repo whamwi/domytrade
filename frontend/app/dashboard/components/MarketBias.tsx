@@ -80,6 +80,7 @@ export default function MarketBias({ markets }: MarketBiasProps) {
           </div>
         )
       })}
+
     </div>
   )
 }
