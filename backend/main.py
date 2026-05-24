@@ -2,11 +2,12 @@
 domytrade.app — FastAPI backend
 Serves live VBH signals. Persists OHLC history and signals to Supabase.
 """
-import asyncio, logging
+import asyncio, logging, time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
+import requests as _req
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Query
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from schwab_client import get_quotes, get_candles, get_current_hour_ohlc, get_session_bars, front_month_code
+from schwab_client import get_quotes, get_candles, get_daily_candles, get_current_hour_ohlc, get_session_bars, front_month_code
 from vbh_engine import compute_stats, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
@@ -40,6 +41,7 @@ state = {
     'market_bias'      : {},   # {symbol_id: {bias, pts, rth_open, prev_close}}
     'last_price'       : {},   # {symbol_id: float}  — latest price (live quote or prev_close fallback)
     'net_change'       : {},   # {symbol_id: float}  — Schwab net_change (vs CME settlement / prev close)
+    'volatility'       : {'vix': None},   # $VIX — Fear Index
     'signals'          : [],
     'last_stats_update': None,
     'last_signal_update': None,
@@ -133,6 +135,9 @@ def _compute_vwap_poc(bars: list[dict], tick_size: float) -> dict:
 
     poc = round(max(tick_vol, key=tick_vol.get), 2) if tick_vol else None
     return {'vwap': vwap, 'poc': poc}
+
+
+# ── EMA helper ────────────────────────────────────────────────────────────────
 
 
 # ── OHLC helpers ──────────────────────────────────────────────────────────────
@@ -302,6 +307,16 @@ async def refresh_signals():
 
     # Normalize: keyed by schwab_symbol (continuous) for the rest of the code
     quotes = {quote_key.get(qs, qs): v for qs, v in quotes_raw.items()}
+
+    # Fetch $VIX (Fear Index) + $PCALL current value
+    try:
+        vol_quotes = await asyncio.to_thread(get_quotes, ['$VIX'])
+        vix_last   = vol_quotes.get('$VIX', {}).get('last') or None
+        state['volatility'] = {
+            'vix': round(vix_last, 2) if vix_last else state['volatility'].get('vix'),
+        }
+    except Exception as e:
+        log.warning('VIX quote error: %s', e)
 
     signal_hour = datetime.now(ET).replace(minute=0, second=0, microsecond=0)
     rows = []
@@ -514,7 +529,10 @@ def get_market_bias():
     # Fixed display order
     order = ['/ES', '/NQ', '/YM', '/RTY']
     result.sort(key=lambda r: order.index(r['symbol']) if r['symbol'] in order else 99)
-    return {'markets': result}
+    return {
+        'markets'   : result,
+        'volatility': state['volatility'],
+    }
 
 
 @app.get('/api/symbols')
@@ -532,7 +550,79 @@ def get_symbols_list():
     ]}
 
 
+@app.get('/api/instrument-search')
+def instrument_search(symbol: str = Query(...), projection: str = Query('symbol-search')):
+    """Proxy to Schwab instruments endpoint — for diagnostics."""
+    import requests as _r
+    from schwab_client import _headers
+    resp = _r.get('https://api.schwabapi.com/marketdata/v1/instruments',
+                  headers=_headers(),
+                  params={'symbol': symbol, 'projection': projection},
+                  timeout=10)
+    return resp.json()
+
+
 @app.post('/api/refresh-stats')
 async def force_refresh():
     asyncio.create_task(compute_all_stats())
     return {'message': 'Stats recomputation started'}
+
+
+# ── Economic Calendar (Briefing) ───────────────────────────────────────────────
+
+_briefing_cache: dict = {'data': None, 'fetched_at': 0.0}
+_BRIEFING_TTL = 3600        # refresh once per hour
+_FF_BASE = 'https://nfs.faireconomy.media'
+# Only show USD events + High-impact events from other major currencies
+_MAJOR = {'USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'NZD', 'CHF'}
+
+
+def _fetch_ff(slug: str) -> list:
+    try:
+        r = _req.get(f'{_FF_BASE}/{slug}', timeout=10)
+        if r.ok:
+            return r.json()
+    except Exception:
+        pass
+    return []
+
+
+def _build_briefing() -> dict:
+    events: list = []
+    for slug in ('ff_calendar_thisweek.json', 'ff_calendar_nextweek.json'):
+        events.extend(_fetch_ff(slug))
+
+    filtered = []
+    for ev in events:
+        country = ev.get('country', '')
+        impact  = ev.get('impact', 'Low')
+        if impact == 'Holiday':
+            continue
+        # Always include all USD events; include High-impact from other majors
+        if country == 'USD' or (country in _MAJOR and impact == 'High'):
+            filtered.append({
+                'title'   : ev.get('title', ''),
+                'country' : country,
+                'date'    : ev.get('date', ''),
+                'impact'  : impact,
+                'forecast': ev.get('forecast', ''),
+                'previous': ev.get('previous', ''),
+            })
+
+    # Sort by date ascending
+    filtered.sort(key=lambda e: e['date'])
+    return {'events': filtered, 'source': 'ForexFactory'}
+
+
+@app.get('/api/briefing')
+def get_briefing():
+    now = time.time()
+    if _briefing_cache['data'] and (now - _briefing_cache['fetched_at']) < _BRIEFING_TTL:
+        return _briefing_cache['data']
+    result = _build_briefing()
+    if result['events']:          # only cache if we got real data
+        _briefing_cache['data']       = result
+        _briefing_cache['fetched_at'] = now
+    elif _briefing_cache['data']:  # stale cache beats empty response
+        return _briefing_cache['data']
+    return result
