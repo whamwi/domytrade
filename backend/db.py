@@ -68,6 +68,31 @@ def get_vbh_stats(symbol_id: int) -> list[dict]:
     return res.data
 
 
+# ── 1-min bars (market futures only) ─────────────────────────────────────────
+
+def upsert_1min(rows: list[dict]) -> None:
+    """Upsert 1-min bars for /ES, /NQ, /YM, /RTY — used for VWAP/POC."""
+    if not rows:
+        return
+    get_db().table('ohlc_1min').upsert(rows, on_conflict='symbol_id,bar_time').execute()
+
+
+def get_1min_today(symbol_id: int) -> list[dict]:
+    """Return today's 1-min bars from midnight ET — for VWAP/POC computation."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    now_et   = datetime.now(ZoneInfo('America/New_York'))
+    midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff   = midnight.astimezone(timezone.utc).isoformat()
+    res = (get_db().table('ohlc_1min')
+           .select('open,high,low,close,volume')
+           .eq('symbol_id', symbol_id)
+           .gte('bar_time', cutoff)
+           .order('bar_time')
+           .execute())
+    return res.data
+
+
 # ── VBH Signals ───────────────────────────────────────────────────────────────
 
 def insert_signals(rows: list[dict]) -> None:

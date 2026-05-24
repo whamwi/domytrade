@@ -18,7 +18,8 @@ load_dotenv()
 from schwab_client import get_quotes, get_candles, get_current_hour_ohlc, get_session_bars, front_month_code
 from vbh_engine import compute_stats, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
-                upsert_vbh_stats, get_vbh_stats, insert_signals)
+                upsert_vbh_stats, get_vbh_stats, insert_signals,
+                upsert_1min, get_1min_today)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -136,6 +137,23 @@ def _compute_vwap_poc(bars: list[dict], tick_size: float) -> dict:
 
 # ── OHLC helpers ──────────────────────────────────────────────────────────────
 
+def _candles_to_1min_rows(symbol_id: int, candles: list[dict]) -> list[dict]:
+    """Convert 1-min Schwab candles to ohlc_1min rows."""
+    rows = []
+    for c in candles:
+        dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc)
+        rows.append({
+            'symbol_id': symbol_id,
+            'bar_time' : dt.isoformat(),
+            'open'     : float(c['open']),
+            'high'     : float(c['high']),
+            'low'      : float(c['low']),
+            'close'    : float(c['close']),
+            'volume'   : int(c['volume']) if c['volume'] else 0,
+        })
+    return rows
+
+
 def _candles_to_rows(symbol_id: int, candles: list[dict]) -> list[dict]:
     """Convert Schwab candles to ohlc_hourly rows."""
     if not candles:
@@ -242,6 +260,23 @@ async def compute_all_stats():
         except Exception as e:
             log.warning('  %-8s  ERROR: %s', tick, e)
 
+    # Backfill 10 days of 1-min bars for the 4 market futures → DB
+    log.info('Backfilling 10d 1-min bars for market futures…')
+    for sym in symbols:
+        tick = sym['ticker']
+        if tick not in MARKET_TICKERS:
+            continue
+        sid = sym['id']
+        try:
+            bars = await asyncio.to_thread(get_candles, front_month_code(tick), 10, 1)
+            rows = _candles_to_1min_rows(sid, bars)
+            if rows:
+                upsert_1min(rows)
+            log.info('  %-8s  1min=%d bars saved', tick, len(rows))
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            log.warning('  %-8s  1min ERROR: %s', tick, e)
+
     state['last_stats_update'] = datetime.now(ET).isoformat()
     log.info('Stats ready.')
 
@@ -315,11 +350,16 @@ async def refresh_signals():
                 mbias = 'BULL'
             else:
                 mbias = 'BEAR'
-            # Fetch today's session bars for VWAP / POC
+            # Keep 1-min DB current: upsert today's bars, then read back for VWAP/POC
             try:
-                session_sym  = front_month_code(tick)
-                session_bars = await asyncio.to_thread(get_session_bars, session_sym)
-                vp = _compute_vwap_poc(session_bars, MARKET_TICK.get(tick, 0.25))
+                fresh = await asyncio.to_thread(get_session_bars, front_month_code(tick))
+                if fresh:
+                    upsert_1min(_candles_to_1min_rows(sid, fresh))
+            except Exception:
+                pass
+            try:
+                today_rows = get_1min_today(sid)
+                vp = _compute_vwap_poc(today_rows, MARKET_TICK.get(tick, 0.25))
             except Exception:
                 vp = {'vwap': None, 'poc': None}
 
