@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-const REFRESH_MS       = 15 * 60 * 1000   // 15 min when data is good
-const RETRY_EMPTY_MS   =  2 * 60 * 1000   //  2 min retry when strip has no data yet
+const REFRESH_MS     = 15 * 60 * 1000  // 15 min when data is good
+const RETRY_EMPTY_MS =      30 * 1000  // 30 s retry when strip has no data yet
 
 const REGION_FLAG: Record<string, string> = {
   JP: '🇯🇵',
@@ -43,7 +43,8 @@ function PctChip({ pct, decimals = 2 }: { pct: number; decimals?: number }) {
 }
 
 export default function GlobalMarketsStrip() {
-  const [data, setData] = useState<GlobalMarketsData | null>(null)
+  const [data, setData]       = useState<GlobalMarketsData | null>(null)
+  const [fetching, setFetching] = useState(true)
 
   const fetchData = useCallback(async () => {
     try {
@@ -52,9 +53,14 @@ export default function GlobalMarketsStrip() {
         const json: GlobalMarketsData = await res.json()
         // Don't overwrite good data with empty — yfinance is sometimes rate-limited
         // on Railway IPs. Keep showing the last known values until real data returns.
-        if (json.asia?.length || json.fx?.length) setData(json)
+        if (json.asia?.length || json.fx?.length) {
+          setData(json)
+        }
       }
     } catch { /* keep stale */ }
+    finally {
+      setFetching(false)
+    }
   }, [])
 
   useEffect(() => {
@@ -64,7 +70,31 @@ export default function GlobalMarketsStrip() {
     return () => clearInterval(id)
   }, [fetchData, data])
 
-  if (!data || (!data.asia.length && !data.fx.length)) return null
+  const hasData = data && (data.asia.length > 0 || data.fx.length > 0)
+
+  // Show a subtle placeholder while fetching so the strip is visibly present
+  if (!hasData) {
+    return (
+      <div
+        className="flex items-center gap-2 px-5 py-2 shrink-0"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
+          {fetching ? 'Fetching Asian markets & FX…' : 'Asian market data unavailable — retrying in 30 s'}
+        </span>
+        {fetching && (
+          <svg
+            width="12" height="12" viewBox="0 0 24 24" fill="none"
+            stroke="var(--text-dim)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+            style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}
+          >
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        )}
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -117,8 +147,6 @@ export default function GlobalMarketsStrip() {
             FX
           </span>
           {data.fx.map(item => {
-            // For USD/JPY (risk-off): UP = dollar stronger = risk-on signal; label as risk-off pair
-            // For EUR/USD, GBP/USD (risk-on): UP = dollar weaker = risk-on signal
             const riskLabel = item.risk === 'off' ? 'safe' : 'risk'
             const riskColor = item.risk === 'off' ? '#94a3b8' : '#60a5fa'
 
