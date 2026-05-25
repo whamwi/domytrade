@@ -143,7 +143,10 @@ export default function DashboardPage() {
       ])
       if (!sigRes.ok) throw new Error(`HTTP ${sigRes.status}`)
       const json: ApiResponse = await sigRes.json()
-      setData(json)
+      // Don't overwrite good data with an empty array — backend may be warming up
+      // after a restart and returns [] for the first 30-60s.  Keep showing stale
+      // data until the backend sends real signals again.
+      setData(prev => (json.signals.length > 0 || !prev?.signals.length) ? json : prev)
       setLastUpdated(formatLastUpdated(json.last_updated))
       setError(null)
       setLoading(false)
