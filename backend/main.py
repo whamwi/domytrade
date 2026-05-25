@@ -725,6 +725,17 @@ async def refresh_signals():
     state['status'] = 'live'
     log.info('Signals refreshed — %d rows', len(rows))
 
+    # ── Persist snapshot to DB so next restart serves data instantly ──────────
+    if rows:
+        try:
+            from db import cache_set
+            cache_set('signals_snapshot', {
+                'signals'     : rows,
+                'last_updated': state['last_signal_update'],
+            })
+        except Exception as e:
+            log.warning('Signal snapshot save error: %s', e)
+
     # Persist to DB for future backtesting
     if rows:
         db_rows = [{
@@ -1090,6 +1101,21 @@ async def refresh_mag10_prices():
 async def background_loop():
     state['symbols'] = get_active_symbols()
     log.info('Loaded %d symbols', len(state['symbols']))
+
+    # ── Load last signal snapshot from DB so HTTP is useful immediately ───────
+    # compute_all_stats takes 60-90s; this pre-seeds state with yesterday's
+    # signals so the dashboard is not blank during the warm-up window.
+    try:
+        from db import cache_get
+        snapshot = cache_get('signals_snapshot')
+        if snapshot and snapshot.get('signals'):
+            state['signals']           = snapshot['signals']
+            state['last_signal_update'] = snapshot.get('last_updated', '')
+            state['status']            = 'cached'
+            log.info('Pre-seeded %d cached signals from DB (last: %s)',
+                     len(state['signals']), state['last_signal_update'])
+    except Exception as e:
+        log.warning('Signal snapshot load error: %s', e)
 
     await compute_all_stats()
     await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
