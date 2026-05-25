@@ -441,3 +441,4 @@ function FearIndexChip({ value }: { value: number }) {
     </span>
   )
 }
+
