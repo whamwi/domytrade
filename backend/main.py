@@ -2640,6 +2640,10 @@ def _fetch_global_markets_sync() -> dict:
     except Exception as e:
         log.warning('global markets fetch error: %s', e)
 
+    if not result['asia'] and not result['fx']:
+        log.warning('global markets returned empty — yfinance may be rate-limited on this host')
+    else:
+        log.info('global markets: %d asia, %d fx', len(result['asia']), len(result['fx']))
     return result
 
 
@@ -2653,8 +2657,12 @@ async def get_global_markets():
         return _GLOBAL_MARKETS_CACHE['data']
 
     data = await asyncio.to_thread(_fetch_global_markets_sync)
-    _GLOBAL_MARKETS_CACHE['data'] = data
-    _GLOBAL_MARKETS_CACHE['ts']   = now
+    # Only cache non-empty results — if yfinance returns nothing (rate-limit / transient
+    # failure) we want to retry on the next request rather than serving stale empty data
+    # for the full 15-minute TTL.
+    if data.get('asia') or data.get('fx'):
+        _GLOBAL_MARKETS_CACHE['data'] = data
+        _GLOBAL_MARKETS_CACHE['ts']   = now
     return data
 
 

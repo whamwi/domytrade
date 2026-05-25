@@ -227,8 +227,14 @@ def get_candles(symbol: str, lookback_days: int, freq_min: int = 30) -> list[dic
         _token_cache['expires_at'] = 0
         resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=30)
     if not resp.ok:
-        import logging; logging.getLogger(__name__).warning(
-            'get_candles(%s) HTTP %s: %s', symbol, resp.status_code, resp.text[:200])
+        import logging; _log = logging.getLogger(__name__)
+        # Schwab returns 400 on US market holidays: it adjusts endDate to the last
+        # trading day, which can fall before our startDate.  Suppress the noise —
+        # returning [] is the correct behaviour (no intraday data on a holiday).
+        if resp.status_code == 400 and 'before startDate' in resp.text:
+            _log.debug('get_candles(%s) skipped — market holiday (endDate < startDate)', symbol)
+        else:
+            _log.warning('get_candles(%s) HTTP %s: %s', symbol, resp.status_code, resp.text[:200])
         return []
     data = resp.json()
     if not data.get('candles'):
