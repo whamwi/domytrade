@@ -417,8 +417,11 @@ export default function DashboardPage() {
         {/* Market bias strip */}
         <MarketBias markets={marketBias} />
 
-        {/* Asian markets + FX risk-on/off strip — shown only when toggled */}
-        {showAsiaFX && <GlobalMarketsStrip />}
+        {/* Asian markets + FX risk-on/off strip — always mounted so data pre-fetches;
+            hidden with CSS so the component keeps its state across toggles */}
+        <div style={{ display: showAsiaFX ? undefined : 'none' }}>
+          <GlobalMarketsStrip />
+        </div>
 
         {/* Industries performance strip (% from RTH open) */}
         <SectorStrip sectors={industries} label="INDUSTRIES" />
