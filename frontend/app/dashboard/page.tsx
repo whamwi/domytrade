@@ -107,7 +107,7 @@ export default function DashboardPage() {
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
 
   const [sideFilter, setSideFilter]   = useState<SideFilter>('all')
-  const [modelFilter, setModelFilter] = useState<ModelFilter>('all')
+  const [modelFilter, setModelFilter] = useState<ModelFilter>('CON')
   const [assetFilter, setAssetFilter] = useState<AssetFilter>('all')
   const [showAsiaFX, setShowAsiaFX]   = useState(false)
 
