@@ -1,6 +1,19 @@
 'use client'
 
+import { useState } from 'react'
 import SwingBar from './SwingBar'
+import { ETF_META } from './etfMeta'
+import ETFPanel, { EtfPanelInfo } from './ETFPanel'
+import FuturesPanel, { FuturesPanelInfo } from './FuturesPanel'
+
+// Futures that get a clickable levels panel
+const FUTURES_PANEL_TICKERS = new Set(['/ES','/NQ','/YM','/RTY','/GC','/CL','/SI','/PL','/NG','/ZB','/ZN','/HG','/RB','/ZC','/ZS','/BTC'])
+
+// Mirrors the set in page.tsx — used to identify sector/ETF tickers
+const SECTOR_TICKERS = new Set([
+  'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE',
+  'SMH','HACK','SKYY','TAN','JETS','OIH','IYT','EEM','SOCL','KCE','XLG','XRT','OEF',
+])
 
 export interface Signal {
   symbol: string
@@ -39,6 +52,7 @@ interface SignalTableProps {
   loading: boolean
   error: string | null
   onRetry: () => void
+  ytdMap?: Record<string, number>
 }
 
 function fmt(price: number): string {
@@ -50,7 +64,7 @@ function fmt(price: number): string {
 
 const COLS = [
   { label: '#',           align: 'left'  },
-  { label: 'SYMBOL',      align: 'left'  },
+  { label: 'SYMBOL',       align: 'left'  },
   { label: 'LAST',        align: 'right' },
   { label: 'CHG',         align: 'right' },
   { label: 'SIDE',        align: 'left'  },
@@ -88,12 +102,115 @@ function Dash() {
   return <span style={{ color: 'var(--text-dim)' }}>—</span>
 }
 
+// ── Futures symbol cell: underline on hover, click opens levels panel ────────
+function FuturesSymbolCell({ symbol, onFuturesClick }: { symbol: string; onFuturesClick: () => void }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <td className="px-3 py-2.5">
+      <span
+        className="font-bold tracking-wider"
+        style={{
+          color:         'var(--text-primary)',
+          fontSize:      '13px',
+          cursor:        'pointer',
+          borderBottom:  hovered ? '1px solid #60a5fa' : '1px solid transparent',
+          paddingBottom: '1px',
+          transition:    'border-color 0.15s',
+        }}
+        onClick={onFuturesClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        {symbol}
+      </span>
+    </td>
+  )
+}
+
+// ── ETF symbol cell: tooltip on hover, click opens detail panel ─────────────
+function ETFSymbolCell({
+  symbol,
+  onEtfClick,
+  ytd,
+}: {
+  symbol: string
+  onEtfClick: () => void
+  ytd?: number
+}) {
+  const [hovered, setHovered] = useState(false)
+  const meta = ETF_META[symbol]
+  const ytdColor = ytd == null ? 'var(--text-dim)' : ytd >= 0 ? '#4ade80' : '#f87171'
+
+  return (
+    <td className="px-3 py-2.5">
+      <div className="relative inline-block">
+        <div className="flex items-baseline gap-1.5">
+          <span
+            className="font-bold tracking-wider"
+            style={{
+              color:          'var(--text-primary)',
+              fontSize:       '13px',
+              cursor:         'pointer',
+              borderBottom:   hovered ? '1px solid var(--accent-blue)' : '1px solid transparent',
+              paddingBottom:  '1px',
+              transition:     'border-color 0.15s',
+            }}
+            onClick={onEtfClick}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+          >
+            {symbol}
+          </span>
+          {ytd != null && (
+            <span
+              className="tabular-nums"
+              style={{ fontSize: '10px', fontWeight: 600, color: ytdColor, lineHeight: 1 }}
+            >
+              {ytd >= 0 ? '+' : ''}{ytd.toFixed(1)}%
+            </span>
+          )}
+        </div>
+
+        {/* Tooltip */}
+        {hovered && meta && (
+          <div
+            style={{
+              position:     'absolute',
+              bottom:       'calc(100% + 6px)',
+              left:         '0',
+              padding:      '6px 10px',
+              borderRadius: '6px',
+              background:   'var(--bg-panel)',
+              border:       '1px solid var(--border)',
+              color:        'var(--text-muted)',
+              fontSize:     '11px',
+              whiteSpace:   'nowrap',
+              pointerEvents:'none',
+              zIndex:       50,
+              boxShadow:    '0 4px 16px rgba(0,0,0,0.4)',
+            }}
+          >
+            {meta.description}
+          </div>
+        )}
+      </div>
+    </td>
+  )
+}
+
+// ── Active signal row ────────────────────────────────────────────────────────
 interface ActiveRowProps {
   sig: Signal
   rank: number
+  onEtfClick:     (info: EtfPanelInfo) => void
+  onFuturesClick: (info: FuturesPanelInfo) => void
+  ytdMap?: Record<string, number>
 }
 
-function ActiveRow({ sig, rank }: ActiveRowProps) {
+function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowProps) {
+  const isSector  = SECTOR_TICKERS.has(sig.symbol)
+  const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
+
   // Use Schwab net_change (matches TOS) — falls back to last-prev_close if unavailable
   const change    = sig.net_change != null ? sig.net_change
                   : sig.prev_close > 0 ? sig.last - sig.prev_close : 0
@@ -115,11 +232,24 @@ function ActiveRow({ sig, rank }: ActiveRowProps) {
       </td>
 
       {/* SYMBOL */}
-      <td className="px-3 py-2.5">
-        <span className="font-bold tracking-wider" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
-          {sig.symbol}
-        </span>
-      </td>
+      {isSector ? (
+        <ETFSymbolCell
+          symbol={sig.symbol}
+          onEtfClick={() => onEtfClick({ symbol: sig.symbol, last: sig.last, change, changePct })}
+          ytd={ytdMap?.[sig.symbol]}
+        />
+      ) : isFutures ? (
+        <FuturesSymbolCell
+          symbol={sig.symbol}
+          onFuturesClick={() => onFuturesClick({ symbol: sig.symbol, last: sig.last, change, changePct })}
+        />
+      ) : (
+        <td className="px-3 py-2.5">
+          <span className="font-bold tracking-wider" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
+            {sig.symbol}
+          </span>
+        </td>
+      )}
 
       {/* LAST */}
       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-primary)', fontSize: '13px', fontWeight: 600 }}>
@@ -215,12 +345,18 @@ function ActiveRow({ sig, rank }: ActiveRowProps) {
   )
 }
 
+// ── Silent (no-signal) row ───────────────────────────────────────────────────
 interface NoSignalRowProps {
   sym: SymbolInfo
   rank: number
+  onEtfClick:     (info: EtfPanelInfo) => void
+  onFuturesClick: (info: FuturesPanelInfo) => void
+  ytdMap?: Record<string, number>
 }
 
-function NoSignalRow({ sym, rank }: NoSignalRowProps) {
+function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, ytdMap }: NoSignalRowProps) {
+  const isSector  = SECTOR_TICKERS.has(sym.ticker)
+  const isFutures = FUTURES_PANEL_TICKERS.has(sym.ticker)
   const last      = sym.last_price ?? null
   // Use Schwab net_change (matches TOS) — falls back to last-prev_close if unavailable
   const change    = sym.net_change != null ? sym.net_change
@@ -232,12 +368,34 @@ function NoSignalRow({ sym, rank }: NoSignalRowProps) {
   return (
     <tr style={{ borderBottom: '1px solid var(--border)', opacity: 0.38 }}>
       <td className="px-3 py-2" style={{ color: 'var(--text-dim)', fontSize: '12px' }}>{rank}</td>
+
       {/* SYMBOL */}
-      <td className="px-3 py-2">
-        <span className="font-bold tracking-wider" style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-          {sym.ticker}
-        </span>
-      </td>
+      {isSector ? (
+        <ETFSymbolCell
+          symbol={sym.ticker}
+          onEtfClick={() =>
+            onEtfClick({
+              symbol:    sym.ticker,
+              last:      last ?? 0,
+              change:    change ?? 0,
+              changePct: changePct ?? 0,
+            })
+          }
+          ytd={ytdMap?.[sym.ticker]}
+        />
+      ) : isFutures ? (
+        <FuturesSymbolCell
+          symbol={sym.ticker}
+          onFuturesClick={() => onFuturesClick({ symbol: sym.ticker, last: last ?? 0, change: change ?? 0, changePct: changePct ?? 0 })}
+        />
+      ) : (
+        <td className="px-3 py-2">
+          <span className="font-bold tracking-wider" style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
+            {sym.ticker}
+          </span>
+        </td>
+      )}
+
       {/* LAST */}
       <td className="px-3 py-2 text-right tabular-nums" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
         {last != null ? last.toFixed(2) : <Dash />}
@@ -261,7 +419,11 @@ function NoSignalRow({ sym, rank }: NoSignalRowProps) {
   )
 }
 
-export default function SignalTable({ signals, allSymbols, loading, error, onRetry }: SignalTableProps) {
+// ── Main export ──────────────────────────────────────────────────────────────
+export default function SignalTable({ signals, allSymbols, loading, error, onRetry, ytdMap }: SignalTableProps) {
+  const [etfPanel,     setEtfPanel]     = useState<EtfPanelInfo | null>(null)
+  const [futuresPanel, setFuturesPanel] = useState<FuturesPanelInfo | null>(null)
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -288,34 +450,86 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
     )
   }
 
-  // Build ordered rows: active signals first (sorted by rank), then silent symbols
+  // Build ordered rows: active signals first (sectors sorted by YTD, non-sectors by swing_pct),
+  // then silent symbols — sectors sorted by YTD% desc, non-sectors after.
+  const sortedSignals = [...signals].sort((a, b) => {
+    const aIsSector = SECTOR_TICKERS.has(a.symbol)
+    const bIsSector = SECTOR_TICKERS.has(b.symbol)
+    // Both sectors → sort by YTD desc (non-sectors keep backend swing_pct order via stable sort)
+    if (aIsSector && bIsSector) {
+      const aYtd = ytdMap?.[a.symbol] ?? -Infinity
+      const bYtd = ytdMap?.[b.symbol] ?? -Infinity
+      return bYtd - aYtd
+    }
+    return 0
+  })
+
   const activeSymbols = new Set(signals.map((s) => s.symbol))
-  const silentSymbols = allSymbols.filter((s) => !activeSymbols.has(s.ticker))
+  const silentSymbols = allSymbols
+    .filter((s) => !activeSymbols.has(s.ticker))
+    .sort((a, b) => {
+      const aIsSector = SECTOR_TICKERS.has(a.ticker)
+      const bIsSector = SECTOR_TICKERS.has(b.ticker)
+      if (aIsSector && bIsSector) {
+        const aYtd = ytdMap?.[a.ticker] ?? -Infinity
+        const bYtd = ytdMap?.[b.ticker] ?? -Infinity
+        return bYtd - aYtd
+      }
+      if (aIsSector) return -1   // sectors before non-sectors
+      if (bIsSector) return 1
+      return 0                   // preserve original order for non-sectors
+    })
 
   let rank = 1
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse">
-        <thead>
-          <HeaderRow />
-        </thead>
-        <tbody>
-          {signals.map((sig) => (
-            <ActiveRow key={`${sig.symbol}-${sig.model}`} sig={sig} rank={rank++} />
-          ))}
-          {silentSymbols.map((sym) => (
-            <NoSignalRow key={sym.ticker} sym={sym} rank={rank++} />
-          ))}
-          {signals.length === 0 && silentSymbols.length === 0 && (
-            <tr>
-              <td colSpan={COLS.length} className="py-16 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
-                No symbols loaded
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+    <>
+      {/* ETF detail panel */}
+      {etfPanel && (
+        <ETFPanel info={etfPanel} onClose={() => setEtfPanel(null)} />
+      )}
+
+      {/* Futures levels panel */}
+      {futuresPanel && (
+        <FuturesPanel info={futuresPanel} onClose={() => setFuturesPanel(null)} />
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse">
+          <thead>
+            <HeaderRow />
+          </thead>
+          <tbody>
+            {sortedSignals.map((sig) => (
+              <ActiveRow
+                key={`${sig.symbol}-${sig.model}`}
+                sig={sig}
+                rank={rank++}
+                onEtfClick={setEtfPanel}
+                onFuturesClick={setFuturesPanel}
+                ytdMap={ytdMap}
+              />
+            ))}
+            {silentSymbols.map((sym) => (
+              <NoSignalRow
+                key={sym.ticker}
+                sym={sym}
+                rank={rank++}
+                onEtfClick={setEtfPanel}
+                onFuturesClick={setFuturesPanel}
+                ytdMap={ytdMap}
+              />
+            ))}
+            {signals.length === 0 && silentSymbols.length === 0 && (
+              <tr>
+                <td colSpan={COLS.length} className="py-16 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                  No symbols loaded
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
   )
 }

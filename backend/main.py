@@ -2,7 +2,7 @@
 domytrade.app — FastAPI backend
 Serves live VBH signals. Persists OHLC history and signals to Supabase.
 """
-import asyncio, logging, time
+import asyncio, logging, os, time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import requests as _req
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -20,7 +20,12 @@ from schwab_client import get_quotes, get_candles, get_daily_candles, get_curren
 from vbh_engine import compute_stats, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
-                upsert_1min, get_1min_today)
+                upsert_1min, get_1min_today, get_1min_range,
+                upsert_ticker_candles, get_ticker_candles, get_etf_holding_tickers,
+                get_last_bar_times, delete_old_ticker_candles,
+                upsert_daily_candles, get_daily_candles_db, get_daily_candles_batch,
+                get_last_daily_bar_dates, delete_old_daily_candles,
+                get_etf_holdings, set_etf_holdings)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -32,20 +37,63 @@ CON_DAYS = 90
 STATS_REFRESH_HOURS = 24
 SIGNAL_REFRESH_SECS = 60
 
-# S&P 500 sector ETFs — ordered by index weight (April 2026)
-SECTORS = [
-    {'symbol': 'XLK',  'name': 'Tech',       'weight': 27.0},
-    {'symbol': 'XLV',  'name': 'Healthcare', 'weight': 14.0},
-    {'symbol': 'XLF',  'name': 'Financials', 'weight': 13.0},
-    {'symbol': 'XLC',  'name': 'Comms',      'weight': 10.8},
-    {'symbol': 'XLY',  'name': 'Cons.Disc',  'weight': 10.6},
-    {'symbol': 'XLI',  'name': 'Industrials','weight':  8.6},
-    {'symbol': 'XLP',  'name': 'Staples',    'weight':  5.9},
-    {'symbol': 'XLE',  'name': 'Energy',     'weight':  3.2},
-    {'symbol': 'XLB',  'name': 'Materials',  'weight':  2.5},
-    {'symbol': 'XLU',  'name': 'Utilities',  'weight':  2.4},
-    {'symbol': 'XLRE', 'name': 'Real Estate','weight':  2.3},
+
+# Sector / industry ETF tickers — used by frontend for "Sectors" filter
+SECTOR_TICKERS = {
+    'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE',
+    'SMH','HACK','SKYY','TAN','JETS','OIH','IYT','EEM','SOCL','KCE','XLG','XRT','OEF',
+}
+
+# Fast lookup set for strip ETFs — used in refresh_signals() for RTH open updates
+STRIP_TICKERS = {'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE'}
+
+# Ordered list for the Industries strip — 11 SPDR sector ETFs only
+STRIP_ETFS = [
+    {'ticker': 'XLK',  'name': 'Tech'},
+    {'ticker': 'XLV',  'name': 'Health'},
+    {'ticker': 'XLF',  'name': 'Fin'},
+    {'ticker': 'XLC',  'name': 'Com'},
+    {'ticker': 'XLY',  'name': 'C/Disc'},
+    {'ticker': 'XLI',  'name': 'Ind'},
+    {'ticker': 'XLP',  'name': 'Stpls'},
+    {'ticker': 'XLE',  'name': 'Energy'},
+    {'ticker': 'XLB',  'name': 'Matls'},
+    {'ticker': 'XLU',  'name': 'Utils'},
+    {'ticker': 'XLRE', 'name': 'R/E'},
 ]
+
+# MAG10 custom composite index — price-weighted basket of mega-cap tech
+# Formula: Σ (price / divisor * weight) — % from RTH open
+MAG10_COMPONENTS = [
+    {'ticker': 'AAPL',  'div': 2.7, 'weight': 0.15},
+    {'ticker': 'AMZN',  'div': 2.5, 'weight': 0.10},
+    {'ticker': 'AVGO',  'div': 4.0, 'weight': 0.06},
+    {'ticker': 'GOOGL', 'div': 3.8, 'weight': 0.16},
+    {'ticker': 'META',  'div': 6.0, 'weight': 0.07},
+    {'ticker': 'MSFT',  'div': 4.0, 'weight': 0.10},
+    {'ticker': 'AMD',   'div': 3.0, 'weight': 0.05},
+    {'ticker': 'NVDA',  'div': 2.0, 'weight': 0.16},
+    {'ticker': 'TSLA',  'div': 3.8, 'weight': 0.08},
+    {'ticker': 'TSM',   'div': 4.0, 'weight': 0.07},
+]
+
+# ── Global markets data (Asian indices + FX risk-on/off) ───────────────────────
+ASIAN_INDICES = [
+    {'symbol': '^N225',     'name': 'Nikkei',    'region': 'JP'},
+    {'symbol': '^HSI',      'name': 'Hang Seng', 'region': 'HK'},
+    {'symbol': '000001.SS', 'name': 'Shanghai',  'region': 'CN'},
+    {'symbol': '^AXJO',     'name': 'ASX 200',   'region': 'AU'},
+]
+
+FX_PAIRS = [
+    {'symbol': 'JPY=X',    'name': 'USD/JPY', 'risk': 'off'},   # safe-haven: up = risk-on
+    {'symbol': 'EURUSD=X', 'name': 'EUR/USD', 'risk': 'on'},
+    {'symbol': 'GBPUSD=X', 'name': 'GBP/USD', 'risk': 'on'},
+]
+
+_GLOBAL_MARKETS_CACHE: dict = {}
+_GLOBAL_MARKETS_TTL = 900   # 15 minutes
+
 
 # ── In-memory cache (rebuilt from DB on startup) ───────────────────────────────
 state = {
@@ -56,8 +104,13 @@ state = {
     'market_bias'      : {},   # {symbol_id: {bias, pts, rth_open, prev_close}}
     'last_price'       : {},   # {symbol_id: float}  — latest price (live quote or prev_close fallback)
     'net_change'       : {},   # {symbol_id: float}  — Schwab net_change (vs CME settlement / prev close)
+    'rth_open'         : {},   # {symbol_id: float}  — today's RTH open from live quote (openPrice)
+    'ib'               : {},   # {symbol_id: {'high': float, 'low': float, 'complete': bool}}
     'volatility'       : {'vix': None},   # $VIX — Fear Index
-    'sectors'          : [],              # [{symbol, name, weight, pct}] — SPDR sector ETFs
+    'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
+    'mag10_open'       : {},   # {ticker: float}  — RTH open prices for MAG10 components
+    'mag10_prev_close' : {},   # {ticker: float}  — last RTH close for MAG10 components
+    'mag10_price'      : {},   # {ticker: float}  — live last prices for MAG10 components
     'signals'          : [],
     'last_stats_update': None,
     'last_signal_update': None,
@@ -153,10 +206,84 @@ def _compute_vwap_poc(bars: list[dict], tick_size: float) -> dict:
     return {'vwap': vwap, 'poc': poc}
 
 
+def _compute_value_area(bars: list[dict], tick: float, pct: float = 0.70) -> dict:
+    """Value Area: price range containing `pct` (default 70%) of session volume.
+    Returns {'poc': float, 'vah': float, 'val': float}.
+    Classic TPO/Market Profile algorithm starting from POC, expanding greedy."""
+    from collections import defaultdict
+    _empty = {'poc': None, 'vah': None, 'val': None}
+    if not bars:
+        return _empty
+    vol_map: dict[float, float] = defaultdict(float)
+    for b in bars:
+        hi, lo, vol = b['high'], b['low'], b.get('volume', 0)
+        if not vol:
+            continue
+        lo_t = round(round(lo / tick) * tick, 6)
+        hi_t = round(round(hi / tick) * tick, 6)
+        n    = max(1, round((hi_t - lo_t) / tick) + 1)
+        vpt  = vol / n
+        p    = lo_t
+        for _ in range(n):
+            vol_map[round(p, 6)] += vpt
+            p = round(p + tick, 6)
+    if not vol_map:
+        return _empty
+    total_vol = sum(vol_map.values())
+    if not total_vol:
+        return _empty
+    target    = total_vol * pct
+    poc       = max(vol_map, key=vol_map.get)
+    prices    = sorted(vol_map.keys())
+    poc_idx   = prices.index(poc)
+    # Expand outward from POC
+    va_set    = {poc}
+    va_vol    = vol_map[poc]
+    lo_idx    = poc_idx
+    hi_idx    = poc_idx
+    while va_vol < target:
+        can_up   = hi_idx + 1 < len(prices)
+        can_down = lo_idx - 1 >= 0
+        if not can_up and not can_down:
+            break
+        up_vol   = vol_map[prices[hi_idx + 1]] if can_up   else -1
+        dn_vol   = vol_map[prices[lo_idx - 1]] if can_down else -1
+        if up_vol >= dn_vol:
+            hi_idx += 1
+            va_set.add(prices[hi_idx])
+            va_vol += up_vol
+        else:
+            lo_idx -= 1
+            va_set.add(prices[lo_idx])
+            va_vol += dn_vol
+    return {
+        'poc': round(poc, 2),
+        'vah': round(max(va_set), 2),
+        'val': round(min(va_set), 2),
+    }
+
+
 # ── EMA helper ────────────────────────────────────────────────────────────────
 
 
 # ── OHLC helpers ──────────────────────────────────────────────────────────────
+
+def _candles_to_ticker_rows(ticker: str, candles: list[dict]) -> list[dict]:
+    """Convert 1-min Schwab candles to ticker_candles_1min rows (no symbol_id FK)."""
+    rows = []
+    for c in candles:
+        dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc)
+        rows.append({
+            'ticker'  : ticker,
+            'bar_time': dt.isoformat(),
+            'open'    : float(c['open']),
+            'high'    : float(c['high']),
+            'low'     : float(c['low']),
+            'close'   : float(c['close']),
+            'volume'  : int(c['volume']) if c['volume'] else 0,
+        })
+    return rows
+
 
 def _candles_to_1min_rows(symbol_id: int, candles: list[dict]) -> list[dict]:
     """Convert 1-min Schwab candles to ohlc_1min rows."""
@@ -298,12 +425,135 @@ async def compute_all_stats():
         except Exception as e:
             log.warning('  %-8s  1min ERROR: %s', tick, e)
 
+    # Backfill 3 days of 1-min bars for all stocks & ETFs → DB
+    log.info('Backfilling 3d 1-min bars for stocks/ETFs…')
+    for sym in symbols:
+        tick = sym['ticker']
+        if tick.startswith('/'):
+            continue   # futures handled above
+        sid = sym['id']
+        api = sym['schwab_symbol']
+        try:
+            bars = await asyncio.to_thread(get_candles, api, 3, 1)
+            rows = _candles_to_1min_rows(sid, bars)
+            if rows:
+                upsert_1min(rows)
+            log.info('  %-8s  1min=%d bars saved', tick, len(rows))
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            log.warning('  %-8s  1min ERROR: %s', tick, e)
+
+    # Backfill 3 days of 1-min bars for all ETF holdings → ticker_candles_1min
+    log.info('Backfilling 3d 1-min bars for ETF holdings…')
+    try:
+        holding_tickers = await asyncio.to_thread(get_etf_holding_tickers)
+        # Also include watchlist stocks/ETFs so /api/candles is consistent
+        watchlist_tickers = [s['schwab_symbol'] for s in symbols if not s['ticker'].startswith('/')]
+        all_tickers = list(set(holding_tickers + watchlist_tickers))
+        log.info('  %d unique holding tickers to backfill', len(all_tickers))
+        sem = asyncio.Semaphore(4)  # 4 concurrent Schwab requests
+
+        async def _backfill_ticker(tkr: str):
+            async with sem:
+                try:
+                    # Normalize BRK/B → BRK%2FB handled by schwab client
+                    bars = await asyncio.to_thread(get_candles, tkr, 3, 1)
+                    rows = _candles_to_ticker_rows(tkr, bars)
+                    if rows:
+                        await asyncio.to_thread(upsert_ticker_candles, rows)
+                    await asyncio.sleep(0.25)
+                except Exception as e:
+                    log.warning('  holdings 1min %s: %s', tkr, e)
+
+        await asyncio.gather(*[_backfill_ticker(t) for t in all_tickers])
+        log.info('  Holdings 1min backfill done.')
+    except Exception as e:
+        log.warning('Holdings 1min backfill error: %s', e)
+
     state['last_stats_update'] = datetime.now(ET).isoformat()
     log.info('Stats ready.')
 
 
+# ── Incremental 1-min candle updater for holdings ─────────────────────────────
+# Rotates through all tickers in batches of 20 per 60s cycle.
+# Full rotation completes every ~10 min. Only runs during RTH + pre-market.
+_candle_batch_idx = 0
+_candle_tickers:  list[str] = []   # populated on first call
+_CANDLE_BATCH_SIZE = 20
+
+async def refresh_holding_candles() -> None:
+    """Incrementally append new 1-min bars for a rotating batch of holding tickers."""
+    global _candle_batch_idx, _candle_tickers
+
+    now_et  = datetime.now(ET)
+    t_min   = now_et.hour * 60 + now_et.minute
+    weekday = now_et.weekday()
+
+    # Only run Mon–Fri between 4:00 AM and 5:00 PM ET (pre-market → 1h after close)
+    if weekday >= 5 or not (4 * 60 <= t_min <= 17 * 60):
+        return
+
+    # Build ticker list on first call or after daily stats refresh
+    if not _candle_tickers:
+        try:
+            holding_tickers  = await asyncio.to_thread(get_etf_holding_tickers)
+            watchlist_stocks = [s['schwab_symbol'] for s in state.get('symbols', [])
+                                if not s['ticker'].startswith('/')]
+            _candle_tickers  = sorted(set(holding_tickers + watchlist_stocks))
+            log.info('Candle updater: %d tickers registered', len(_candle_tickers))
+        except Exception as e:
+            log.warning('Candle updater ticker load failed: %s', e)
+            return
+
+    if not _candle_tickers:
+        return
+
+    # Slice this cycle's batch
+    total   = len(_candle_tickers)
+    start   = _candle_batch_idx % total
+    batch   = (_candle_tickers + _candle_tickers)[start:start + _CANDLE_BATCH_SIZE]
+    _candle_batch_idx = (start + _CANDLE_BATCH_SIZE) % total
+
+    # Get last stored bar per ticker in this batch
+    last_times = await asyncio.to_thread(get_last_bar_times, batch)
+
+    sem = asyncio.Semaphore(5)
+
+    async def update_one(ticker: str) -> int:
+        async with sem:
+            try:
+                raw = await asyncio.to_thread(get_candles, ticker, 1, 1)  # 1 day, 1-min
+                if not raw:
+                    return 0
+                last_stored = last_times.get(ticker)
+                if last_stored:
+                    cutoff_ms = int(datetime.fromisoformat(last_stored).timestamp() * 1000)
+                    raw = [c for c in raw if c['datetime'] > cutoff_ms]
+                rows = _candles_to_ticker_rows(ticker, raw)
+                if rows:
+                    await asyncio.to_thread(upsert_ticker_candles, rows)
+                await asyncio.sleep(0.2)
+                return len(rows)
+            except Exception as e:
+                log.debug('candle update %s: %s', ticker, e)
+                return 0
+
+    counts  = await asyncio.gather(*[update_one(t) for t in batch])
+    new_bars = sum(counts)
+    if new_bars:
+        log.info('Candle update: +%d bars across %d tickers (batch %d/%d)',
+                 new_bars, len(batch), start // _CANDLE_BATCH_SIZE + 1,
+                 -(-total // _CANDLE_BATCH_SIZE))
+
+
 async def refresh_signals():
     symbols = state['symbols']
+
+    # ── RTH check (used to gate openPrice updates for strip ETFs) ───────────
+    _now_et  = datetime.now(ET)
+    _et_min  = _now_et.hour * 60 + _now_et.minute
+    _is_rth  = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
+
     # For futures, use the specific contract month symbol for quotes (e.g. /ESM26)
     # — the continuous symbol (/ES:XCME) may return zero net_change when CME is closed.
     # For equities, use the schwab_symbol as-is.
@@ -334,31 +584,6 @@ async def refresh_signals():
     except Exception as e:
         log.warning('VIX quote error: %s', e)
 
-    # Fetch sector ETF quotes — single batch call
-    try:
-        sector_syms   = [s['symbol'] for s in SECTORS]
-        sector_quotes = await asyncio.to_thread(get_quotes, sector_syms)
-        updated = []
-        for s in SECTORS:
-            q    = sector_quotes.get(s['symbol'], {})
-            last = q.get('last', 0)
-            open_ = q.get('open', 0)
-            if last and open_:
-                pct = round(100 * (last - open_) / open_, 2)
-            else:
-                # Keep previous value if market is closed / data missing
-                prev = next((x for x in state['sectors'] if x['symbol'] == s['symbol']), {})
-                pct  = prev.get('pct', 0.0)
-            updated.append({
-                'symbol': s['symbol'],
-                'name'  : s['name'],
-                'weight': s['weight'],
-                'pct'   : pct,
-            })
-        state['sectors'] = updated
-    except Exception as e:
-        log.warning('Sector quote error: %s', e)
-
     signal_hour = datetime.now(ET).replace(minute=0, second=0, microsecond=0)
     rows = []
 
@@ -378,6 +603,14 @@ async def refresh_signals():
         if display_price:
             state['last_price'][sid] = round(display_price, 4)
 
+        # During RTH, keep rth_open current for strip ETFs from the live quote's openPrice.
+        # Schwab openPrice = official 9:30 ET open once the regular session is underway.
+        # We skip pre-market / after-hours to avoid using a pre-market first-trade as the open.
+        if _is_rth and tick in STRIP_TICKERS:
+            q_open = q.get('open', 0)
+            if q_open:
+                state['rth_open'][sid] = round(q_open, 4)
+
         # Store net_change from Schwab — matches TOS "Change" column.
         # Futures: change vs previous CME settlement. Equities: change vs prev close.
         net_chg_raw = q.get('net_change', 0)
@@ -394,12 +627,9 @@ async def refresh_signals():
             q_last   = last
             # prev_settle is always accurate for futures (official CME settlement)
             prev_settle = round(q_last - net_chg, 2) if net_chg else 0
-            if q_open > 0 and prev_settle > 0:
-                pts = round(q_open - prev_settle, 2)   # open vs prev settlement
-            elif prev_settle > 0:
-                pts = round(net_chg, 2)                 # off-hours: use running change
-            else:
-                pts = 0.0
+            # Always show the LIVE running change (current price vs prev CME settlement).
+            # This matches the TOS "Change" column and stays current throughout the session.
+            pts = round(net_chg, 2) if net_chg else 0.0
             if abs(pts) <= NEUTRAL_BAND:
                 mbias = 'NEUTRAL'
             elif pts > 0:
@@ -419,10 +649,40 @@ async def refresh_signals():
             except Exception:
                 vp = {'vwap': None, 'poc': None}
 
+            # Initial Balance: high/low of first 60 min of RTH (9:30–10:30 ET)
+            try:
+                ib_s = 9 * 60 + 30
+                ib_e = 10 * 60 + 30
+                ib_bars = []
+                for c in fresh:   # fresh = get_session_bars result (already fetched above)
+                    dt_c = datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET)
+                    t_min_c = dt_c.hour * 60 + dt_c.minute
+                    if ib_s <= t_min_c < ib_e:
+                        ib_bars.append(c)
+                now_et_ib = datetime.now(ET)
+                ib_complete = (now_et_ib.weekday() < 5 and
+                               now_et_ib.hour * 60 + now_et_ib.minute >= ib_e)
+                if ib_bars:
+                    state['ib'][sid] = {
+                        'high'    : max(c['high'] for c in ib_bars),
+                        'low'     : min(c['low']  for c in ib_bars),
+                        'complete': ib_complete,
+                    }
+                elif sid not in state['ib']:
+                    state['ib'][sid] = {'high': None, 'low': None, 'complete': False}
+            except Exception:
+                pass
+
+            # Gap = today's first trade vs prior RTH close (4:00 PM daily bar).
+            # Use state['prev_close'] which holds the last completed daily bar close —
+            # the 4:00 PM equity-market reference used for gap-fill analysis.
+            rth_prev_close = state['prev_close'].get(sid)
+            gap = round(q_open - rth_prev_close, 2) if (q_open and rth_prev_close) else None
             state['market_bias'][sid] = {
                 'bias': mbias, 'pts': pts,
                 'rth_open': q_open, 'prev_close': prev_settle,
                 'vwap': vp['vwap'], 'poc': vp['poc'],
+                'gap': gap,
             }
         if not last:
             continue
@@ -478,16 +738,395 @@ async def refresh_signals():
             log.warning('Signal insert error: %s', e)
 
 
+STRIP_REFRESH_SECS    = 3600        # refresh strip RTH opens once per hour
+HOLDINGS_REFRESH_SECS = 86400       # refresh ETF holdings once per day
+
+
+def _parse_holdings_df(df) -> list[dict]:
+    """Extract a clean list of holdings from a yfinance top_holdings DataFrame.
+    Handles NaN, string percentages, and varying column names across yfinance versions."""
+    import math
+    if df is None or (hasattr(df, 'empty') and df.empty):
+        return []
+    holdings = []
+    for i, (symbol, row) in enumerate(df.iterrows()):
+        if i >= 10:
+            break
+
+        # ── Ticker normalisation ──────────────────────────────────────
+        import re as _re
+        ticker_raw = str(symbol).upper()
+        # Yahoo Finance uses BRK-B for class shares; Schwab uses BRK/B
+        ticker_str = _re.sub(r'-([A-Z])$', r'/\1', ticker_raw)
+        # Strip exchange suffixes (.TA, .L, .HK, .TO, .AX, etc.)
+        ticker_str = _re.sub(r'\.[A-Z]{1,4}$', '', ticker_str)
+
+        # ── Company name ─────────────────────────────────────────────
+        name = ''
+        for col in ('holdingName', 'name', 'longName', 'shortName'):
+            raw = row.get(col, '')
+            if raw and str(raw) not in ('nan', 'None', ''):
+                candidate = str(raw).strip()
+                # Skip if yfinance echoed back the ticker symbol as the name
+                if candidate.upper() in (ticker_raw, ticker_str):
+                    continue
+                name = candidate
+                break
+
+        # ── Weight ───────────────────────────────────────────────────
+        weight = 0.0
+        for col in ('holdingPercent', 'percent', 'pct', 'weight'):
+            raw = row.get(col)
+            if raw is None:
+                continue
+            try:
+                # Handle string like "23.40%" or "0.234"
+                if isinstance(raw, str):
+                    raw = raw.strip().rstrip('%')
+                f = float(raw)
+                if math.isnan(f):
+                    continue
+                # Normalize: ≤1.0 means it's a decimal fraction → multiply by 100
+                weight = round(f * 100 if f <= 1.0 else f, 2)
+                break
+            except (ValueError, TypeError):
+                continue
+
+        holdings.append({
+            'rank'  : i + 1,
+            'ticker': str(symbol).upper(),
+            'name'  : name[:40],
+            'weight': weight,
+        })
+    return holdings
+
+
+async def refresh_etf_holdings():
+    """Fetch top-10 holdings for every sector/industry ETF from Yahoo Finance
+    and persist to app_cache.  Fund-data endpoint is separate from real-time
+    quotes so Railway IP rate-limiting is not an issue at daily frequency."""
+    import yfinance as yf
+
+    tickers = list(SECTOR_TICKERS)
+    refreshed = 0
+    log.info('Refreshing ETF holdings for %d tickers…', len(tickers))
+
+    for ticker in tickers:
+        try:
+            def _fetch(t=ticker):
+                return yf.Ticker(t).funds_data.top_holdings
+
+            df       = await asyncio.to_thread(_fetch)
+            holdings = _parse_holdings_df(df)
+
+            if holdings:
+                set_etf_holdings(ticker, holdings)
+                refreshed += 1
+                log.info('  %-6s  %d holdings cached (top weight=%.2f%%)',
+                         ticker, len(holdings), holdings[0]['weight'] if holdings else 0)
+            else:
+                log.warning('  %-6s  holdings empty / unavailable', ticker)
+        except Exception as e:
+            log.warning('  %-6s  holdings ERROR: %s', ticker, e)
+
+        await asyncio.sleep(1.5)   # gentle on Yahoo Finance
+
+    log.info('ETF holdings refresh done — %d/%d', refreshed, len(tickers))
+
+
+# ── Daily candle batch loader ──────────────────────────────────────────────────
+
+def _schwab_daily_to_rows(ticker: str, candles: list[dict]) -> list[dict]:
+    """Convert Schwab daily candles to ticker_candles_daily rows."""
+    rows = []
+    for c in candles:
+        dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        rows.append({
+            'ticker'  : ticker,
+            'bar_date': dt.date().isoformat(),
+            'open'    : float(c['open']),
+            'high'    : float(c['high']),
+            'low'     : float(c['low']),
+            'close'   : float(c['close']),
+            'volume'  : int(c.get('volume') or 0),
+        })
+    return rows
+
+
+async def refresh_daily_candles(incremental: bool = False) -> None:
+    """
+    Batch-fetch 90-day daily candles for all ETF holdings + watchlist stocks.
+
+    incremental=False (startup / full refresh):
+      Fetches 90 days for every ticker. ~200 tickers × 10 concurrent = ~30 s.
+
+    incremental=True (4:30 PM ET daily close):
+      Fetches only the last 2 days for each ticker (picks up today's close).
+      Invalidates _fib_cache so next request recomputes from fresh data.
+    """
+    try:
+        holding_tickers  = await asyncio.to_thread(get_etf_holding_tickers)
+        watchlist_stocks = [s['schwab_symbol'] for s in state.get('symbols', [])
+                            if not s['ticker'].startswith('/')]
+        all_tickers = sorted(set(holding_tickers + watchlist_stocks))
+    except Exception as e:
+        log.warning('refresh_daily_candles: ticker load failed: %s', e)
+        return
+
+    days = 2 if incremental else 90
+    label = 'incremental' if incremental else 'full'
+    log.info('Daily candle refresh (%s): %d tickers, %d days…', label, len(all_tickers), days)
+
+    sem = asyncio.Semaphore(10)   # 10 concurrent Schwab requests
+    ok = 0
+
+    async def fetch_one(ticker: str) -> None:
+        nonlocal ok
+        async with sem:
+            try:
+                raw  = await asyncio.to_thread(get_daily_candles, ticker, days)
+                rows = _schwab_daily_to_rows(ticker, raw)
+                if rows:
+                    await asyncio.to_thread(upsert_daily_candles, rows)
+                    ok += 1
+                # Invalidate in-memory Fib cache so next request recomputes
+                if incremental and ticker in _fib_cache:
+                    del _fib_cache[ticker]
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                log.debug('daily candle %s: %s', ticker, e)
+
+    await asyncio.gather(*[fetch_one(t) for t in all_tickers])
+    log.info('Daily candle refresh (%s) done — %d/%d tickers stored', label, ok, len(all_tickers))
+
+    # After full refresh, warm the Fib cache for all tickers from DB
+    if not incremental:
+        await _warm_fib_cache(all_tickers)
+
+
+async def _warm_fib_cache(tickers: list[str]) -> None:
+    """Pre-compute Fib levels using ONE batch DB query — zero per-ticker round-trips."""
+    if not tickers:
+        return
+    log.info('Warming Fib cache for %d tickers (batch query)…', len(tickers))
+    try:
+        all_bars = await asyncio.to_thread(get_daily_candles_batch, tickers, 90)
+    except Exception as e:
+        log.warning('Fib cache warm batch query failed: %s', e)
+        return
+    warmed = 0
+    for ticker, rows in all_bars.items():
+        if not rows:
+            continue
+        try:
+            bars = [{'bar_time': r['bar_date'] + 'T00:00:00+00:00',
+                     'high': float(r['high']), 'low': float(r['low']),
+                     'close': float(r['close']), 'open': float(r['open'])}
+                    for r in rows]
+            sr = _compute_fib_sr(bars)
+            _fib_cache_set(ticker, {
+                'resistance'  : sr['resistance'],
+                'support'     : sr['support'],
+                'candle_price': sr['current_price'],
+                'fib_high'    : sr['fib_high'],
+                'fib_low'     : sr['fib_low'],
+                'direction'   : sr.get('direction', 'unknown'),
+                'bars'        : sr['bars'],
+            })
+            warmed += 1
+        except Exception as e:
+            log.debug('warm fib %s: %s', ticker, e)
+    log.info('Fib cache warmed — %d/%d tickers ready', warmed, len(tickers))
+
+
+async def refresh_strip_opens():
+    """Fetch RTH-only daily candles for the 11 SPDR ETFs and store today's 9:30 open.
+    Uses needExtendedHoursData=false so open = true RTH 9:30 open, matching TOS exactly."""
+    ticker_map = {s['ticker']: s for s in state['symbols']}
+    today_et   = datetime.now(ET).date()
+    refreshed  = 0
+
+    for etf in STRIP_ETFS:
+        tick = etf['ticker']
+        sym  = ticker_map.get(tick)
+        if not sym:
+            continue
+        sid = sym['id']
+        try:
+            candles = await asyncio.to_thread(get_daily_candles, tick, 5)
+            if not candles:
+                continue
+            # Prefer today's candle; fall back to most recent if today's hasn't opened yet
+            chosen = None
+            for c in reversed(candles):
+                dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET).date()
+                if dt == today_et:
+                    chosen = c
+                    break
+            if chosen is None:
+                chosen = candles[-1]   # pre-market: use yesterday's open as placeholder
+            if chosen['open']:
+                state['rth_open'][sid] = round(chosen['open'], 4)
+                refreshed += 1
+        except Exception as e:
+            log.warning('refresh_strip_opens %s: %s', tick, e)
+        await asyncio.sleep(0.3)
+
+    log.info('Strip RTH opens refreshed — %d/%d ETFs', refreshed, len(STRIP_ETFS))
+
+    # Also fetch RTH opens for MAG10 component stocks
+    mag10_refreshed = 0
+    for comp in MAG10_COMPONENTS:
+        tick = comp['ticker']
+        try:
+            candles = await asyncio.to_thread(get_daily_candles, tick, 5)
+            if not candles:
+                continue
+            chosen = None
+            for c in reversed(candles):
+                dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET).date()
+                if dt == today_et:
+                    chosen = c
+                    break
+            if chosen is None:
+                chosen = candles[-1]
+            if chosen['open']:
+                state['mag10_open'][tick] = round(chosen['open'], 4)
+                mag10_refreshed += 1
+            # RTH close: always use the most recent completed session's close
+            # (candles[-1] = last finished RTH day, regardless of today_et match)
+            if candles[-1]['close']:
+                state['mag10_prev_close'][tick] = round(candles[-1]['close'], 4)
+        except Exception as e:
+            log.warning('refresh_strip_opens MAG10/%s: %s', tick, e)
+        await asyncio.sleep(0.3)
+
+    log.info('MAG10 opens refreshed — %d/%d components', mag10_refreshed, len(MAG10_COMPONENTS))
+
+
+async def refresh_ytd():
+    """Compute YTD % (Jan-1 open → current price) for all SECTOR_TICKERS + SPY.
+    Results cached in state['ytd'] and served instantly from /api/sector-ytd."""
+    tickers     = list(SECTOR_TICKERS | {'SPY'})
+    current_year = datetime.now(ET).year
+    log.info('Refreshing YTD for %d tickers…', len(tickers))
+
+    # Live quotes for current prices (one batch call)
+    try:
+        quotes = await asyncio.to_thread(get_quotes, tickers)
+    except Exception as e:
+        log.warning('refresh_ytd quotes error: %s', e)
+        quotes = {}
+
+    refreshed = 0
+    for ticker in tickers:
+        try:
+            candles = await asyncio.to_thread(get_daily_candles, ticker, 366)
+            if not candles:
+                continue
+            year_candles = [
+                c for c in candles
+                if datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc)
+                          .astimezone(ET).year == current_year
+            ]
+            if not year_candles:
+                continue
+            jan_open = year_candles[0]['open']
+            q        = quotes.get(ticker, {})
+            current  = (q.get('last') or 0) or year_candles[-1]['close']
+            if jan_open and current:
+                state['ytd'][ticker] = round((current - jan_open) / jan_open * 100, 2)
+                refreshed += 1
+        except Exception as e:
+            log.warning('YTD %s: %s', ticker, e)
+        await asyncio.sleep(0.3)   # gentle on Schwab
+
+    log.info('YTD refresh done — %d/%d tickers', refreshed, len(tickers))
+
+
+async def refresh_mag10_prices():
+    """Fetch live Schwab quotes for all MAG10 component stocks (most are not in symbols table).
+    Stores last price in state['mag10_price'] — called every 60 s alongside refresh_signals."""
+    tickers = [c['ticker'] for c in MAG10_COMPONENTS]
+    try:
+        quotes = await asyncio.to_thread(get_quotes, tickers)
+        for t, q in quotes.items():
+            if q.get('last'):
+                state['mag10_price'][t] = float(q['last'])
+        log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_price']), len(tickers))
+    except Exception as e:
+        log.warning('refresh_mag10_prices: %s', e)
+
+
 async def background_loop():
     state['symbols'] = get_active_symbols()
     log.info('Loaded %d symbols', len(state['symbols']))
 
     await compute_all_stats()
+    await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
+    await refresh_mag10_prices()  # prime MAG10 live prices before first request
     await refresh_signals()
+
+    # Kick off background tasks that don't block startup
+    asyncio.create_task(refresh_etf_holdings())
+    asyncio.create_task(refresh_ytd())
+    asyncio.create_task(refresh_daily_candles(incremental=False))  # full 90-day batch
+
+    last_strip_refresh    = time.time()
+    last_holdings_refresh = time.time()
+    last_ytd_refresh      = time.time()
+    last_candle_purge     = time.time()
+    last_daily_refresh    = time.time()
+    last_daily_close_run  = ''   # 'YYYY-MM-DD' of last 4:30 PM run
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)
         await refresh_signals()
+        await refresh_mag10_prices()
+
+        # Incremental 1-min candle update — runs every 60s during RTH
+        asyncio.create_task(refresh_holding_candles())
+
+        # Refresh strip RTH opens once per hour
+        if time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
+            await refresh_strip_opens()
+            last_strip_refresh = time.time()
+
+        # Refresh ETF holdings once per day
+        if time.time() - last_holdings_refresh >= HOLDINGS_REFRESH_SECS:
+            asyncio.create_task(refresh_etf_holdings())
+            _candle_tickers.clear()   # force ticker list reload after holdings refresh
+            last_holdings_refresh = time.time()
+
+        # Refresh YTD once per day
+        if time.time() - last_ytd_refresh >= HOLDINGS_REFRESH_SECS:
+            asyncio.create_task(refresh_ytd())
+            last_ytd_refresh = time.time()
+
+        # Purge 1-min candles older than 4 days once per day
+        if time.time() - last_candle_purge >= HOLDINGS_REFRESH_SECS:
+            try:
+                deleted = await asyncio.to_thread(delete_old_ticker_candles, 4)
+                if deleted:
+                    log.info('Purged %d old 1-min candle rows', deleted)
+            except Exception as e:
+                log.warning('Candle purge error: %s', e)
+            last_candle_purge = time.time()
+
+        # Daily candle refresh schedule:
+        #   4:30 PM ET — incremental (today's close just printed)
+        #   2:00 AM ET — full 90-day re-sync (catches any gaps, nightly housekeeping)
+        _now_et  = datetime.now(ET)
+        _today   = _now_et.date().isoformat()
+        _et_hhmm = _now_et.hour * 60 + _now_et.minute
+
+        if _et_hhmm == 16 * 60 + 30 and last_daily_close_run != _today:
+            asyncio.create_task(refresh_daily_candles(incremental=True))
+            last_daily_close_run = _today
+
+        if time.time() - last_daily_refresh >= 86400:   # full re-sync once per day
+            asyncio.create_task(refresh_daily_candles(incremental=False))
+            last_daily_refresh = time.time()
 
         if state['last_stats_update']:
             age_h = (datetime.now(ET) - datetime.fromisoformat(
@@ -566,6 +1205,7 @@ def get_market_bias():
             'prev_close': bias['prev_close'],
             'vwap'      : bias.get('vwap'),
             'poc'       : bias.get('poc'),
+            'gap'       : bias.get('gap'),
         })
     # Fixed display order
     order = ['/ES', '/NQ', '/YM', '/RTY']
@@ -573,8 +1213,457 @@ def get_market_bias():
     return {
         'markets'   : result,
         'volatility': state['volatility'],
-        'sectors'   : state['sectors'],
     }
+
+
+@app.get('/api/industries')
+def get_industries():
+    """% change from RTH open for the 11 SPDR sector ETFs — powers the Industries strip.
+    rth_open comes from get_daily_candles(needExtendedHoursData=false) → true 9:30 ET open,
+    matching TOS exactly. Refreshed hourly by refresh_strip_opens().
+
+    current price source:
+      - During RTH (9:30–16:00 ET weekdays): live last_price from Schwab quote
+      - Outside RTH: prev_close = last RTH bar close (frozen at 4:00 PM close, ignores AH)
+    This ensures the strip always reflects the true RTH session move."""
+    _now_et = datetime.now(ET)
+    _et_min = _now_et.hour * 60 + _now_et.minute
+    _is_rth = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
+
+    ticker_map = {s['ticker']: s for s in state['symbols']}
+    result = []
+    for etf in STRIP_ETFS:
+        tick = etf['ticker']
+        sym  = ticker_map.get(tick)
+        if not sym:
+            continue
+        sid      = sym['id']
+        rth_open = state['rth_open'].get(sid, 0)
+        # Live price during RTH; RTH close (ignoring extended hours) outside RTH
+        current  = state['last_price'].get(sid, 0) if _is_rth else state['prev_close'].get(sid, 0)
+        pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
+        result.append({'symbol': tick, 'name': etf['name'], 'pct': pct})
+
+    # MAG10 composite index — weighted sum of mega-cap tech, % from its RTH open value
+    mag10_now  = 0.0
+    mag10_open = 0.0
+    mag10_ok   = True
+    for comp in MAG10_COMPONENTS:
+        t          = comp['ticker']
+        open_price = state['mag10_open'].get(t, 0)
+        if _is_rth:
+            # During RTH: live quote price
+            current_price = state['mag10_price'].get(t, 0)
+            if not current_price:
+                sym = ticker_map.get(t)
+                if sym:
+                    current_price = state['last_price'].get(sym['id'], 0)
+        else:
+            # Outside RTH: use cached RTH close (mirrors how strip ETFs use prev_close)
+            current_price = state['mag10_prev_close'].get(t, 0)
+            if not current_price:
+                # Fallback: live quote (AH price) if RTH close not yet cached
+                current_price = state['mag10_price'].get(t, 0)
+        if not open_price or not current_price:
+            mag10_ok = False
+            break
+        mag10_now  += current_price / comp['div'] * comp['weight']
+        mag10_open += open_price    / comp['div'] * comp['weight']
+
+    mag10_pct = round((mag10_now - mag10_open) / mag10_open * 100, 2) if (mag10_ok and mag10_open) else 0.0
+    result.append({'symbol': 'MAG10', 'name': 'MAG10', 'pct': mag10_pct})
+
+    return {'industries': result}
+
+
+@app.get('/api/sector-ytd')
+def get_sector_ytd():
+    """Return cached YTD % for all SECTOR_TICKERS + SPY. Served instantly from state."""
+    return state['ytd']
+
+
+@app.get('/api/candles')
+async def get_multi_candles(symbols: str = Query(...), days: int = Query(3)):
+    """Return stored 1-min candles from DB for up to 25 tickers.
+    Reads from ticker_candles_1min first, falls back to live Schwab if empty.
+    Returns {ticker: [{t, o, h, l, c, v}, ...]}."""
+    tickers = [t.strip().upper() for t in symbols.split(',') if t.strip()][:25]
+    if not tickers:
+        return {}
+
+    async def fetch_one(ticker: str) -> tuple[str, list]:
+        try:
+            # 1. Try DB first
+            rows = await asyncio.to_thread(get_ticker_candles, ticker, days)
+            if rows:
+                return ticker, [
+                    {'t': int(datetime.fromisoformat(r['bar_time']).timestamp() * 1000),
+                     'o': float(r['open']), 'h': float(r['high']),
+                     'l': float(r['low']),  'c': float(r['close']),
+                     'v': r.get('volume', 0)}
+                    for r in rows
+                ]
+            # 2. Fallback — live Schwab (first run before backfill completes)
+            raw = await asyncio.to_thread(get_candles, ticker, days, 1)
+            if not raw:
+                return ticker, []
+            return ticker, [
+                {'t': c['datetime'], 'o': c['open'], 'h': c['high'],
+                 'l': c['low'],      'c': c['close'], 'v': c.get('volume', 0)}
+                for c in raw
+            ]
+        except Exception as e:
+            log.warning('candles/%s: %s', ticker, e)
+            return ticker, []
+
+    sem     = asyncio.Semaphore(8)
+    async def bounded(t):
+        async with sem:
+            return await fetch_one(t)
+
+    results = await asyncio.gather(*[bounded(t) for t in tickers])
+    return dict(results)
+
+
+# ── Tick sizes for VPOC price-level granularity ───────────────────────────────
+_TICK = {
+    '/ES': 0.25, '/NQ': 0.25, '/YM': 1.0, '/RTY': 0.10,
+    '/CL': 0.01, '/NG': 0.001, '/GC': 0.10, '/SI': 0.005,
+    '/HG': 0.0005, '/ZB': 0.03125, '/ZN': 0.015625,
+    '/ZC': 0.25, '/ZS': 0.25, '/RB': 0.0001, '/PL': 0.10,
+    '/BTC': 5.0,
+}
+
+def _tick_for(symbol: str) -> float:
+    for prefix, tick in _TICK.items():
+        if symbol.startswith(prefix):
+            return tick
+    return 0.01   # equities default
+
+
+def _compute_vwap(bars: list[dict]) -> float | None:
+    """VWAP = Σ(typical_price × volume) / Σ(volume).  Typical price = (H+L+C)/3."""
+    total_vol    = sum(b.get('volume', 0) for b in bars)
+    if not total_vol:
+        return None
+    total_tp_vol = sum(((b['high'] + b['low'] + b['close']) / 3) * b.get('volume', 0) for b in bars)
+    return round(total_tp_vol / total_vol, 2)
+
+
+def _compute_vpoc(bars: list[dict], tick: float) -> float | None:
+    """Uniform volume distribution across each bar's H-L range → price with max volume."""
+    from collections import defaultdict
+    vol_map: dict[float, float] = defaultdict(float)
+    for b in bars:
+        hi, lo, vol = b['high'], b['low'], b.get('volume', 0)
+        if not vol:
+            continue
+        if hi == lo:
+            vol_map[round(round(lo / tick) * tick, 6)] += vol
+            continue
+        n = max(1, round((hi - lo) / tick) + 1)
+        vol_each = vol / n
+        p = lo
+        for _ in range(n):
+            vol_map[round(round(p / tick) * tick, 6)] += vol_each
+            p += tick
+    return max(vol_map, key=vol_map.get) if vol_map else None
+
+
+@app.get('/api/levels/{symbol:path}')
+async def get_levels(symbol: str):
+    """Key price levels for a futures (or equity) symbol.
+
+    Computed automatically:
+      session_vpoc    — prior RTH session VPOC
+      overnight_vpoc  — overnight session VPOC (pre-9:30 ET)
+      mcvpoc_3day     — 3-session composite VPOC
+      daily_pivot     — (prev H+L+C)/3
+      weekly_pivot    — (prev-week H+L+C)/3
+      weekly_open     — first bar of current week
+      ath_intraday    — rolling 30-day intraday high
+      swing_high      — 10-day fractal high
+      swing_low       — 10-day fractal low
+      prev_high/low/close — prior session OHLC reference
+    """
+    symbol = symbol.upper()
+    tick   = _tick_for(symbol)
+    now_et = datetime.now(ET)
+    today  = now_et.date()
+
+    # Fetch 5 days of 1-min bars (extended hours) + 30 daily bars concurrently
+    raw_1min, daily = await asyncio.gather(
+        asyncio.to_thread(get_candles, symbol, 5, 1),
+        asyncio.to_thread(get_daily_candles, symbol, 30),
+    )
+
+    # ── Classify 1-min bars by session ─────────────────────────────────────
+    # rth_sessions:  {date: [bars]}  — 09:30–16:00 ET
+    # on_sessions:   {date: [bars]}  — midnight→9:29 ET + Sunday evening (CME overnight)
+    rth_by_date: dict = {}
+    on_by_date:  dict = {}
+
+    for c in raw_1min:
+        dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        d     = dt.date()
+        t_min = dt.hour * 60 + dt.minute
+        wday  = dt.weekday()   # 0=Mon … 6=Sun
+
+        is_rth      = wday < 5 and (9 * 60 + 30) <= t_min < 16 * 60
+        is_on_wkday = wday < 5 and t_min < (9 * 60 + 30)
+        is_sunday   = wday == 6   # CME reopens Sun 6 PM ET → belongs to Monday overnight
+
+        if is_rth:
+            rth_by_date.setdefault(d, []).append(c)
+        elif is_on_wkday:
+            on_by_date.setdefault(d, []).append(c)
+        elif is_sunday:
+            on_by_date.setdefault(d + timedelta(days=1), []).append(c)
+
+    sorted_rth_dates = sorted(rth_by_date.keys(), reverse=True)
+
+    # Session VPOC / VAH / VAL — most recent completed RTH session
+    session_vpoc = None
+    session_vah  = None
+    session_val  = None
+    prior_rth_dates_asc = [d for d in sorted_rth_dates if d < today]
+    if prior_rth_dates_asc:
+        prior_rth_bars = rth_by_date.get(prior_rth_dates_asc[0], [])
+        session_va   = _compute_value_area(prior_rth_bars, tick)
+        session_vpoc = session_va['poc']
+        session_vah  = session_va['vah']
+        session_val  = session_va['val']
+
+    # Overnight VPOC — today's pre-market session (incl. Sunday night for Monday)
+    overnight_vpoc = _compute_vpoc(on_by_date.get(today, []), tick)
+    if not overnight_vpoc:
+        # Fallback: most recent overnight with data
+        for d in sorted(on_by_date.keys(), reverse=True):
+            v = _compute_vpoc(on_by_date[d], tick)
+            if v:
+                overnight_vpoc = v
+                break
+
+    # MCVPOC 3-day — composite of the 3 most recent completed RTH sessions
+    mc3: list[dict] = []
+    for d in prior_rth_dates_asc[:3]:
+        mc3.extend(rth_by_date[d])
+    mcvpoc_3day = _compute_vpoc(mc3, tick) if mc3 else None
+
+    # ── Daily candle derived levels ─────────────────────────────────────────
+    daily_pivot = weekly_pivot = weekly_open = None
+    ath_intraday = swing_high = swing_low = None
+    prev_high = prev_low = prev_close = None
+
+    def _bar_date(c):
+        return datetime.fromtimestamp(
+            c['datetime'] / 1000, tz=timezone.utc
+        ).astimezone(ET).date()
+
+    if daily:
+        # Previous completed session
+        prior_daily = [c for c in daily if _bar_date(c) < today]
+        if prior_daily:
+            prev        = prior_daily[-1]
+            prev_high   = prev['high']
+            prev_low    = prev['low']
+            prev_close  = prev['close']
+            daily_pivot = round((prev['high'] + prev['low'] + prev['close']) / 3, 4)
+
+        # ATH intraday (rolling 30-day + today's session so far)
+        ath_intraday = max(c['high'] for c in daily)
+        # Today's intraday high may not be in the daily bars yet (holiday / partial day)
+        # — extend with today's 1-min bars so the ATH updates in real time
+        today_bars_all = rth_by_date.get(today, []) + on_by_date.get(today, [])
+        if today_bars_all:
+            today_high   = max(c['high'] for c in today_bars_all)
+            ath_intraday = max(ath_intraday, today_high)
+
+        monday_this = today - timedelta(days=today.weekday())
+        monday_prev = monday_this - timedelta(days=7)
+        friday_prev = monday_prev + timedelta(days=4)
+
+        # Weekly open — first daily bar of current week
+        this_week_daily = [c for c in daily if _bar_date(c) >= monday_this]
+        if this_week_daily:
+            weekly_open = this_week_daily[0]['open']
+
+        # FIX swing high/low: use 1-min RTH session data (not daily candles which include
+        # extended-hours H/L even with needExtendedHoursData=false for futures)
+        sorted_prior_rth = sorted([d for d in rth_by_date if d < today])
+        rth_sess_ohlc = []
+        for sd in sorted_prior_rth:
+            sb = rth_by_date[sd]
+            rth_sess_ohlc.append({
+                'high': max(b['high'] for b in sb),
+                'low' : min(b['low']  for b in sb),
+            })
+        recent_sess = rth_sess_ohlc[-15:] if len(rth_sess_ohlc) >= 3 else rth_sess_ohlc
+        _sh = _sl = None
+        for i in range(len(recent_sess) - 2, 0, -1):
+            if _sh is None and recent_sess[i]['high'] > recent_sess[i-1]['high'] and recent_sess[i]['high'] > recent_sess[i+1]['high']:
+                _sh = recent_sess[i]['high']
+            if _sl is None and recent_sess[i]['low'] < recent_sess[i-1]['low'] and recent_sess[i]['low'] < recent_sess[i+1]['low']:
+                _sl = recent_sess[i]['low']
+            if _sh is not None and _sl is not None:
+                break
+        swing_high = _sh or (max(s['high'] for s in recent_sess) if recent_sess else None)
+        swing_low  = _sl or (min(s['low']  for s in recent_sess) if recent_sess else None)
+
+        # On holidays / overnight sessions the current price may have moved above the
+        # last RTH swing high — update swing_high to today's session high so it stays
+        # relevant as the most recent structure high.
+        today_on_bars = on_by_date.get(today, []) + rth_by_date.get(today, [])
+        if today_on_bars:
+            today_session_high = max(c['high'] for c in today_on_bars)
+            if swing_high is None or today_session_high > swing_high:
+                swing_high = today_session_high
+
+        # Weekly pivot: prefer 1-min extended-hours data for true H/L of prior week
+        # (daily RTH candles miss overnight highs — ~5 pt difference).
+        # Falls back to daily candles when 1-min history doesn't cover the prior week
+        # (e.g. 5-day fetch window on weekends).
+        prev_week_1min = [c for c in raw_1min if monday_prev <= _bar_date(c) <= friday_prev]
+        if prev_week_1min:
+            wh = max(c['high'] for c in prev_week_1min)
+            wl = min(c['low']  for c in prev_week_1min)
+            prev_week_rth_dates = sorted([d for d in rth_by_date if monday_prev <= d <= friday_prev])
+            if prev_week_rth_dates:
+                wc = rth_by_date[prev_week_rth_dates[-1]][-1]['close']
+                weekly_pivot = round((wh + wl + wc) / 3, 4)
+        else:
+            # Fallback: use daily candles (RTH only — slightly less accurate but always available)
+            prev_week_daily = [c for c in daily if monday_prev <= _bar_date(c) < monday_this]
+            if prev_week_daily:
+                wh = max(c['high']  for c in prev_week_daily)
+                wl = min(c['low']   for c in prev_week_daily)
+                wc = prev_week_daily[-1]['close']
+                weekly_pivot = round((wh + wl + wc) / 3, 4)
+
+    # VWAP — current session if live, then overnight/holiday session, then prior RTH
+    today_bars = rth_by_date.get(today, [])
+    if today_bars:
+        vwap = _compute_vwap(today_bars)
+    else:
+        # Holiday / pre-market: compute from overnight session bars (reflects live trading).
+        # Falls back to prior RTH session only when no overnight data exists.
+        overnight_today = on_by_date.get(today, [])
+        if overnight_today:
+            vwap = _compute_vwap(overnight_today)
+        else:
+            prior_vwap = None
+            for d in sorted(rth_by_date.keys(), reverse=True):
+                if d < today:
+                    prior_vwap = _compute_vwap(rth_by_date[d])
+                    if prior_vwap:
+                        break
+            vwap = prior_vwap
+
+    # ── Overnight gap: first bar open today vs prior RTH close (4:00 PM ET) ────
+    # Use the 4:00 PM RTH close as the gap reference for Market Profile analysis.
+    # This is where genuine two-sided value was last established (equity MOC orders,
+    # full institutional participation).  The 5:00 PM CME daily bar close is thin
+    # post-equity tape and produces a misleading (larger) gap number.
+    #
+    # state['prev_close'] is populated from 1-min bar filtering (last bar before
+    # 16:00 ET) — the true RTH close, same source the market bias strip uses.
+    # Fall back to the daily candle prev_close only if state hasn't warmed yet.
+    #
+    # Positive = gap up (opened above prior RTH close), Negative = gap down.
+    gap = None
+    _sym_obj = next((s for s in state['symbols'] if s['ticker'] == symbol), None)
+    _sym_obj_id = _sym_obj['id'] if _sym_obj else None
+    _rth_prev = state['prev_close'].get(_sym_obj_id) if _sym_obj_id else None
+    gap_baseline = _rth_prev if _rth_prev else prev_close
+    if gap_baseline:
+        today_all_sorted = sorted(
+            on_by_date.get(today, []) + rth_by_date.get(today, []),
+            key=lambda c: c['datetime']
+        )
+        if today_all_sorted:
+            gap = round(today_all_sorted[0]['open'] - gap_baseline, 2)
+
+    # Initial Balance from today's raw_1min bars (9:30–10:30 ET)
+    ib_s_levels = 9 * 60 + 30
+    ib_e_levels = 10 * 60 + 30
+    ib_bars_levels = []
+    for c in raw_1min:
+        dt_c   = datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET)
+        t_min_c = dt_c.hour * 60 + dt_c.minute
+        if ib_s_levels <= t_min_c < ib_e_levels:
+            ib_bars_levels.append(c)
+    ib_high = max(c['high'] for c in ib_bars_levels) if ib_bars_levels else None
+    ib_low  = min(c['low']  for c in ib_bars_levels) if ib_bars_levels else None
+    ib_complete = (now_et.weekday() < 5 and now_et.hour * 60 + now_et.minute >= ib_e_levels)
+
+    return {
+        'symbol':      symbol,
+        'tick':        tick,
+        'computed_at': now_et.strftime('%Y-%m-%d %H:%M ET'),
+        'gap':         gap,
+        'ib_high':     ib_high,
+        'ib_low':      ib_low,
+        'ib_complete': ib_complete,
+        'levels': {
+            'session_vpoc':   session_vpoc,
+            'session_vah':    session_vah,
+            'session_val':    session_val,
+            'overnight_vpoc': overnight_vpoc,
+            'mcvpoc_3day':    mcvpoc_3day,
+            'daily_pivot':    daily_pivot,
+            'weekly_pivot':   weekly_pivot,
+            'weekly_open':    weekly_open,
+            'ath_intraday':   ath_intraday,
+            'swing_high':     swing_high,
+            'swing_low':      swing_low,
+            'prev_high':      prev_high,
+            'prev_low':       prev_low,
+            'prev_close':     prev_close,
+            'vwap':           vwap,
+        }
+    }
+
+
+@app.get('/api/ytd')
+async def get_ytd(symbols: str = Query(...)):
+    """Return YTD % change (Jan 1 first-trading-day open → current last price)
+    for a comma-separated list of tickers.  Used by ETF panel for ETF vs SPY comparison."""
+    tickers = [s.strip().upper() for s in symbols.split(',') if s.strip()][:6]
+    if not tickers:
+        return {}
+
+    current_year = datetime.now(ET).year
+
+    # Fetch live quotes for all tickers in one shot
+    try:
+        quotes = await asyncio.to_thread(get_quotes, tickers)
+    except Exception:
+        quotes = {}
+
+    # Fetch daily candles concurrently
+    async def _ytd_for(ticker: str) -> tuple[str, float | None]:
+        try:
+            candles = await asyncio.to_thread(get_daily_candles, ticker, 366)
+            if not candles:
+                return ticker, None
+            year_candles = [
+                c for c in candles
+                if datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc)
+                          .astimezone(ET).year == current_year
+            ]
+            if not year_candles:
+                return ticker, None
+            jan_open = year_candles[0]['open']
+            q        = quotes.get(ticker, {})
+            current  = (q.get('last') or 0) or year_candles[-1]['close']
+            if jan_open and current:
+                return ticker, round((current - jan_open) / jan_open * 100, 2)
+        except Exception as e:
+            log.warning('YTD %s: %s', ticker, e)
+        return ticker, None
+
+    pairs = await asyncio.gather(*[_ytd_for(t) for t in tickers])
+    return {t: pct for t, pct in pairs}
 
 
 @app.get('/api/symbols')
@@ -590,6 +1679,48 @@ def get_symbols_list():
         }
         for s in state['symbols']
     ]}
+
+
+@app.get('/api/quotes')
+async def get_holding_quotes(symbols: str = Query(...)):
+    """Fetch live quotes for a comma-separated list of tickers — used by ETF panel holdings."""
+    tickers = [s.strip().upper() for s in symbols.split(',') if s.strip()][:20]  # cap at 20
+    if not tickers:
+        return {}
+    try:
+        raw = await asyncio.to_thread(get_quotes, tickers)
+    except Exception as e:
+        log.warning('get_holding_quotes error: %s', e)
+        return {}
+    result = {}
+    for ticker, q in raw.items():
+        last       = q.get('last', 0) or 0
+        net_change = q.get('net_change', 0) or 0
+        ref        = last - net_change
+        change_pct = round(net_change / ref * 100, 2) if ref else 0.0
+        # Trim Schwab's verbose descriptions (e.g. "NVIDIA CORPORATION" → "NVIDIA Corp")
+        desc = (q.get('description', '') or '').strip()
+        result[ticker] = {
+            'last'     : round(last, 2)       if last       else None,
+            'change'   : round(net_change, 2) if net_change else None,
+            'changePct': change_pct           if net_change else None,
+            'name'     : desc                 if desc        else None,
+        }
+    return result
+
+
+@app.get('/api/etf-holdings/{ticker}')
+def get_etf_holdings_endpoint(ticker: str):
+    """Return cached top-10 holdings for an ETF (populated by daily Yahoo Finance refresh)."""
+    holdings = get_etf_holdings(ticker.upper())
+    return {'ticker': ticker.upper(), 'holdings': holdings}
+
+
+@app.post('/api/etf-holdings/refresh')
+async def force_refresh_holdings():
+    """Manually trigger a full ETF holdings refresh from Yahoo Finance."""
+    asyncio.create_task(refresh_etf_holdings())
+    return {'message': 'ETF holdings refresh started'}
 
 
 @app.get('/api/instrument-search')
@@ -608,6 +1739,1118 @@ def instrument_search(symbol: str = Query(...), projection: str = Query('symbol-
 async def force_refresh():
     asyncio.create_task(compute_all_stats())
     return {'message': 'Stats recomputation started'}
+
+
+# ── AI Futures Agent ───────────────────────────────────────────────────────────
+
+AGENT_FUTURES = ['/ES', '/NQ', '/YM', '/RTY', '/GC']
+
+# Cache: stores last Claude narrative + timestamp so we only call API every 15 min
+_agent_cache: dict = {'data': None, 'ts': 0.0, 'rules_data': None}
+_AGENT_NARRATIVE_TTL = 900   # 15 minutes between Claude calls (was 5 min — too frequent)
+_AGENT_RULES_TTL     = 60    # rule engine refreshes every 60 s
+
+
+def _agent_bias(price: float, levels: dict) -> dict:
+    """Score directional bias from key level relationships."""
+    score = 0
+    reasons = []
+
+    def _check(val, name):
+        nonlocal score
+        if val is None:
+            return
+        if price > val:
+            score += 1
+            reasons.append(f'above {name} ({val:.2f})')
+        else:
+            score -= 1
+            reasons.append(f'below {name} ({val:.2f})')
+
+    _check(levels.get('weekly_open'),  'Weekly Open')
+    _check(levels.get('daily_pivot'),  'Daily Pivot')
+    _check(levels.get('vwap'),         'VWAP')
+    _check(levels.get('session_vpoc'), 'Session POC')
+
+    direction = 'BULL' if score > 0 else ('BEAR' if score < 0 else 'NEUTRAL')
+    return {'score': score, 'direction': direction, 'reasons': reasons}
+
+
+def _agent_nearest_levels(price: float, levels: dict, naked_vpocs: list) -> dict:
+    """Find 2 nearest levels above and 2 below current price."""
+    label_map = {
+        'session_vpoc'  : 'Session POC',
+        'overnight_vpoc': 'Night POC',
+        'mcvpoc_3day'   : '3-Day MCVPOC',
+        'daily_pivot'   : 'Daily Pivot',
+        'weekly_pivot'  : 'Weekly Pivot',
+        'weekly_open'   : 'Weekly Open',
+        'ath_intraday'  : 'ATH',
+        'swing_high'    : 'Swing High',
+        'swing_low'     : 'Swing Low',
+        'prev_high'     : 'Prior High',
+        'prev_low'      : 'Prior Low',
+        'prev_close'    : 'Prior Close',
+        'vwap'          : 'VWAP',
+    }
+    all_levels = []
+    for key, val in levels.items():
+        if val is None:
+            continue
+        all_levels.append({'name': label_map.get(key, key), 'price': val, 'type': 'key'})
+    for nv in naked_vpocs:
+        date_short = nv['date'][5:]   # MM-DD
+        all_levels.append({'name': f'Naked POC {date_short}', 'price': nv['vpoc'], 'type': 'naked'})
+
+    above = sorted([l for l in all_levels if l['price'] > price], key=lambda x: x['price'])[:2]
+    below = sorted([l for l in all_levels if l['price'] < price], key=lambda x: x['price'], reverse=True)[:2]
+
+    return {'above': above, 'below': below}
+
+
+# Stop buffer per symbol (pts beyond the invalidation level)
+_STOP_BUFFER = {'/ES': 4, '/NQ': 15, '/YM': 40, '/RTY': 2.5, '/GC': 4}
+
+def _agent_entry_stop(symbol: str, price: float, direction: str, nearest: dict) -> dict | None:
+    """Compute entry price and stop loss based on bias and nearest levels.
+
+    BEAR: entry = nearest resistance above (sell the rally), stop = entry + buffer
+    BULL: entry = nearest support below (buy the dip),       stop = entry - buffer
+    NEUTRAL: no trade suggested
+    """
+    if direction == 'NEUTRAL':
+        return None
+
+    buf = _STOP_BUFFER.get(symbol, 5)
+
+    if direction == 'BEAR':
+        resistance = nearest['above'][0] if nearest['above'] else None
+        if resistance:
+            entry = resistance['price']
+            stop  = round(entry + buf, 4)
+            risk  = round(stop - entry, 4)
+        else:
+            # Already below all levels — enter at market
+            entry = price
+            support = nearest['below'][0] if nearest['below'] else None
+            stop  = round((support['price'] + buf) if support else price + buf * 2, 4)
+            risk  = round(abs(stop - entry), 4)
+        return {
+            'side' : 'SHORT',
+            'entry': entry,
+            'stop' : stop,
+            'risk' : risk,
+        }
+
+    else:  # BULL
+        support = nearest['below'][0] if nearest['below'] else None
+        if support:
+            entry = support['price']
+            stop  = round(entry - buf, 4)
+            risk  = round(entry - stop, 4)
+        else:
+            # Already above all levels — enter at market
+            entry = price
+            resistance = nearest['above'][0] if nearest['above'] else None
+            stop  = round((resistance['price'] - buf) if resistance else price - buf * 2, 4)
+            risk  = round(abs(entry - stop), 4)
+        return {
+            'side' : 'LONG',
+            'entry': entry,
+            'stop' : stop,
+            'risk' : risk,
+        }
+
+
+def _agent_targets(price: float, direction: str, nearest: dict, naked_vpocs: list) -> dict:
+    """Assign T1/T2/T3 based on bias direction and nearest levels."""
+    if direction == 'BULL':
+        candidates = nearest['above']
+        nvpoc_candidates = sorted(
+            [n for n in naked_vpocs if n['vpoc'] > price],
+            key=lambda x: x['vpoc']
+        )
+    else:
+        candidates = nearest['below']
+        nvpoc_candidates = sorted(
+            [n for n in naked_vpocs if n['vpoc'] < price],
+            key=lambda x: x['vpoc'], reverse=True
+        )
+
+    t1 = candidates[0] if len(candidates) > 0 else None
+    t2 = candidates[1] if len(candidates) > 1 else None
+
+    # T3 = oldest/furthest naked VPOC
+    t3 = None
+    if nvpoc_candidates:
+        # Prefer the one furthest away (strongest pull)
+        t3_nv = nvpoc_candidates[-1]
+        t3 = {'name': f"Naked POC {t3_nv['date'][5:]}", 'price': t3_nv['vpoc'], 'type': 'naked'}
+
+    return {
+        't1': t1,
+        't2': t2,
+        't3': t3,
+    }
+
+
+async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
+    """Fetch all data needed for one symbol: quote + levels + naked VPOCs.
+    Each Schwab call is wrapped individually so a single failure doesn't lose the whole symbol.
+    """
+    try:
+        contract = front_month_code(symbol)
+
+        async def _safe(coro, default):
+            try:
+                return await coro
+            except Exception as exc:
+                log.warning('_fetch_agent_symbol_data %s sub-call failed: %s', symbol, exc)
+                return default
+
+        raw_1min, daily, quotes_raw, nvpoc_raw = await asyncio.gather(
+            _safe(asyncio.to_thread(get_candles, symbol, 5, 1),  []),
+            _safe(asyncio.to_thread(get_daily_candles, symbol, 30), []),
+            _safe(asyncio.to_thread(get_quotes, [contract]),      {}),
+            _safe(asyncio.to_thread(get_candles, symbol, 30, 1), []),
+        )
+
+        # Fallback to state cache if live quote missing
+        if not quotes_raw or not quotes_raw.get(contract):
+            sym_obj = next((s for s in state['symbols'] if s['schwab_symbol'] == contract), None)
+            sid     = sym_obj['id'] if sym_obj else None
+            if sid and state['last_price'].get(sid):
+                lp = state['last_price'][sid]
+                nc = state['net_change'].get(sid, 0)
+                quotes_raw = {contract: {
+                    'last': lp, 'net_change': nc,
+                    'open': state['rth_open'].get(sid, lp),
+                    'close': state['prev_close'].get(sid, lp),
+                }}
+
+        # ── Build levels (reuse same logic as /api/levels) ─────────────────────
+        tick    = _tick_for(symbol)
+        now_et  = datetime.now(ET)
+        today   = now_et.date()
+
+        rth_by_date: dict = {}
+        on_by_date:  dict = {}
+        for c in raw_1min:
+            dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+            d     = dt.date()
+            t_min = dt.hour * 60 + dt.minute
+            wday  = dt.weekday()
+            is_rth      = wday < 5 and (9*60+30) <= t_min < 16*60
+            is_on_wkday = wday < 5 and t_min < (9*60+30)
+            is_sunday   = wday == 6
+            if is_rth:
+                rth_by_date.setdefault(d, []).append(c)
+            elif is_on_wkday:
+                on_by_date.setdefault(d, []).append(c)
+            elif is_sunday:
+                on_by_date.setdefault(d + timedelta(days=1), []).append(c)
+
+        sorted_rth = sorted(rth_by_date.keys(), reverse=True)
+
+        prior_rth_dates_agent = [d for d in sorted_rth if d < today]
+        if prior_rth_dates_agent:
+            _prior_agent_bars = rth_by_date.get(prior_rth_dates_agent[0], [])
+            _session_va       = _compute_value_area(_prior_agent_bars, tick)
+            session_vpoc      = _session_va['poc']
+            session_vah       = _session_va['vah']
+            session_val       = _session_va['val']
+        else:
+            session_vpoc = session_vah = session_val = None
+        overnight_vpoc = _compute_vpoc(on_by_date.get(today, []), tick) if on_by_date.get(today) else None
+
+        mc3 = []
+        for d in [d for d in sorted_rth if d < today][:3]:
+            mc3.extend(rth_by_date[d])
+        mcvpoc_3day = _compute_vpoc(mc3, tick) if mc3 else None
+
+        def _bd(c):
+            return datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET).date()
+
+        daily_pivot = weekly_pivot = weekly_open = None
+        ath = swing_high = swing_low = prev_high = prev_low = prev_close = None
+
+        prior_daily = [c for c in daily if _bd(c) < today]
+        if prior_daily:
+            prev = prior_daily[-1]
+            prev_high = prev['high']; prev_low = prev['low']; prev_close = prev['close']
+            daily_pivot = round((prev['high'] + prev['low'] + prev['close']) / 3, 4)
+            ath = max(c['high'] for c in daily)
+            # Include today's intraday high (holiday / partial-day sessions miss the daily bar)
+            today_bars_all = rth_by_date.get(today, []) + on_by_date.get(today, [])
+            if today_bars_all:
+                ath = max(ath, max(c['high'] for c in today_bars_all))
+            monday_this = today - timedelta(days=today.weekday())
+            monday_prev = monday_this - timedelta(days=7)
+            this_week = [c for c in daily if _bd(c) >= monday_this]
+            if this_week:
+                weekly_open = this_week[0]['open']
+            prev_week = [c for c in daily if monday_prev <= _bd(c) < monday_this]
+            if prev_week:
+                weekly_pivot = round((max(c['high'] for c in prev_week) + min(c['low'] for c in prev_week) + prev_week[-1]['close']) / 3, 4)
+
+        today_rth = rth_by_date.get(today, [])
+        prior_rth = next((rth_by_date[d] for d in sorted_rth if d < today), [])
+        vwap = _compute_vwap(today_rth) or _compute_vwap(prior_rth)
+
+        # IB from state (populated by refresh_signals loop)
+        sym_obj_agent = next((s for s in state['symbols'] if s['ticker'] == symbol), None)
+        sid_agent     = sym_obj_agent['id'] if sym_obj_agent else None
+        ib_data       = state['ib'].get(sid_agent, {}) if sid_agent else {}
+
+        # Gap from RTH prev close
+        _rth_c_agent   = state['prev_close'].get(sid_agent) if sid_agent else None
+        gap_baseline_agent = _rth_c_agent if _rth_c_agent else prev_close
+        today_all_agent = sorted(
+            on_by_date.get(today, []) + rth_by_date.get(today, []),
+            key=lambda c: c['datetime']
+        )
+        gap_agent = round(today_all_agent[0]['open'] - gap_baseline_agent, 2) if (today_all_agent and gap_baseline_agent) else None
+
+        levels = {
+            'session_vpoc': session_vpoc, 'session_vah': session_vah, 'session_val': session_val,
+            'overnight_vpoc': overnight_vpoc,
+            'mcvpoc_3day': mcvpoc_3day, 'daily_pivot': daily_pivot,
+            'weekly_pivot': weekly_pivot, 'weekly_open': weekly_open,
+            'ath_intraday': ath, 'prev_high': prev_high, 'prev_low': prev_low,
+            'prev_close': prev_close, 'vwap': vwap,
+            'ib_high'    : ib_data.get('high'),
+            'ib_low'     : ib_data.get('low'),
+            'ib_complete': ib_data.get('complete', False),
+            'gap'        : gap_agent,
+        }
+
+        # ── Naked VPOCs ─────────────────────────────────────────────────────────
+        rth_nvpoc: dict = {}
+        for c in nvpoc_raw:
+            dt   = datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET)
+            d    = dt.date(); t_min = dt.hour * 60 + dt.minute; wday = dt.weekday()
+            if wday < 5 and (9*60+30) <= t_min < 16*60:
+                rth_nvpoc.setdefault(d, []).append(c)
+        sorted_nvpoc_dates = sorted(rth_nvpoc.keys())
+        session_vpoc_list = [{'date': d, 'vpoc': _compute_vpoc(rth_nvpoc[d], tick)}
+                             for d in sorted_nvpoc_dates if _compute_vpoc(rth_nvpoc[d], tick)]
+        naked_vpocs = []
+        for i, sv in enumerate(session_vpoc_list):
+            touched = any(
+                b['low'] <= sv['vpoc'] <= b['high']
+                for j in range(i+1, len(session_vpoc_list))
+                for b in rth_nvpoc.get(session_vpoc_list[j]['date'], [])
+            )
+            if not touched:
+                naked_vpocs.append({'date': sv['date'].isoformat(), 'vpoc': sv['vpoc']})
+
+        # ── Live quote ──────────────────────────────────────────────────────────
+        q          = quotes_raw.get(contract, {})
+        price      = q.get('last') or prev_close or 0
+        net_change = q.get('net_change', 0) or 0
+        ref        = price - net_change
+        change_pct = round(net_change / ref * 100, 2) if ref else 0.0
+
+        # ── Rule engine ─────────────────────────────────────────────────────────
+        bias       = _agent_bias(price, levels)
+        nearest    = _agent_nearest_levels(price, levels, naked_vpocs)
+        targets    = _agent_targets(price, bias['direction'], nearest, naked_vpocs)
+        entry_stop = _agent_entry_stop(symbol, price, bias['direction'], nearest)
+
+        return {
+            'symbol'    : symbol,
+            'price'     : price,
+            'change'    : round(net_change, 2),
+            'change_pct': change_pct,
+            'bias'      : bias,
+            'nearest'   : nearest,
+            'targets'   : targets,
+            'entry_stop': entry_stop,
+            'naked_vpocs': naked_vpocs,
+            'levels'    : levels,
+            'tick'      : tick,
+        }
+    except Exception as e:
+        log.warning('_fetch_agent_symbol_data(%s): %s', symbol, e)
+        return None
+
+
+def _build_claude_prompt(symbols_data: list[dict]) -> str:
+    """Format all futures into a structured Market Profile prompt for Claude."""
+    now_et = datetime.now(ET)
+    t_min  = now_et.hour * 60 + now_et.minute
+    wday   = now_et.weekday()
+    if wday < 5 and (9*60+30) <= t_min < 16*60:
+        session_label = 'RTH LIVE'
+    elif wday < 5 and 4*60 <= t_min < 9*60+30:
+        session_label = 'PRE-MARKET'
+    else:
+        session_label = 'OVERNIGHT/AFTER-HOURS'
+
+    ib_complete = wday < 5 and t_min >= 10*60+30   # after 10:30 ET
+
+    lines = [
+        f'Market session: {session_label} — {now_et.strftime("%Y-%m-%d %H:%M ET")}',
+        '',
+        'MARKET PROFILE DATA:',
+    ]
+
+    for d in symbols_data:
+        if not d:
+            continue
+        b   = d['bias']
+        t   = d['targets']
+        nr  = d['nearest']
+        lv  = d.get('levels', {})
+        es  = d.get('entry_stop')
+
+        # Value Area context
+        vah  = lv.get('session_vah')
+        val  = lv.get('session_val')
+        vpoc = lv.get('session_vpoc')
+        price = d['price']
+
+        if vah and val and price:
+            if price > vah:
+                va_pos = f'ABOVE Value Area (VAH {vah}) — market seeking acceptance or will reject back'
+            elif price < val:
+                va_pos = f'BELOW Value Area (VAL {val}) — market seeking acceptance or will reject back up'
+            else:
+                va_pos = f'INSIDE Value Area ({val}–{vah}) — balanced, two-sided trade expected'
+        else:
+            va_pos = 'Value Area: N/A'
+
+        # Gap context
+        gap = lv.get('gap')
+        if gap is not None and abs(gap) >= 0.25:
+            gap_str = f'Gap {"UP" if gap > 0 else "DOWN"} {abs(gap):.2f} pts from prior RTH close'
+            # Gap fill status
+            prev_rth = lv.get('prev_close')
+            if prev_rth:
+                gap_target = prev_rth
+                if gap > 0:
+                    gap_filled = price <= gap_target
+                else:
+                    gap_filled = price >= gap_target
+                gap_str += f' — {"FILLED" if gap_filled else f"unfilled, target {gap_target:.2f}"}'
+        else:
+            gap_str = 'No significant gap'
+
+        # IB context
+        ib_high = lv.get('ib_high')
+        ib_low  = lv.get('ib_low')
+        ib_done = lv.get('ib_complete', False)
+        if ib_high and ib_low:
+            ib_range = round(ib_high - ib_low, 2)
+            ib_status = 'complete' if ib_done else 'developing'
+            ib_str = f'IB ({ib_status}): {ib_low}–{ib_high} range={ib_range} pts'
+            if ib_done and price:
+                if price > ib_high:
+                    ib_str += ' | Price ABOVE IB → extension day likely'
+                elif price < ib_low:
+                    ib_str += ' | Price BELOW IB → extension day likely (downside)'
+                else:
+                    ib_str += ' | Price inside IB → rotational/balanced day'
+        else:
+            ib_str = 'IB: pre-market (RTH not yet open)' if not ib_done else 'IB: N/A'
+
+        # Open type inference (only meaningful during RTH)
+        open_type = ''
+        if session_label == 'RTH LIVE' and vah and val and gap is not None:
+            if abs(gap) >= 2.0:   # meaningful gap
+                if gap > 0 and price > vah:
+                    open_type = 'Open type: Gap-Up above VAH → Open-Drive or Open-Rejection-Reverse'
+                elif gap > 0 and val <= price <= vah:
+                    open_type = 'Open type: Gap-Up into Value Area → likely Open-Auction, gap fill probable'
+                elif gap < 0 and price < val:
+                    open_type = 'Open type: Gap-Down below VAL → Open-Drive or Open-Rejection-Reverse'
+                elif gap < 0 and val <= price <= vah:
+                    open_type = 'Open type: Gap-Down into Value Area → likely Open-Auction, gap fill probable'
+            else:
+                open_type = 'Open type: Inside prior Value Area → Open-Auction, expect rotation'
+
+        above_str = ', '.join(f"{l['name']} {l['price']}" for l in nr['above']) or 'none'
+        below_str = ', '.join(f"{l['name']} {l['price']}" for l in nr['below']) or 'none'
+        t1 = f"{t['t1']['name']} {t['t1']['price']}" if t.get('t1') else '—'
+        t2 = f"{t['t2']['name']} {t['t2']['price']}" if t.get('t2') else '—'
+        t3 = f"{t['t3']['name']} {t['t3']['price']}" if t.get('t3') else '—'
+        nvpoc_str = ', '.join(f"{n['vpoc']} ({n['date'][5:]})" for n in d.get('naked_vpocs', [])[-3:]) or 'none'
+
+        es_str = (f"  Entry: {es['side']} @ {es['entry']}  |  Stop: {es['stop']}  |  Risk: {es['risk']} pts"
+                  if es else "  Entry: No trade — NEUTRAL bias")
+
+        lines += [
+            '',
+            f"{d['symbol']}  |  Price: {price}  Change: {d['change']:+.2f} ({d['change_pct']:+.2f}%)",
+            f"  Bias: {b['direction']} (score {b['score']}/4) — {'; '.join(b['reasons'])}",
+            f"  {gap_str}",
+            f"  Value Area: POC {vpoc}  VAH {vah}  VAL {val}",
+            f"  {va_pos}",
+            f"  {ib_str}",
+        ]
+        if open_type:
+            lines.append(f"  {open_type}")
+        lines += [
+            f"  Levels above: {above_str}",
+            f"  Levels below: {below_str}",
+            f"  Targets → T1: {t1}  |  T2: {t2}  |  T3: {t3}",
+            f"  Naked POCs (unfilled magnets): {nvpoc_str}",
+            es_str,
+        ]
+
+    return '\n'.join(lines)
+
+
+# System prompt — concise. Market Profile knowledge is encoded in _build_claude_prompt data.
+# Prompt caching not used for narrative: calls are 15 min apart, Anthropic cache TTL is 5 min
+# → cache always cold → write fee (125%) on every call with no read savings.
+# Caching will be added to the per-user chat feature where calls cluster within 5 min.
+_MP_SYSTEM_PROMPT = (
+    'You are a concise futures trading assistant with expertise in Market Profile theory. '
+    'Analyze the provided data — Value Area (VAH/VAL/POC), Initial Balance, gap, open type, '
+    'naked POCs — and give brief actionable recommendations. '
+    '2-3 sentences per symbol: open type assessment, key level to watch, one clear action.'
+)
+
+
+# Cache for agent narrative
+_narrative_cache: dict = {'text': None, 'ts': 0.0, 'symbols_hash': ''}
+
+
+@app.get('/api/ai/futures')
+async def ai_futures_brief(bust: str | None = None):
+    """Rule-based analysis + Claude narrative for the 5 tracked futures.
+    Rules engine runs fresh every call. Claude narrative cached for 15 min.
+    Pass ?bust=<anything> to bypass the narrative cache (on-demand refresh).
+    """
+    import os, hashlib
+
+    # Fetch all 5 symbols concurrently
+    results = await asyncio.gather(*[_fetch_agent_symbol_data(s) for s in AGENT_FUTURES])
+    valid   = [r for r in results if r is not None]
+
+    if not valid:
+        log.warning('ai_futures_brief: all symbol fetches failed — returning empty response')
+        return {
+            'generated_at': datetime.now(ET).strftime('%Y-%m-%d %H:%M ET'),
+            'narrative'   : None,
+            'symbols'     : [],
+        }
+
+    # Build a hash of current prices to detect significant moves
+    # Hash only bias direction — narrative only needs regeneration when market
+    # structure changes (BULL→BEAR), not on every price tick.
+    # TTL is the primary guard (15 min); bias flip forces an early refresh.
+    bias_hash = hashlib.md5(
+        '|'.join(f"{r['symbol']}:{r['bias']['direction']}" for r in valid).encode()
+    ).hexdigest()[:8]
+
+    now_ts  = datetime.now(ET).timestamp()
+    cache   = _narrative_cache
+    use_cache = (
+        bust is None and           # ?bust param forces a fresh Claude call
+        cache['text'] and
+        (now_ts - cache['ts']) < _AGENT_NARRATIVE_TTL and
+        cache['symbols_hash'] == bias_hash
+    )
+
+    narrative = cache['text'] if use_cache else None
+
+    if not use_cache:
+        try:
+            import anthropic
+            api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+            if api_key:
+                client = anthropic.Anthropic(api_key=api_key)
+                prompt = _build_claude_prompt(valid)
+                message = client.messages.create(
+                    model='claude-haiku-4-5',
+                    max_tokens=400,
+                    system=_MP_SYSTEM_PROMPT,
+                    messages=[{'role': 'user', 'content': prompt}],
+                )
+                narrative = message.content[0].text
+                _narrative_cache['text']         = narrative
+                _narrative_cache['ts']           = now_ts
+                _narrative_cache['symbols_hash'] = bias_hash
+                log.info(
+                    'Claude narrative — in: %d  out: %d  (next call in ~15 min or on bias flip)',
+                    message.usage.input_tokens,
+                    message.usage.output_tokens,
+                )
+        except Exception as e:
+            log.warning('Claude API error: %s', e)
+            narrative = None
+
+    now_et = datetime.now(ET)
+    return {
+        'generated_at'   : now_et.strftime('%Y-%m-%d %H:%M ET'),
+        'generated_at_ts': int(now_et.timestamp() * 1000),   # UTC ms — timezone-safe for browser
+        'narrative'      : narrative,
+        'symbols'        : valid,
+    }
+
+
+# ── Fibonacci S/R Engine ──────────────────────────────────────────────────────
+
+_FIB_RATIOS = [
+    (0.000, '0%'),
+    (0.236, '23.6%'),
+    (0.382, '38.2%'),
+    (0.500, '50%'),
+    (0.618, '61.8%'),
+    (0.786, '78.6%'),
+    (1.000, '100%'),
+]
+
+def _compute_fib_sr(bars: list[dict], price_key: str = 'bar_time') -> dict:
+    """
+    Fibonacci retracement S/R — 90-day absolute high/low range.
+
+    Uses the full 90-day absolute high and low as the Fib anchor points,
+    matching ThinkorSwim when configured for a 90-day daily chart.
+
+    Direction (matches TOS upward/downward):
+      high occurred last  → downtrend → levels = low  + range × ratio
+      low  occurred last  → uptrend   → levels = high − range × ratio
+    """
+    if len(bars) < 5:
+        return {'resistance': [], 'support': [], 'fib_high': None, 'fib_low': None,
+                'current_price': 0, 'bars': 0}
+
+    def _ts(b):
+        k = b.get('bar_time') or b.get('date') or ''
+        try:
+            return datetime.fromisoformat(str(k)).timestamp()
+        except Exception:
+            return float(b.get('t', 0))
+
+    sorted_bars   = sorted(bars, key=_ts)
+    current_price = float(sorted_bars[-1]['close'])
+
+    # 90-day absolute extremes — no fractal filtering
+    swing_high = max(float(b['high']) for b in sorted_bars)
+    swing_low  = min(float(b['low'])  for b in sorted_bars)
+    high_idx   = max(i for i, b in enumerate(sorted_bars) if float(b['high']) == swing_high)
+    low_idx    = max(i for i, b in enumerate(sorted_bars) if float(b['low'])  == swing_low)
+    diff = swing_high - swing_low
+
+    if diff < 0.01:
+        return {'resistance': [], 'support': [], 'fib_high': swing_high, 'fib_low': swing_low,
+                'current_price': current_price, 'bars': len(sorted_bars)}
+
+    # upward  = low came first, high came last → retracement from high down (TOS: lownumberall > highnumberall)
+    # downward = high came first, low came last → bounce from low up
+    upward = low_idx > high_idx
+
+    levels = []
+    for ratio, label in _FIB_RATIOS:
+        if upward:
+            price = round(swing_high - diff * ratio, 4)
+        else:
+            price = round(swing_low  + diff * ratio, 4)
+
+        dist_pct = round((price - current_price) / current_price * 100, 2) if current_price else 0
+        levels.append({
+            'price'    : price,
+            'zone_type': label,
+            'touches'  : 1,
+            'dist_pct' : dist_pct,
+        })
+
+    resistance = sorted([l for l in levels if l['price'] > current_price], key=lambda x: x['price'])
+    support    = sorted([l for l in levels if l['price'] < current_price], key=lambda x: x['price'], reverse=True)
+
+    return {
+        'resistance'   : resistance,
+        'support'      : support,
+        'current_price': current_price,
+        'fib_high'     : round(swing_high, 4),
+        'fib_low'      : round(swing_low,  4),
+        'direction'    : 'upward' if upward else 'downward',
+        'bars'         : len(sorted_bars),
+    }
+
+
+# ── Swing High/Low S/R Engine (kept for chat context) ─────────────────────────
+
+def _compute_sr_levels(bars: list[dict], n: int = 5, cluster_pct: float = 0.004) -> dict:
+    """
+    Detect intraday support & resistance from 1-min bars.
+
+    Steps:
+    1. Find swing highs (resistance pivots) and swing lows (support pivots)
+       using n-bar lookback/lookahead.
+    2. Cluster nearby pivots within cluster_pct of each other.
+    3. Score by touch count and volume.
+    4. Return top levels sorted by strength.
+    """
+    if len(bars) < n * 2 + 1:
+        return {'resistance': [], 'support': []}
+
+    # Convert bar_time strings to epoch ms for ordering
+    def _bar_ms(b):
+        try:
+            return int(datetime.fromisoformat(b['bar_time']).timestamp() * 1000)
+        except Exception:
+            return b.get('t', 0)
+
+    sorted_bars = sorted(bars, key=_bar_ms)
+    nb = len(sorted_bars)
+
+    raw_res: list[dict] = []   # swing highs → resistance
+    raw_sup: list[dict] = []   # swing lows  → support
+
+    for i in range(n, nb - n):
+        h = sorted_bars[i]['high']
+        l = sorted_bars[i]['low']
+        vol = sorted_bars[i].get('volume', 0) or 0
+        bt  = sorted_bars[i].get('bar_time', '')
+
+        # Swing high: highest of the window
+        if all(h >= sorted_bars[i - j]['high'] for j in range(1, n + 1)) and \
+           all(h >= sorted_bars[i + j]['high'] for j in range(1, n + 1)):
+            raw_res.append({'price': h, 'time': bt, 'volume': vol})
+
+        # Swing low: lowest of the window
+        if all(l <= sorted_bars[i - j]['low'] for j in range(1, n + 1)) and \
+           all(l <= sorted_bars[i + j]['low'] for j in range(1, n + 1)):
+            raw_sup.append({'price': l, 'time': bt, 'volume': vol})
+
+    def _cluster(points):
+        if not points:
+            return []
+        pts = sorted(points, key=lambda x: x['price'])
+        clusters: list[list] = [[pts[0]]]
+        for p in pts[1:]:
+            base = clusters[-1][0]['price']
+            if base > 0 and (p['price'] - base) / base <= cluster_pct:
+                clusters[-1].append(p)
+            else:
+                clusters.append([p])
+
+        result = []
+        for cl in clusters:
+            avg_price  = round(sum(x['price']  for x in cl) / len(cl), 4)
+            total_vol  = sum(x['volume'] for x in cl)
+            touches    = len(cl)
+            last_touch = max(x['time'] for x in cl)
+            result.append({
+                'price'     : avg_price,
+                'touches'   : touches,
+                'volume'    : total_vol,
+                'last_touch': last_touch,
+                'strength'  : round(touches + min(total_vol / 100_000, 5), 2),
+            })
+        return sorted(result, key=lambda x: x['strength'], reverse=True)
+
+    resistance = _cluster(raw_res)[:8]
+    support    = _cluster(raw_sup)[:8]
+
+    # Mark strong zones (3+ touches or high volume)
+    current_price = sorted_bars[-1]['close'] if sorted_bars else 0
+    for r in resistance:
+        r['zone_type'] = 'supply'   if r['touches'] >= 3 else 'resistance'
+        r['dist_pct']  = round((r['price'] - current_price) / current_price * 100, 2) if current_price else 0
+    for s in support:
+        s['zone_type'] = 'demand'   if s['touches'] >= 3 else 'support'
+        s['dist_pct']  = round((s['price'] - current_price) / current_price * 100, 2) if current_price else 0
+
+    return {
+        'resistance'   : resistance,
+        'support'      : support,
+        'current_price': round(current_price, 4),
+        'bars_analyzed': nb,
+    }
+
+
+@app.get('/api/sr/{ticker}')
+async def get_sr_levels(ticker: str, days: int = Query(3)):
+    """Return intraday support & resistance zones for a stock from stored 1-min data."""
+    ticker = ticker.upper()
+    rows   = await asyncio.to_thread(get_ticker_candles, ticker, days)
+    if not rows:
+        # Fallback to live Schwab
+        try:
+            raw  = await asyncio.to_thread(get_candles, ticker, days, 1)
+            rows = [{'bar_time': datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).isoformat(),
+                     'high': c['high'], 'low': c['low'], 'close': c['close'],
+                     'volume': c.get('volume', 0)} for c in raw]
+        except Exception:
+            return {'ticker': ticker, 'error': 'No data available'}
+
+    result = _compute_sr_levels(rows)
+    result['ticker'] = ticker
+    result['days']   = days
+    return result
+
+
+# ── Fib level cache — daily candles don't change intraday ─────────────────────
+# {ticker: {'data': {...}, 'ts': float}}  TTL = 1 hour
+_fib_cache: dict[str, dict] = {}
+_FIB_CACHE_TTL = 3600   # 1 hour
+
+def _fib_cache_get(ticker: str) -> dict | None:
+    entry = _fib_cache.get(ticker)
+    if entry and (time.time() - entry['ts']) < _FIB_CACHE_TTL:
+        return entry['data']
+    return None
+
+def _fib_cache_set(ticker: str, data: dict) -> None:
+    _fib_cache[ticker] = {'data': data, 'ts': time.time()}
+
+
+@app.get('/api/sr')
+async def get_sr_batch(tickers: str = Query(...)):
+    """Batch Fib S/R. ONE DB query for all tickers, then Schwab only for gaps."""
+    ticker_list = [t.strip().upper() for t in tickers.split(',') if t.strip()][:30]
+    if not ticker_list:
+        return {}
+
+    result: dict[str, dict] = {}
+
+    # 1. In-memory cache — check all tickers first
+    missing = []
+    for t in ticker_list:
+        cached = _fib_cache_get(t)
+        if cached:
+            result[t] = cached
+        else:
+            missing.append(t)
+
+    if not missing:
+        return result   # all cached — instant response
+
+    # 2. ONE batch DB query for all missing tickers
+    db_batch = await asyncio.to_thread(get_daily_candles_batch, missing, 90)
+
+    still_missing = []
+    for ticker, db_rows in db_batch.items():
+        if db_rows:
+            bars = [{'bar_time': r['bar_date'] + 'T00:00:00+00:00',
+                     'high': float(r['high']), 'low': float(r['low']),
+                     'close': float(r['close']), 'open': float(r['open'])}
+                    for r in db_rows]
+            sr = _compute_fib_sr(bars)
+            entry = {
+                'resistance'  : sr['resistance'],
+                'support'     : sr['support'],
+                'candle_price': sr['current_price'],
+                'fib_high'    : sr['fib_high'],
+                'fib_low'     : sr['fib_low'],
+                'direction'   : sr.get('direction', 'unknown'),
+                'bars'        : sr['bars'],
+            }
+            _fib_cache_set(ticker, entry)
+            result[ticker] = entry
+        else:
+            still_missing.append(ticker)
+
+    # 3. Schwab fallback only for tickers not yet in DB (first time ever)
+    if still_missing:
+        sem = asyncio.Semaphore(8)
+
+        async def fetch_from_schwab(ticker: str) -> tuple[str, dict]:
+            async with sem:
+                try:
+                    raw  = await asyncio.to_thread(get_daily_candles, ticker, 90)
+                    rows = _schwab_daily_to_rows(ticker, raw)
+                    if rows:
+                        await asyncio.to_thread(upsert_daily_candles, rows)
+                    bars = [{'bar_time': r['bar_date'] + 'T00:00:00+00:00',
+                             'high': r['high'], 'low': r['low'],
+                             'close': r['close'], 'open': r['open']}
+                            for r in rows]
+                    if not bars:
+                        return ticker, {}
+                    sr    = _compute_fib_sr(bars)
+                    entry = {
+                        'resistance'  : sr['resistance'],
+                        'support'     : sr['support'],
+                        'candle_price': sr['current_price'],
+                        'fib_high'    : sr['fib_high'],
+                        'fib_low'     : sr['fib_low'],
+                        'direction'   : sr.get('direction', 'unknown'),
+                        'bars'        : sr['bars'],
+                    }
+                    _fib_cache_set(ticker, entry)
+                    return ticker, entry
+                except Exception as e:
+                    log.debug('SR schwab fallback %s: %s', ticker, e)
+                    return ticker, {}
+
+        schwab_results = await asyncio.gather(*[fetch_from_schwab(t) for t in still_missing])
+        for ticker, entry in schwab_results:
+            if entry:
+                result[ticker] = entry
+
+    return result
+
+
+# ── Global Markets (Asian indices + FX risk-on/off) ────────────────────────────
+
+def _fetch_global_markets_sync() -> dict:
+    """Fetch Asian index daily close change and FX rates via yfinance."""
+    import yfinance as yf
+    result: dict = {'asia': [], 'fx': []}
+
+    all_syms = [x['symbol'] for x in ASIAN_INDICES + FX_PAIRS]
+    try:
+        raw = yf.download(
+            all_syms, period='5d', interval='1d',
+            progress=False, auto_adjust=True,
+            group_by='column', threads=True,
+        )
+        # raw['Close'] is a DataFrame with symbol columns when >1 ticker
+        closes = raw['Close'] if 'Close' in raw.columns.get_level_values(0) else raw
+
+        for item in ASIAN_INDICES:
+            sym = item['symbol']
+            try:
+                col = closes[sym].dropna()
+                if len(col) >= 2:
+                    prev = float(col.iloc[-2])
+                    last = float(col.iloc[-1])
+                    chg  = (last - prev) / prev * 100
+                    result['asia'].append({
+                        'name'      : item['name'],
+                        'region'    : item['region'],
+                        'close'     : round(last, 2),
+                        'change_pct': round(chg, 2),
+                    })
+            except Exception:
+                pass
+
+        for item in FX_PAIRS:
+            sym = item['symbol']
+            try:
+                col = closes[sym].dropna()
+                if len(col) >= 2:
+                    prev = float(col.iloc[-2])
+                    last = float(col.iloc[-1])
+                    chg  = (last - prev) / prev * 100
+                    result['fx'].append({
+                        'name'      : item['name'],
+                        'risk'      : item['risk'],
+                        'rate'      : round(last, 4),
+                        'change_pct': round(chg, 4),
+                    })
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning('global markets fetch error: %s', e)
+
+    return result
+
+
+@app.get('/api/global-markets')
+async def get_global_markets():
+    """Asian market daily close change % and FX risk-on/off pairs. Cached 15 min."""
+    now = time.time()
+    if (_GLOBAL_MARKETS_CACHE.get('ts') and
+            now - _GLOBAL_MARKETS_CACHE['ts'] < _GLOBAL_MARKETS_TTL and
+            _GLOBAL_MARKETS_CACHE.get('data')):
+        return _GLOBAL_MARKETS_CACHE['data']
+
+    data = await asyncio.to_thread(_fetch_global_markets_sync)
+    _GLOBAL_MARKETS_CACHE['data'] = data
+    _GLOBAL_MARKETS_CACHE['ts']   = now
+    return data
+
+
+def _sr_summary_for_chat(ticker: str, sr: dict) -> str:
+    """Format Fibonacci S/R as compact context for Claude."""
+    if 'error' in sr:
+        return f'{ticker}: no S/R data'
+    res   = sr.get('resistance', [])[:4]
+    sup   = sr.get('support',    [])[:4]
+    price = sr.get('current_price', 0)
+    fh    = sr.get('fib_high', 0)
+    fl    = sr.get('fib_low',  0)
+    lines = [f'{ticker} Fib S/R (range {fl}–{fh}, price={price}):']
+    if res:
+        lines.append('  Resistance (broken, above): ' + '  |  '.join(
+            f"{r['price']} ({r['zone_type']}, {r['dist_pct']:+.1f}%)" for r in res
+        ))
+    if sup:
+        lines.append('  Support (floor, below): ' + '  |  '.join(
+            f"{s['price']} ({s['zone_type']}, {s['dist_pct']:+.1f}%)" for s in sup
+        ))
+    return '\n'.join(lines)
+
+
+# Known stock tickers (used to detect ticker mentions in chat messages)
+_KNOWN_TICKERS: set[str] = set()
+
+def _load_known_tickers():
+    global _KNOWN_TICKERS
+    try:
+        rows = get_etf_holding_tickers()
+        _KNOWN_TICKERS = set(t.upper() for t in rows)
+    except Exception:
+        pass
+
+# Common English words to exclude from ticker detection
+_STOP_WORDS = {
+    'I', 'A', 'AN', 'THE', 'AND', 'OR', 'BUT', 'FOR', 'NOR', 'SO', 'YET',
+    'AT', 'BY', 'IN', 'OF', 'ON', 'TO', 'UP', 'AS', 'IS', 'IT', 'BE',
+    'DO', 'GO', 'IF', 'MY', 'NO', 'US', 'WE', 'ME', 'HE', 'SHE', 'HIM',
+    'HER', 'HIS', 'ITS', 'OUR', 'YOU', 'ARE', 'WAS', 'HAS', 'HAD', 'DID',
+    'CAN', 'MAY', 'ALL', 'ANY', 'NOW', 'NEW', 'OLD', 'BIG', 'LOW', 'HIGH',
+    'GET', 'SET', 'LET', 'PUT', 'RUN', 'SEE', 'HOW', 'WHY', 'WHAT', 'WHEN',
+    'WHERE', 'WILL', 'WITH', 'FROM', 'INTO', 'THAN', 'THEN', 'THIS', 'THAT',
+    'THEY', 'THEM', 'THEIR', 'THERE', 'BEEN', 'HAVE', 'DOES', 'JUST', 'ALSO',
+    'MOST', 'SOME', 'MANY', 'MORE', 'VERY', 'WELL', 'LOOK', 'LIKE', 'OVER',
+    'LAST', 'NEXT', 'LONG', 'LIVE', 'MAKE', 'GIVE', 'SHOW', 'TELL', 'NEAR',
+    'BEST', 'GOOD', 'STOP', 'SELL', 'BOTH', 'WEEK', 'YEAR', 'TIME', 'BACK',
+    'BULL', 'BEAR', 'OPEN', 'HOLD', 'RISK', 'SIDE', 'PLAN', 'MOVE', 'PULL',
+    'PUSH', 'FIND', 'CALL', 'SAID', 'DATA', 'WANT', 'NEED', 'SAME', 'EACH',
+    'MUCH', 'SUCH', 'ONLY', 'EVEN', 'DOWN', 'AWAY', 'ONCE', 'TOOK', 'KEEP',
+    'CHART', 'LEVEL', 'PRICE', 'TRADE', 'STOCK', 'SETUP', 'BREAK', 'ABOVE',
+    'BELOW', 'ENTRY', 'SHORT', 'FIRST', 'AFTER', 'ABOUT', 'WHICH', 'THESE',
+    'THOSE', 'BEING', 'DOING', 'GOING', 'THINK', 'USING', 'BASED', 'WATCH',
+    'TODAY', 'DAILY', 'INTRA', 'SWING', 'TREND', 'SMART', 'CLEAN', 'QUICK',
+}
+
+def _detect_tickers_in_message(msg: str) -> list[str]:
+    """Extract stock tickers from message.
+    Strategy: known tickers first (from holdings DB), then any 2-5 uppercase letter word
+    that isn't a common English word. Futures symbols handled separately."""
+    import re
+    words   = re.findall(r'\b([A-Z]{2,5})\b', msg.upper())
+    futures = {'/ES', '/NQ', '/YM', '/RTY', '/GC'}
+    # Priority 1: words in known holdings set
+    known = [w for w in words if w in _KNOWN_TICKERS and w not in futures]
+    # Priority 2: unknown words that look like tickers (not stop words, 2-5 chars)
+    unknown = [w for w in words
+               if w not in _KNOWN_TICKERS
+               and w not in futures
+               and w not in _STOP_WORDS
+               and 2 <= len(w) <= 5]
+    # Deduplicate, known first, cap at 5
+    seen: list[str] = []
+    for w in known + unknown:
+        if w not in seen:
+            seen.append(w)
+    return seen[:5]
+
+
+@app.post('/api/ai/chat')
+async def ai_chat(body: dict = Body(...)):
+    """Interactive chat with live futures + on-demand S/R context."""
+    message = body.get('message', '').strip()
+    history = body.get('history', [])
+
+    if not message:
+        return {'reply': ''}
+
+    # Fetch futures snapshot
+    tasks   = [_fetch_agent_symbol_data(sym) for sym in AGENT_FUTURES]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    valid   = [r for r in results if isinstance(r, dict)]
+    futures_ctx = _build_claude_prompt(valid) if valid else 'Futures data unavailable.'
+
+    # Detect stock tickers mentioned in message → fetch S/R for each
+    if not _KNOWN_TICKERS:
+        _load_known_tickers()
+    mentioned = _detect_tickers_in_message(message)
+    sr_ctx = ''
+    sr_parts: list[dict] = []
+
+    async def _fetch_sr_with_fallback(ticker: str) -> dict:
+        """Fetch Fib S/R using daily candles (90d range). Cache shared with /api/sr."""
+        cached = _fib_cache_get(ticker)
+        if cached:
+            cached['days'] = 90
+            return cached
+        daily_bars = []
+        try:
+            raw_daily  = await asyncio.to_thread(get_daily_candles, ticker, 90)
+            daily_bars = [
+                {
+                    'bar_time': datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).isoformat(),
+                    'high'    : float(c['high']),
+                    'low'     : float(c['low']),
+                    'close'   : float(c['close']),
+                    'open'    : float(c['open']),
+                }
+                for c in raw_daily
+            ]
+        except Exception as e:
+            log.debug('Chat SR daily %s: %s', ticker, e)
+
+        if not daily_bars:
+            # Fallback: stored 1-min bars or fresh Schwab fetch
+            daily_bars = await asyncio.to_thread(get_ticker_candles, ticker, 30)
+            if not daily_bars:
+                try:
+                    raw  = await asyncio.to_thread(get_candles, ticker, 3, 1)
+                    daily_bars = _candles_to_ticker_rows(ticker, raw)
+                    if daily_bars:
+                        await asyncio.to_thread(upsert_ticker_candles, daily_bars)
+                except Exception as e:
+                    log.debug('Chat SR fallback %s: %s', ticker, e)
+
+        sr = _compute_fib_sr(daily_bars)
+        sr['days'] = 90
+        if daily_bars:
+            _fib_cache_set(ticker, sr)
+        return sr
+
+    if mentioned:
+        sr_parts = list(await asyncio.gather(*[_fetch_sr_with_fallback(t) for t in mentioned]))
+        sr_lines = []
+        for ticker, sr in zip(mentioned, sr_parts):
+            sr_lines.append(_sr_summary_for_chat(ticker, sr))
+        sr_ctx = '\n\nSTOCK S/R DATA (from intraday 1-min bars, live Schwab):\n' + '\n'.join(sr_lines)
+
+    try:
+        import anthropic
+        api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+        if not api_key:
+            return {'reply': 'ANTHROPIC_API_KEY not configured.'}
+
+        client   = anthropic.Anthropic(api_key=api_key)
+        messages = [{'role': m['role'], 'content': m['content']} for m in history if m.get('role') in ('user', 'assistant')]
+        messages.append({'role': 'user', 'content': message})
+
+        sr_note = (
+            f'{sr_ctx}\n'
+            if sr_ctx else
+            '\n(No stocks mentioned — futures data only. S/R auto-fetches when user mentions a ticker.)\n'
+        )
+        resp = client.messages.create(
+            model      = 'claude-haiku-4-5',
+            max_tokens = 400,
+            system     = (
+                'You are a concise trading assistant with access to live futures and intraday stock S/R data.\n\n'
+                f'LIVE FUTURES DATA:\n{futures_ctx}\n'
+                f'{sr_note}\n'
+                'RESPONSE FORMAT RULES (strictly follow):\n'
+                '- NEVER reproduce tables, bullet lists of levels, or raw price data — the UI already shows that visually\n'
+                '- Write ONLY the trading narrative: what to do, which level matters most, and why\n'
+                '- 2-4 sentences maximum. Be direct. No headers, no markdown tables.\n'
+                '- Reference prices inline naturally: "buy dips to 146.95" not a table row\n'
+                '- For S/R: name the 1-2 most important levels and the trade idea around them\n'
+                '- For futures: state bias + key level to watch + one action'
+            ),
+            messages   = messages,
+        )
+        # Build S/R data payload for frontend display
+        sr_data = {}
+        for ticker, sr in zip(mentioned, sr_parts if mentioned else []):
+            sr['days'] = 3
+            sr_data[ticker] = {
+                'ticker'       : ticker,
+                'current_price': sr.get('current_price', 0),
+                'resistance'   : sr.get('resistance', [])[:5],
+                'support'      : sr.get('support', [])[:5],
+            }
+
+        return {'reply': resp.content[0].text, 'sr_data': sr_data}
+    except Exception as e:
+        log.warning('Claude chat error: %s', e)
+        return {'reply': f'Error: {e}', 'sr_data': {}}
 
 
 # ── Economic Calendar (Briefing) ───────────────────────────────────────────────
@@ -668,3 +2911,332 @@ def get_briefing():
     elif _briefing_cache['data']:  # stale cache beats empty response
         return _briefing_cache['data']
     return result
+
+
+@app.get('/api/levels-on/{symbol:path}')
+async def get_levels_on(symbol: str, date: str = Query(..., description='YYYY-MM-DD')):
+    """Retroactively compute all key levels as of the morning open on a specific date.
+    Uses only 1-min bars available before that date's RTH session.
+    Also returns which prior-session VPOCs were naked as of that morning.
+
+    Fixes vs naive approach:
+    - Sunday evening bars assigned to Monday overnight (CME reopens Sun 6 PM ET)
+    - Weekly pivot uses extended-hours H/L from 1-min data (not RTH-only daily candles)
+    - Weekly open uses target date's own opening bar
+    - Swing high/low uses fractal detection (not simple 10-day min/max)
+    """
+    from datetime import date as date_cls
+    symbol  = symbol.upper()
+    tick    = _tick_for(symbol)
+
+    try:
+        target_date = date_cls.fromisoformat(date)
+    except ValueError:
+        return {'error': f'Invalid date format: {date}. Use YYYY-MM-DD.'}
+
+    # Fetch max history concurrently
+    raw_1min, daily = await asyncio.gather(
+        asyncio.to_thread(get_candles, symbol, 30, 1),
+        asyncio.to_thread(get_daily_candles, symbol, 30),
+    )
+
+    def _bar_date(c):
+        return datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET).date()
+
+    # ── Classify 1-min bars ─────────────────────────────────────────────────────
+    # FIX: Sunday bars (CME overnight) → assigned to Monday's overnight session
+    rth_by_date: dict = {}
+    on_by_date:  dict = {}
+
+    for c in raw_1min:
+        dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        d     = dt.date()
+        t_min = dt.hour * 60 + dt.minute
+        wday  = dt.weekday()   # 0=Mon … 6=Sun
+
+        is_rth       = wday < 5 and (9 * 60 + 30) <= t_min < 16 * 60
+        is_on_wkday  = wday < 5 and t_min < (9 * 60 + 30)
+        is_sunday    = wday == 6   # CME Sunday evening session
+
+        if is_rth:
+            rth_by_date.setdefault(d, []).append(c)
+        elif is_on_wkday:
+            on_by_date.setdefault(d, []).append(c)
+        elif is_sunday:
+            monday = d + timedelta(days=1)
+            on_by_date.setdefault(monday, []).append(c)
+
+    # Sessions strictly before target date
+    prior_rth_dates = sorted([d for d in rth_by_date if d < target_date], reverse=True)
+
+    # ── Session VPOC — most recent completed RTH before target ─────────────────
+    session_vpoc = None
+    for d in prior_rth_dates:
+        v = _compute_vpoc(rth_by_date[d], tick)
+        if v:
+            session_vpoc = v
+            break
+
+    # ── Overnight VPOC — extended bars on target date morning (incl Sunday for Monday) ──
+    overnight_vpoc = _compute_vpoc(on_by_date.get(target_date, []), tick)
+
+    # ── MCVPOC 3-day — composite of 3 prior RTH sessions ──────────────────────
+    mc3: list[dict] = []
+    for d in prior_rth_dates[:3]:
+        mc3.extend(rth_by_date[d])
+    mcvpoc_3day = _compute_vpoc(mc3, tick) if mc3 else None
+
+    # ── Daily candle derived levels ─────────────────────────────────────────────
+    daily_pivot = weekly_pivot = weekly_open = None
+    ath_intraday = swing_high = swing_low = None
+    prev_high = prev_low = prev_close = None
+
+    prior_daily = [c for c in daily if _bar_date(c) < target_date]
+
+    if prior_daily:
+        prev         = prior_daily[-1]
+        prev_high    = prev['high']
+        prev_low     = prev['low']
+        prev_close   = prev['close']
+        daily_pivot  = round((prev['high'] + prev['low'] + prev['close']) / 3, 4)
+        ath_intraday = max(c['high'] for c in prior_daily)
+
+        monday_this = target_date - timedelta(days=target_date.weekday())
+        monday_prev = monday_this - timedelta(days=7)
+        friday_prev = monday_prev + timedelta(days=4)
+
+        # FIX: weekly open — include target date's own daily bar (handles Monday case where
+        # prior_daily has no bars from this week yet but the daily list has target_date)
+        this_week_daily = [c for c in daily if monday_this <= _bar_date(c) <= target_date]
+        if this_week_daily:
+            weekly_open = this_week_daily[0]['open']
+
+        # FIX: swing high/low — compute from 1-min RTH session data, not daily candles.
+        # Daily candles from get_daily_candles include extended-hours H/L even when
+        # needExtendedHoursData=false for futures, which breaks the fractal pattern.
+        sorted_prior_rth = sorted([d for d in rth_by_date if d < target_date])
+        rth_sess_ohlc = []
+        for sd in sorted_prior_rth:
+            sb = rth_by_date[sd]
+            rth_sess_ohlc.append({
+                'high' : max(b['high'] for b in sb),
+                'low'  : min(b['low']  for b in sb),
+            })
+        recent_sess = rth_sess_ohlc[-15:] if len(rth_sess_ohlc) >= 3 else rth_sess_ohlc
+        _sh = _sl = None
+        for i in range(len(recent_sess) - 2, 0, -1):
+            if _sh is None and recent_sess[i]['high'] > recent_sess[i-1]['high'] and recent_sess[i]['high'] > recent_sess[i+1]['high']:
+                _sh = recent_sess[i]['high']
+            if _sl is None and recent_sess[i]['low'] < recent_sess[i-1]['low'] and recent_sess[i]['low'] < recent_sess[i+1]['low']:
+                _sl = recent_sess[i]['low']
+            if _sh is not None and _sl is not None:
+                break
+        swing_high = _sh or (max(s['high'] for s in recent_sess) if recent_sess else None)
+        swing_low  = _sl or (min(s['low']  for s in recent_sess) if recent_sess else None)
+
+        # FIX: weekly pivot — use 1-min extended-hours data for true H/L of prior week
+        # RTH-only daily candles miss overnight highs (e.g. May 14 overnight hit 7540,
+        # daily RTH candle showed 7525.5 — pivot is off by ~5 pts without this fix)
+        prev_week_1min = [
+            c for c in raw_1min
+            if monday_prev <= _bar_date(c) <= friday_prev
+        ]
+        if prev_week_1min:
+            wh = max(c['high'] for c in prev_week_1min)
+            wl = min(c['low']  for c in prev_week_1min)
+            prev_week_rth_dates = sorted([d for d in rth_by_date if monday_prev <= d <= friday_prev])
+            if prev_week_rth_dates:
+                wc = rth_by_date[prev_week_rth_dates[-1]][-1]['close']
+                weekly_pivot = round((wh + wl + wc) / 3, 4)
+
+    # ── Naked VPOCs as of target date morning ──────────────────────────────────
+    all_prior_dates_sorted = sorted([d for d in rth_by_date if d < target_date])
+    session_vpocs_list: list[dict] = []
+    for d in all_prior_dates_sorted:
+        v = _compute_vpoc(rth_by_date[d], tick)
+        if v:
+            session_vpocs_list.append({'date': d, 'vpoc': v})
+
+    naked_vpocs = []
+    for i, sv in enumerate(session_vpocs_list):
+        vp = sv['vpoc']
+        touched = False
+        for j in range(i + 1, len(session_vpocs_list)):
+            d2 = session_vpocs_list[j]['date']
+            for b in rth_by_date.get(d2, []):
+                if b['low'] <= vp <= b['high']:
+                    touched = True
+                    break
+            if touched:
+                break
+        if not touched:
+            naked_vpocs.append({'date': sv['date'].isoformat(), 'vpoc': sv['vpoc']})
+
+    return {
+        'symbol'     : symbol,
+        'date'       : target_date.isoformat(),
+        'tick'       : tick,
+        'levels': {
+            'session_vpoc'  : session_vpoc,
+            'overnight_vpoc': overnight_vpoc,
+            'mcvpoc_3day'   : mcvpoc_3day,
+            'daily_pivot'   : daily_pivot,
+            'weekly_pivot'  : weekly_pivot,
+            'weekly_open'   : weekly_open,
+            'ath_intraday'  : ath_intraday,
+            'swing_high'    : swing_high,
+            'swing_low'     : swing_low,
+            'prev_high'     : prev_high,
+            'prev_low'      : prev_low,
+            'prev_close'    : prev_close,
+        },
+        'naked_vpocs': naked_vpocs,
+    }
+
+
+@app.get('/api/debug-overnight/{symbol:path}')
+async def debug_overnight(symbol: str, date: str = Query(...)):
+    """Debug: show what bars exist in on_by_date for a given date (including Sunday assignment)."""
+    from datetime import date as date_cls
+    symbol = symbol.upper()
+    target_date = date_cls.fromisoformat(date)
+    raw_1min = await asyncio.to_thread(get_candles, symbol, 30, 1)
+
+    on_by_date: dict = {}
+    bar_counts: dict = {}
+
+    for c in raw_1min:
+        dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        d     = dt.date()
+        wday  = dt.weekday()
+        t_min = dt.hour * 60 + dt.minute
+        is_on_weekday = wday < 5 and t_min < (9 * 60 + 30)
+        is_sunday     = wday == 6
+
+        bar_counts[d] = bar_counts.get(d, 0) + 1
+
+        if is_on_weekday:
+            on_by_date.setdefault(d, []).append(c)
+        elif is_sunday:
+            monday = d + timedelta(days=1)
+            on_by_date.setdefault(monday, []).append(c)
+
+    target_bars = on_by_date.get(target_date, [])
+    tick = _tick_for(symbol)
+    vpoc = _compute_vpoc(target_bars, tick)
+
+    # Breakdown by original weekday
+    sunday_bars = [c for c in raw_1min
+                   if datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET).weekday() == 6]
+
+    return {
+        'symbol': symbol,
+        'date': date,
+        'overnight_bar_count': len(target_bars),
+        'overnight_vpoc': vpoc,
+        'sunday_bars_total': len(sunday_bars),
+        'sunday_dates': sorted(set(
+            datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET).date().isoformat()
+            for c in sunday_bars
+        )),
+        'on_dates_available': sorted(d.isoformat() for d in on_by_date),
+        'raw_bar_dates': sorted(d.isoformat() for d in bar_counts),
+        'first_10_overnight_bars': [
+            {
+                'time': datetime.fromtimestamp(b['datetime']/1000, tz=timezone.utc).astimezone(ET).strftime('%Y-%m-%d %H:%M'),
+                'o': b['open'], 'h': b['high'], 'l': b['low'], 'c': b['close'], 'v': b.get('volume', 0)
+            }
+            for b in target_bars[:10]
+        ],
+    }
+
+
+@app.get('/api/session-vpocs/{symbol:path}')
+async def get_session_vpocs(symbol: str):
+    """Fetch all available 1-min bars (up to Schwab's limit) and compute per-session VPOCs.
+    Also marks each VPOC as 'naked' (price never revisited it in subsequent sessions)
+    or 'touched' (price traded at/through it later).
+
+    Useful for building an NVPOC tracker and validating historical key levels.
+    """
+    symbol = symbol.upper()
+    tick   = _tick_for(symbol)
+
+    # Try to get as much history as Schwab will give us (request 30 days, get what we can)
+    raw_1min = await asyncio.to_thread(get_candles, symbol, 30, 1)
+
+    if not raw_1min:
+        return {'symbol': symbol, 'sessions': [], 'bars_fetched': 0, 'error': 'No data returned'}
+
+    # ── Classify bars by RTH session date ──────────────────────────────────────
+    rth_by_date: dict = {}
+    all_dates_bars: dict = {}   # all bars (RTH + ON) per date for range tracking
+
+    for c in raw_1min:
+        dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        d     = dt.date()
+        t_min = dt.hour * 60 + dt.minute
+        is_rth = dt.weekday() < 5 and (9 * 60 + 30) <= t_min < 16 * 60
+        all_dates_bars.setdefault(d, []).append(c)
+        if is_rth:
+            rth_by_date.setdefault(d, []).append(c)
+
+    sorted_rth_dates = sorted(rth_by_date.keys())   # oldest → newest
+
+    # ── Compute VPOC per session ────────────────────────────────────────────────
+    sessions = []
+    for d in sorted_rth_dates:
+        bars  = rth_by_date[d]
+        vpoc  = _compute_vpoc(bars, tick)
+        if not vpoc:
+            continue
+
+        hi  = max(b['high'] for b in bars)
+        lo  = min(b['low']  for b in bars)
+        cls = bars[-1]['close']
+        vol = sum(b.get('volume', 0) for b in bars)
+
+        sessions.append({
+            'date'  : d.isoformat(),
+            'vpoc'  : vpoc,
+            'high'  : hi,
+            'low'   : lo,
+            'close' : cls,
+            'volume': vol,
+            'bars'  : len(bars),
+            'naked' : True,   # will be updated below
+        })
+
+    # ── Mark VPOCs as naked or touched ─────────────────────────────────────────
+    # For each session's VPOC, check whether any *subsequent* session's bars
+    # traded at (or crossed through) that price level.
+    for i, sess in enumerate(sessions):
+        vpoc_price = sess['vpoc']
+        touched = False
+        for j in range(i + 1, len(sessions)):
+            future_bars = rth_by_date.get(sorted_rth_dates[j], [])
+            for b in future_bars:
+                if b['low'] <= vpoc_price <= b['high']:
+                    touched = True
+                    sess['touched_on'] = sorted_rth_dates[j].isoformat()
+                    break
+            if touched:
+                break
+        sess['naked'] = not touched
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    first_bar_dt = datetime.fromtimestamp(raw_1min[0]['datetime'] / 1000, tz=ET)
+    last_bar_dt  = datetime.fromtimestamp(raw_1min[-1]['datetime'] / 1000, tz=ET)
+
+    naked_vpocs  = [s for s in sessions if s['naked']]
+
+    return {
+        'symbol'       : symbol,
+        'tick'         : tick,
+        'bars_fetched' : len(raw_1min),
+        'first_bar'    : first_bar_dt.strftime('%Y-%m-%d %H:%M ET'),
+        'last_bar'     : last_bar_dt.strftime('%Y-%m-%d %H:%M ET'),
+        'sessions'     : sessions,
+        'naked_count'  : len(naked_vpocs),
+        'naked_vpocs'  : [{'date': s['date'], 'vpoc': s['vpoc']} for s in naked_vpocs],
+    }

@@ -29,34 +29,105 @@ MONTH_CODES = {
 # Rolls approximately on the 3rd Friday of the expiry month
 QUARTERLY = [3, 6, 9, 12]   # H, M, U, Z
 
+# Per-symbol expiry schedules for commodity futures.
+# Key = root symbol (no leading slash, no exchange suffix).
+# Value = sorted list of months that have listed contracts.
+FUTURES_SCHEDULES: dict[str, list[int]] = {
+    # ── Grains (CBOT) ──────────────────────────────────────────────────────────
+    'ZC': [3, 5, 7, 9, 12],           # Corn: Mar/May/Jul/Sep/Dec
+    'ZS': [1, 3, 5, 7, 8, 9, 11],     # Soybeans: Jan/Mar/May/Jul/Aug/Sep/Nov
+    'ZW': [3, 5, 7, 9, 12],           # Wheat: Mar/May/Jul/Sep/Dec
+    'ZM': [1, 3, 5, 7, 8, 9, 10, 12], # Soybean Meal
+    'ZL': [1, 3, 5, 7, 8, 9, 10, 12], # Soybean Oil
+    # ── Energy (NYMEX) ─────────────────────────────────────────────────────────
+    'CL': list(range(1, 13)),          # Crude Oil: every month
+    'NG': list(range(1, 13)),          # Natural Gas: every month
+    'RB': list(range(1, 13)),          # RBOB Gasoline: every month
+    'HO': list(range(1, 13)),          # Heating Oil: every month
+    # ── Metals (COMEX) ─────────────────────────────────────────────────────────
+    'GC': [2, 4, 6, 8, 10, 12],       # Gold: Feb/Apr/Jun/Aug/Oct/Dec
+    'SI': [3, 5, 7, 9, 12],           # Silver: Mar/May/Jul/Sep/Dec
+    'HG': [3, 5, 7, 9, 12],           # Copper: Mar/May/Jul/Sep/Dec
+    'PL': [1, 4, 7, 10],              # Platinum
+    # ── Softs / Other ──────────────────────────────────────────────────────────
+    'KC': [3, 5, 7, 9, 12],           # Coffee
+    'CT': [3, 5, 7, 10, 12],          # Cotton
+    'SB': [3, 5, 7, 10],              # Sugar
+}
+
+# Symbols whose contract expires in the month BEFORE the delivery month.
+# e.g. CLM26 (June delivery) expires around May 20 — so the roll from M→N
+# happens in May, not June.  We use day-20 as the roll trigger.
+_PRIOR_MONTH_ROLL: frozenset[str] = frozenset({'CL', 'NG', 'RB', 'HO'})
+_ENERGY_ROLL_DAY  = 20   # approximate: NYMEX energy contracts expire ~20th of prior month
+
+
 def front_month_code(base: str, ref_date: datetime | None = None) -> str:
     """
     Return the current front-month contract symbol for a futures root.
     e.g. front_month_code('/ES')  →  '/ESM26'
+         front_month_code('/ZC')  →  '/ZCN26'  (Jul — no June corn contract)
+         front_month_code('/CL')  →  '/CLN26'  (Jul — June contract expired ~May 20)
 
-    Uses quarterly roll schedule (H/M/U/Z).
-    Assumes roll happens on the 15th of the expiry month (conservative — actual
-    roll is 3rd Friday, ~15–21st; adjust ROLL_DAY if needed).
+    Two roll modes
+    ──────────────
+    Standard (equity index, grains, metals):
+        Roll happens ON or AFTER the 15th of the delivery month itself.
+
+    Prior-month (NYMEX energy: CL, NG, RB, HO):
+        The contract expires in the month BEFORE delivery, around the 20th.
+        e.g. CLM26 (June delivery) expires ~May 20, so on May 25 the front
+        month is already CLN26 (July delivery).
     """
-    ROLL_DAY = 15
-    now = ref_date or datetime.now(ZoneInfo('America/New_York'))
-    m, y = now.month, now.year
+    ROLL_DAY     = 15
+    now          = ref_date or datetime.now(ZoneInfo('America/New_York'))
+    m, y         = now.month, now.year
 
-    # Find next quarterly month that hasn't rolled yet
-    for qm in QUARTERLY:
-        if qm > m:
-            break
-        if qm == m and now.day < ROLL_DAY:
-            break
-    else:
-        # All quarterly months this year have passed → first quarterly next year
-        qm = QUARTERLY[0]
-        y += 1
+    # Strip exchange suffix, then derive the bare root (e.g. '/ZC' → 'ZC')
+    root         = base.split(':')[0]     # '/ES:XCME' → '/ES'
+    bare         = root.lstrip('/')       # '/ZC'      → 'ZC'
+    schedule     = FUTURES_SCHEDULES.get(bare, QUARTERLY)
+    prior_roll   = bare in _PRIOR_MONTH_ROLL
+    roll_day     = _ENERGY_ROLL_DAY if prior_roll else ROLL_DAY
 
-    code = MONTH_CODES[qm]
-    year_2d = str(y)[-2:]
-    # Strip exchange suffix if present, then re-append root
-    root = base.split(':')[0]   # '/ES:XCME' → '/ES'
+    chosen_m = None
+    chosen_y = y
+
+    for exp_m in schedule:
+        if prior_roll:
+            # The contract with delivery month exp_m expires in month (exp_m - 1).
+            # It has already rolled if:
+            #   • today's month is >= exp_m  (we're in or past the delivery month)
+            #   • today's month == exp_m - 1  AND  today's day >= roll_day
+            expire_month = exp_m - 1   # month in which THIS contract expires
+            if expire_month < 1:
+                # January delivery → expires in December of prior year; always
+                # rolled relative to any current month >= Jan.
+                already_rolled = True
+            else:
+                already_rolled = (
+                    m > expire_month or
+                    (m == expire_month and now.day >= roll_day)
+                )
+            if not already_rolled:
+                chosen_m = exp_m
+                break
+        else:
+            # Standard mode: contract expires in its own delivery month
+            if exp_m > m:
+                chosen_m = exp_m
+                break
+            if exp_m == m and now.day < roll_day:
+                chosen_m = exp_m
+                break
+
+    if chosen_m is None:
+        # All months this year exhausted → first contract month of next year
+        chosen_m = schedule[0]
+        chosen_y = y + 1
+
+    code    = MONTH_CODES[chosen_m]
+    year_2d = str(chosen_y)[-2:]
     return f'{root}{code}{year_2d}'
 
 load_dotenv()
@@ -134,6 +205,8 @@ def get_quotes(symbols: list[str]) -> dict:
             'volume'    : q.get('totalVolume', 0),
             # Futures-specific: change from previous CME settlement price
             'net_change': q.get('netChange', 0),
+            # Company/instrument name — used to label ETF holdings in the panel
+            'description': q.get('description', ''),
         }
     return out
 
@@ -163,6 +236,40 @@ def get_candles(symbol: str, lookback_days: int, freq_min: int = 30) -> list[dic
             'get_candles(%s) empty — response: %s', symbol, str(data)[:300])
     resp.raise_for_status()
     return data.get('candles', [])
+
+
+def get_daily_candles(symbol: str, lookback_days: int = 30) -> list[dict]:
+    """Fetch daily RTH bars for a symbol.
+    Uses periodType/period (not startDate/endDate) — Schwab requires periodType=month/year
+    when frequencyType=daily; using startDate/endDate causes a 400 'periodType DAY' error."""
+    # Map lookback to the smallest valid Schwab period that covers the range
+    if lookback_days <= 31:
+        period_type, period = 'month', 1
+    elif lookback_days <= 62:
+        period_type, period = 'month', 2
+    elif lookback_days <= 93:
+        period_type, period = 'month', 3
+    elif lookback_days <= 186:
+        period_type, period = 'month', 6
+    else:
+        period_type, period = 'year', 1
+    params = {
+        'symbol'               : symbol,
+        'periodType'           : period_type,
+        'period'               : period,
+        'frequencyType'        : 'daily',
+        'frequency'            : 1,
+        'needExtendedHoursData': 'false',
+    }
+    resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=15)
+    if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
+        resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=15)
+    if not resp.ok:
+        import logging; logging.getLogger(__name__).warning(
+            'get_daily_candles(%s) HTTP %s: %s', symbol, resp.status_code, resp.text[:200])
+        return []
+    return resp.json().get('candles', [])
 
 
 def get_session_bars(symbol: str) -> list[dict]:

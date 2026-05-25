@@ -58,6 +58,12 @@ export default function Sidebar({ activeTab = 'dashboard' }: SidebarProps) {
               e.currentTarget.style.color = 'var(--text-muted)'
             }
           }}
+          onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.delete('tab')
+            window.history.pushState({}, '', url)
+            window.dispatchEvent(new Event('popstate'))
+          }}
         >
           {/* Grid / Dashboard icon */}
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -65,6 +71,43 @@ export default function Sidebar({ activeTab = 'dashboard' }: SidebarProps) {
             <rect x="14" y="3" width="7" height="7" />
             <rect x="14" y="14" width="7" height="7" />
             <rect x="3" y="14" width="7" height="7" />
+          </svg>
+        </button>
+
+        {/* Agent nav item */}
+        <button
+          title="Futures Agent"
+          className="flex items-center justify-center w-full rounded-lg py-2.5 transition-colors"
+          style={{
+            background: activeTab === 'agent' ? 'var(--accent-blue-dim)' : 'transparent',
+            color: activeTab === 'agent' ? 'var(--accent-blue)' : 'var(--text-muted)',
+          }}
+          onMouseEnter={(e) => {
+            if (activeTab !== 'agent') {
+              e.currentTarget.style.background = 'var(--bg-row)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeTab !== 'agent') {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-muted)'
+            }
+          }}
+          onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.set('tab', 'agent')
+            window.history.pushState({}, '', url)
+            window.dispatchEvent(new Event('popstate'))
+          }}
+        >
+          {/* AI chip icon */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="7" y="7" width="10" height="10" rx="1" />
+            <path d="M10 7V4M14 7V4M10 20v-3M14 20v-3M7 10H4M7 14H4M20 10h-3M20 14h-3" />
+            <circle cx="10" cy="11" r="0.8" fill="currentColor" stroke="none" />
+            <circle cx="14" cy="11" r="0.8" fill="currentColor" stroke="none" />
+            <path d="M10 14h4" />
           </svg>
         </button>
 

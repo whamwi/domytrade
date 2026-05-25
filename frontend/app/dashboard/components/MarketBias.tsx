@@ -8,6 +8,7 @@ export interface MarketBiasItem {
   prev_close: number
   vwap?: number | null
   poc?: number | null
+  gap?: number | null
 }
 
 interface MarketBiasProps {
@@ -58,13 +59,30 @@ export default function MarketBias({ markets }: MarketBiasProps) {
               {m.symbol}
             </span>
 
-            {/* Points */}
+            {/* Points change vs prev settlement */}
             <span
               className="text-xs font-semibold tabular-nums"
               style={{ color: s.text }}
             >
               {`${pos ? '+' : ''}${m.pts.toFixed(2)}`}
             </span>
+
+            {/* Gap — open vs prev close, shown when nonzero */}
+            {m.gap != null && Math.abs(m.gap) >= 0.25 && (
+              <span
+                className="text-xs tabular-nums"
+                style={{
+                  color      : m.gap >= 0 ? 'rgba(74,222,128,0.75)' : 'rgba(248,113,113,0.75)',
+                  borderLeft : '1px solid rgba(255,255,255,0.1)',
+                  paddingLeft: '6px',
+                  marginLeft : '2px',
+                  fontSize   : '10px',
+                }}
+                title="Overnight gap: today's open vs previous RTH close"
+              >
+                G{m.gap >= 0 ? '+' : ''}{m.gap.toFixed(2)}
+              </span>
+            )}
 
             {/* VWAP / POC — shown when available */}
             {(m.vwap || m.poc) && (

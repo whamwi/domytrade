@@ -6,8 +6,11 @@ import { supabase } from '@/lib/supabase'
 import Sidebar from './components/Sidebar'
 import SignalTable, { Signal, SymbolInfo } from './components/SignalTable'
 import MarketBias, { MarketBiasItem } from './components/MarketBias'
+import SectorStrip, { SectorItem } from './components/SectorStrip'
 import BriefingModal from './components/BriefingModal'
 import AlertToast from './components/AlertToast'
+import FuturesBrief from './components/FuturesBrief'
+import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert } from './hooks/useEconomicAlerts'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
@@ -25,7 +28,12 @@ interface ApiResponse {
 
 type SideFilter = 'all' | 'longs' | 'shorts'
 type ModelFilter = 'all' | 'AGG' | 'CON'
-type AssetFilter = 'all' | 'equities' | 'futures'
+type AssetFilter = 'all' | 'equities' | 'futures' | 'sectors'
+
+const SECTOR_TICKERS = new Set([
+  'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE',
+  'SMH','HACK','SKYY','TAN','JETS','OIH','IYT','EEM','SOCL','KCE','XLG','XRT','OEF',
+])
 
 function getSessionLabel(): { label: string; color: string; bg: string } {
   const now = new Date()
@@ -72,14 +80,22 @@ function formatLastUpdated(iso: string): string {
   }
 }
 
+function getTabFromUrl(): string {
+  if (typeof window === 'undefined') return 'dashboard'
+  return new URLSearchParams(window.location.search).get('tab') ?? 'dashboard'
+}
+
 export default function DashboardPage() {
   const router = useRouter()
   const [authed, setAuthed] = useState(false)
   const [authChecked, setAuthChecked] = useState(false)
+  const [activeTab, setActiveTab] = useState<string>('dashboard')
 
   const [data, setData] = useState<ApiResponse | null>(null)
   const [allSymbols, setAllSymbols] = useState<SymbolInfo[]>([])
   const [marketBias, setMarketBias] = useState<MarketBiasItem[]>([])
+  const [industries, setIndustries] = useState<SectorItem[]>([])
+  const [ytdMap, setYtdMap] = useState<Record<string, number>>({})
   const [vix, setVix] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -108,12 +124,22 @@ export default function DashboardPage() {
     })
   }, [router])
 
+  // Tab sync from URL
+  useEffect(() => {
+    setActiveTab(getTabFromUrl())
+    const onPop = () => setActiveTab(getTabFromUrl())
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
   const fetchSignals = useCallback(async () => {
     try {
-      const [sigRes, symRes, biasRes] = await Promise.all([
+      const [sigRes, symRes, biasRes, indRes, ytdRes] = await Promise.all([
         fetch(`${API_URL}/api/signals?model=all&side=all`, { cache: 'no-store' }),
         fetch(`${API_URL}/api/symbols`,                    { cache: 'no-store' }),
         fetch(`${API_URL}/api/market-bias`,                { cache: 'no-store' }),
+        fetch(`${API_URL}/api/industries`,                 { cache: 'no-store' }),
+        fetch(`${API_URL}/api/sector-ytd`,                 { cache: 'no-store' }),
       ])
       if (!sigRes.ok) throw new Error(`HTTP ${sigRes.status}`)
       const json: ApiResponse = await sigRes.json()
@@ -130,6 +156,13 @@ export default function DashboardPage() {
         const biasJson = await biasRes.json()
         setMarketBias(biasJson.markets ?? [])
         setVix(biasJson.volatility?.vix ?? null)
+      }
+      if (indRes.ok) {
+        const indJson = await indRes.json()
+        setIndustries(indJson.industries ?? [])
+      }
+      if (ytdRes.ok) {
+        setYtdMap(await ytdRes.json())
       }
 
       timerRef.current = setTimeout(fetchSignals, REFRESH_INTERVAL)
@@ -156,7 +189,8 @@ export default function DashboardPage() {
 
   // Filter signals
   const filteredSignals = (data?.signals ?? []).filter((sig) => {
-    const isFuture = sig.symbol.startsWith('/')
+    const isFuture  = sig.symbol.startsWith('/')
+    const isSector  = SECTOR_TICKERS.has(sig.symbol)
     const sideOk =
       sideFilter === 'all' ||
       (sideFilter === 'longs' && sig.side === 'LONG') ||
@@ -165,15 +199,17 @@ export default function DashboardPage() {
       modelFilter === 'all' || sig.model === modelFilter
     const assetOk =
       assetFilter === 'all' ||
-      (assetFilter === 'futures' && isFuture) ||
-      (assetFilter === 'equities' && !isFuture)
+      (assetFilter === 'futures'  && isFuture) ||
+      (assetFilter === 'equities' && !isFuture && !isSector) ||
+      (assetFilter === 'sectors'  && isSector)
     return sideOk && modelOk && assetOk
   })
 
   // Also filter the silent symbols list by asset type
-  const filteredSymbols = assetFilter === 'all' ? allSymbols
-    : assetFilter === 'futures' ? allSymbols.filter(s => s.ticker.startsWith('/'))
-    : allSymbols.filter(s => !s.ticker.startsWith('/'))
+  const filteredSymbols = assetFilter === 'all'      ? allSymbols
+    : assetFilter === 'futures'  ? allSymbols.filter(s => s.ticker.startsWith('/'))
+    : assetFilter === 'sectors'  ? allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker))
+    : allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker))
 
   const session = getSessionLabel()
 
@@ -183,10 +219,15 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-full min-h-screen" style={{ background: 'var(--bg-base)' }}>
-      <Sidebar activeTab="dashboard" />
+      <Sidebar activeTab={activeTab} />
 
-      {/* Main content */}
-      <div className="flex flex-col flex-1 min-w-0">
+      {/* Agent tab — always mounted to preserve chat history and avoid refetch on toggle */}
+      <div className="flex-1 min-w-0 overflow-auto" style={{ display: activeTab === 'agent' ? undefined : 'none' }}>
+        <FuturesBrief />
+      </div>
+
+      {/* Main content — dashboard tab */}
+      <div className="flex flex-col flex-1 min-w-0" style={{ display: activeTab === 'agent' ? 'none' : undefined }}>
         {/* Header */}
         <header
           className="flex items-center gap-4 px-5 py-3 shrink-0"
@@ -317,7 +358,7 @@ export default function DashboardPage() {
             className="flex items-center rounded-lg p-0.5 gap-0.5"
             style={{ background: 'var(--bg-panel)' }}
           >
-            {(['all', 'equities', 'futures'] as AssetFilter[]).map((f) => (
+            {(['all', 'equities', 'futures', 'sectors'] as AssetFilter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setAssetFilter(f)}
@@ -328,7 +369,7 @@ export default function DashboardPage() {
                     : { background: 'transparent', color: 'var(--text-muted)' }
                 }
               >
-                {f === 'all' ? 'All Assets' : f === 'equities' ? 'Equities' : 'Futures'}
+                {f === 'all' ? 'All Assets' : f === 'equities' ? 'Equities' : f === 'futures' ? 'Futures' : 'Sectors'}
               </button>
             ))}
           </div>
@@ -336,6 +377,12 @@ export default function DashboardPage() {
 
         {/* Market bias strip */}
         <MarketBias markets={marketBias} />
+
+        {/* Asian markets + FX risk-on/off strip */}
+        <GlobalMarketsStrip />
+
+        {/* Industries performance strip (% from RTH open) */}
+        <SectorStrip sectors={industries} label="INDUSTRIES" />
 
         {/* Table */}
         <div className="flex-1 overflow-auto">
@@ -345,6 +392,7 @@ export default function DashboardPage() {
             loading={loading}
             error={error}
             onRetry={handleRefresh}
+            ytdMap={ytdMap}
           />
         </div>
       </div>
