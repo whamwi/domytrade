@@ -108,10 +108,11 @@ state = {
     'ib'               : {},   # {symbol_id: {'high': float, 'low': float, 'complete': bool}}
     'volatility'       : {'vix': None},   # $VIX — Fear Index
     'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
-    'mag10_open'       : {},   # {ticker: float}  — RTH open prices for MAG10 components
-    'mag10_prev_close' : {},   # {ticker: float}  — last RTH close for MAG10 components
-    'mag10_price'      : {},   # {ticker: float}  — live last prices for MAG10 components
-    'signals'          : [],
+    'mag10_open'        : {},    # {ticker: float}  — RTH open prices for MAG10 components
+    'mag10_prev_close'  : {},    # {ticker: float}  — last RTH close for MAG10 components
+    'mag10_price'       : {},    # {ticker: float}  — live last prices for MAG10 components
+    'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
+    'signals'           : [],
     'last_stats_update': None,
     'last_signal_update': None,
     'status'           : 'starting',
@@ -949,10 +950,15 @@ async def _warm_fib_cache(tickers: list[str]) -> None:
 
 async def refresh_strip_opens():
     """Fetch RTH-only daily candles for the 11 SPDR ETFs and store today's 9:30 open.
-    Uses needExtendedHoursData=false so open = true RTH 9:30 open, matching TOS exactly."""
+    Uses needExtendedHoursData=false so open = true RTH 9:30 open, matching TOS exactly.
+
+    Also sets state['strip_session_date'] to today's date when a real RTH session is
+    found — used by get_industries() to detect holidays (no session = use prev_close
+    instead of live price, so extended-hours movement doesn't corrupt the strip)."""
     ticker_map = {s['ticker']: s for s in state['symbols']}
     today_et   = datetime.now(ET).date()
     refreshed  = 0
+    session_found = False   # True once we confirm today has a real RTH candle
 
     for etf in STRIP_ETFS:
         tick = etf['ticker']
@@ -970,9 +976,10 @@ async def refresh_strip_opens():
                 dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET).date()
                 if dt == today_et:
                     chosen = c
+                    session_found = True   # real session exists today
                     break
             if chosen is None:
-                chosen = candles[-1]   # pre-market: use yesterday's open as placeholder
+                chosen = candles[-1]   # holiday / pre-market: use last session as placeholder
             if chosen['open']:
                 state['rth_open'][sid] = round(chosen['open'], 4)
                 refreshed += 1
@@ -980,7 +987,12 @@ async def refresh_strip_opens():
             log.warning('refresh_strip_opens %s: %s', tick, e)
         await asyncio.sleep(0.3)
 
-    log.info('Strip RTH opens refreshed — %d/%d ETFs', refreshed, len(STRIP_ETFS))
+    # Persist whether today has a real RTH session so get_industries() can use it
+    if session_found:
+        state['strip_session_date'] = today_et
+    # (Don't clear it if not found — avoids a race on the very first tick after open)
+    log.info('Strip RTH opens refreshed — %d/%d ETFs (session_today=%s)',
+             refreshed, len(STRIP_ETFS), session_found)
 
     # Also fetch RTH opens for MAG10 component stocks
     mag10_refreshed = 0
@@ -1231,12 +1243,16 @@ def get_industries():
     matching TOS exactly. Refreshed hourly by refresh_strip_opens().
 
     current price source:
-      - During RTH (9:30–16:00 ET weekdays): live last_price from Schwab quote
-      - Outside RTH: prev_close = last RTH bar close (frozen at 4:00 PM close, ignores AH)
-    This ensures the strip always reflects the true RTH session move."""
+      - During RTH (9:30–16:00 ET weekdays, non-holiday): live last_price from Schwab quote
+      - Outside RTH or on holidays: prev_close = last RTH bar close (frozen at 4:00 PM, ignores AH)
+    This ensures the strip always reflects the true RTH session move and never picks up
+    extended-hours noise on market holidays."""
     _now_et = datetime.now(ET)
     _et_min = _now_et.hour * 60 + _now_et.minute
-    _is_rth = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
+    # Only treat as RTH if a real session opened today — prevents holidays from being
+    # treated as live sessions just because they fall on a weekday in the RTH window.
+    _session_today = state.get('strip_session_date') == _now_et.date()
+    _is_rth = _session_today and _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
 
     ticker_map = {s['ticker']: s for s in state['symbols']}
     result = []
