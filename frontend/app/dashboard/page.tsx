@@ -14,8 +14,9 @@ import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert } from './hooks/useEconomicAlerts'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-const REFRESH_INTERVAL = 60_000
-const ERROR_REFRESH_INTERVAL = 5_000
+const REFRESH_INTERVAL       = 60_000   // normal polling once data is live
+const WARMUP_RETRY_INTERVAL  = 10_000   // fast retry while backend is still computing
+const ERROR_REFRESH_INTERVAL =  5_000   // retry on network error
 
 interface ApiResponse {
   signals: Signal[]
@@ -104,6 +105,7 @@ export default function DashboardPage() {
   const [briefingOpen, setBriefingOpen] = useState(false)
   const [activeAlert, setActiveAlert] = useState<EconAlert | null>(null)
   const [warmSeconds, setWarmSeconds] = useState(0)
+  const [warmRetries, setWarmRetries] = useState(0)
   const warmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
@@ -168,10 +170,18 @@ export default function DashboardPage() {
       // Don't overwrite good data with an empty array — backend may be warming up
       // after a restart and returns [] for the first 30-60s.  Keep showing stale
       // data until the backend sends real signals again.
-      setData(prev => (json.signals.length > 0 || !prev?.signals.length) ? json : prev)
+      const hasSignals = json.signals.length > 0
+      setData(prev => (hasSignals || !prev?.signals.length) ? json : prev)
       setLastUpdated(formatLastUpdated(json.last_updated))
       setError(null)
       setLoading(false)
+
+      if (hasSignals) {
+        setWarmRetries(0)
+      } else {
+        // Backend still warming up — count retries so the UI can show progress
+        setWarmRetries(r => r + 1)
+      }
 
       if (symRes.ok) {
         const symJson = await symRes.json()
@@ -190,7 +200,8 @@ export default function DashboardPage() {
         setYtdMap(await ytdRes.json())
       }
 
-      timerRef.current = setTimeout(fetchSignals, REFRESH_INTERVAL)
+      // Retry faster while signals haven't arrived yet
+      timerRef.current = setTimeout(fetchSignals, hasSignals ? REFRESH_INTERVAL : WARMUP_RETRY_INTERVAL)
     } catch {
       setError('Cannot reach server — retrying')
       setLoading(false)
@@ -429,7 +440,7 @@ export default function DashboardPage() {
         {/* Table — or warm-up screen while backend is initialising */}
         <div className="flex-1 overflow-auto">
           {isWarmingUp && authed ? (
-            <WarmUpScreen seconds={warmSeconds} error={error} onRetry={handleRefresh} />
+            <WarmUpScreen seconds={warmSeconds} retries={warmRetries} error={error} onRetry={handleRefresh} />
           ) : (
             <SignalTable
               signals={filteredSignals}
@@ -458,10 +469,12 @@ export default function DashboardPage() {
 
 function WarmUpScreen({
   seconds,
+  retries,
   error,
   onRetry,
 }: {
   seconds: number
+  retries: number
   error: string | null
   onRetry: () => void
 }) {
@@ -471,7 +484,7 @@ function WarmUpScreen({
     seconds < 45  ? { label: 'Loading market data…',           detail: 'Fetching OHLC bars & symbols' } :
     seconds < 70  ? { label: 'Computing signals…',             detail: 'Running VBH model across all assets' } :
     seconds < 100 ? { label: 'Almost ready…',                  detail: 'Finalising signal rankings' } :
-                    { label: 'Taking longer than usual…',      detail: 'Backend may be cold-starting' }
+                    { label: 'Still loading…',                  detail: `Retrying every 10 s — attempt ${retries}` }
 
   const pct = Math.min(100, Math.round((seconds / 90) * 100))
 
@@ -529,7 +542,14 @@ function WarmUpScreen({
         </div>
       )}
 
-      {/* Retry on error or after a long wait */}
+      {/* Retry counter — visible once backend has been polled at least once */}
+      {retries > 0 && !error && (
+        <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
+          Attempt {retries} · auto-retrying every 10 s
+        </span>
+      )}
+
+      {/* Manual retry on error or after a very long wait */}
       {(error || seconds > 120) && (
         <button
           onClick={onRetry}
