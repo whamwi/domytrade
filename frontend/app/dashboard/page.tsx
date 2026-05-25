@@ -286,6 +286,15 @@ export default function DashboardPage() {
             >
               {session.label}
             </span>
+            {data?.status === 'cached' && (
+              <span
+                className="inline-block rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
+                style={{ background: 'rgba(251,191,36,0.12)', color: '#fbbf24' }}
+                title="Showing last saved signals — live data computing in background"
+              >
+                CACHED
+              </span>
+            )}
           </div>
 
           {/* Center: stats chips */}
