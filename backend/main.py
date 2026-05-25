@@ -914,9 +914,17 @@ async def _warm_fib_cache(tickers: list[str]) -> None:
     except Exception as e:
         log.warning('Fib cache warm batch query failed: %s', e)
         return
+    MIN_BARS = 60   # must match the check in get_sr_batch
     warmed = 0
+    skipped = 0
     for ticker, rows in all_bars.items():
         if not rows:
+            continue
+        if len(rows) < MIN_BARS:
+            # Not enough history yet — leave uncached so get_sr_batch falls back
+            # to Schwab on the next request and gets the proper 90-day range.
+            log.debug('Fib warm skip %s: only %d bars < %d minimum', ticker, len(rows), MIN_BARS)
+            skipped += 1
             continue
         try:
             bars = [{'bar_time': r['bar_date'] + 'T00:00:00+00:00',
@@ -936,7 +944,7 @@ async def _warm_fib_cache(tickers: list[str]) -> None:
             warmed += 1
         except Exception as e:
             log.debug('warm fib %s: %s', ticker, e)
-    log.info('Fib cache warmed — %d/%d tickers ready', warmed, len(tickers))
+    log.info('Fib cache warmed — %d/%d tickers ready (%d skipped <60 bars)', warmed, len(tickers), skipped)
 
 
 async def refresh_strip_opens():
