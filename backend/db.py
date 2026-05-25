@@ -129,29 +129,40 @@ def get_daily_candles_db(ticker: str, days: int = 90) -> list[dict]:
 
 
 def get_daily_candles_batch(tickers: list[str], days: int = 90) -> dict[str, list[dict]]:
-    """Fetch daily bars for multiple tickers in ONE query. Returns {ticker: [bars]}."""
+    """Fetch daily bars for multiple tickers. Returns {ticker: [bars]}.
+
+    Paginates in 1000-row pages to bypass Supabase's server-side row cap.
+    200 tickers × 90 bars ≈ 18 000 rows — requires ~18 pages without pagination.
+    """
     if not tickers:
         return {}
     from datetime import datetime, timezone, timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
-    res = (get_db().table('ticker_candles_daily')
-           .select('ticker,bar_date,open,high,low,close,volume')
-           .in_('ticker', tickers)
-           .gte('bar_date', cutoff)
-           .order('bar_date')
-           .execute())
     result: dict[str, list[dict]] = {t: [] for t in tickers}
-    for row in res.data:
-        t = row['ticker']
-        if t in result:
-            result[t].append({
-                'bar_date': row['bar_date'],
-                'open'    : row['open'],
-                'high'    : row['high'],
-                'low'     : row['low'],
-                'close'   : row['close'],
-                'volume'  : row['volume'],
-            })
+    PAGE = 1000
+    offset = 0
+    while True:
+        res = (get_db().table('ticker_candles_daily')
+               .select('ticker,bar_date,open,high,low,close,volume')
+               .in_('ticker', tickers)
+               .gte('bar_date', cutoff)
+               .order('bar_date')
+               .range(offset, offset + PAGE - 1)
+               .execute())
+        for row in res.data:
+            t = row['ticker']
+            if t in result:
+                result[t].append({
+                    'bar_date': row['bar_date'],
+                    'open'    : row['open'],
+                    'high'    : row['high'],
+                    'low'     : row['low'],
+                    'close'   : row['close'],
+                    'volume'  : row['volume'],
+                })
+        if len(res.data) < PAGE:
+            break          # last page
+        offset += PAGE
     return result
 
 
