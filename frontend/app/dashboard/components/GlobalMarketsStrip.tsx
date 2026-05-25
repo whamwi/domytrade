@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-const REFRESH_MS     = 15 * 60 * 1000  // 15 min when data is good
-const RETRY_EMPTY_MS =      30 * 1000  // 30 s retry when strip has no data yet
+const REFRESH_MS     = 15 * 60 * 1000  // 15 min (FX live from Schwab, Asia from DB)
+const RETRY_EMPTY_MS =  2 * 60 * 1000  //  2 min retry on first load if backend is busy
 
 const REGION_FLAG: Record<string, string> = {
   JP: '🇯🇵',
@@ -80,7 +80,7 @@ export default function GlobalMarketsStrip() {
         style={{ borderBottom: '1px solid var(--border)' }}
       >
         <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
-          {fetching ? 'Fetching Asian markets & FX…' : 'Asian market data unavailable — retrying in 30 s'}
+          {fetching ? 'Fetching Asian markets & FX…' : 'Asian market data unavailable — retrying shortly'}
         </span>
         {fetching && (
           <svg
