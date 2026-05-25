@@ -103,8 +103,29 @@ export default function DashboardPage() {
 
   const [briefingOpen, setBriefingOpen] = useState(false)
   const [activeAlert, setActiveAlert] = useState<EconAlert | null>(null)
+  const [warmSeconds, setWarmSeconds] = useState(0)
+  const warmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
+
+  // Warm-up timer: count elapsed seconds while signals haven't arrived yet
+  const isWarmingUp = !error && (data === null || data.signals.length === 0)
+  useEffect(() => {
+    if (isWarmingUp) {
+      if (!warmTimerRef.current) {
+        warmTimerRef.current = setInterval(() => setWarmSeconds(s => s + 1), 1000)
+      }
+    } else {
+      if (warmTimerRef.current) {
+        clearInterval(warmTimerRef.current)
+        warmTimerRef.current = null
+      }
+      setWarmSeconds(0)
+    }
+    return () => {
+      if (warmTimerRef.current) clearInterval(warmTimerRef.current)
+    }
+  }, [isWarmingUp])
 
   const [sideFilter, setSideFilter]   = useState<SideFilter>('all')
   const [modelFilter, setModelFilter] = useState<ModelFilter>('CON')
@@ -402,16 +423,20 @@ export default function DashboardPage() {
         {/* Industries performance strip (% from RTH open) */}
         <SectorStrip sectors={industries} label="INDUSTRIES" />
 
-        {/* Table */}
+        {/* Table — or warm-up screen while backend is initialising */}
         <div className="flex-1 overflow-auto">
-          <SignalTable
-            signals={filteredSignals}
-            allSymbols={filteredSymbols}
-            loading={loading}
-            error={error}
-            onRetry={handleRefresh}
-            ytdMap={ytdMap}
-          />
+          {isWarmingUp && authed ? (
+            <WarmUpScreen seconds={warmSeconds} error={error} onRetry={handleRefresh} />
+          ) : (
+            <SignalTable
+              signals={filteredSignals}
+              allSymbols={filteredSymbols}
+              loading={loading}
+              error={error}
+              onRetry={handleRefresh}
+              ytdMap={ytdMap}
+            />
+          )}
         </div>
       </div>
 
@@ -421,6 +446,97 @@ export default function DashboardPage() {
       {/* Economic event alert toast */}
       {activeAlert && (
         <AlertToast alert={activeAlert} onDismiss={() => setActiveAlert(null)} />
+      )}
+    </div>
+  )
+}
+
+// ── Warm-up screen ────────────────────────────────────────────────────────────
+
+function WarmUpScreen({
+  seconds,
+  error,
+  onRetry,
+}: {
+  seconds: number
+  error: string | null
+  onRetry: () => void
+}) {
+  // Phase labels that match the real backend startup sequence
+  const phase =
+    seconds < 20  ? { label: 'Connecting to backend…',        detail: 'Establishing connection' } :
+    seconds < 45  ? { label: 'Loading market data…',           detail: 'Fetching OHLC bars & symbols' } :
+    seconds < 70  ? { label: 'Computing signals…',             detail: 'Running VBH model across all assets' } :
+    seconds < 100 ? { label: 'Almost ready…',                  detail: 'Finalising signal rankings' } :
+                    { label: 'Taking longer than usual…',      detail: 'Backend may be cold-starting' }
+
+  const pct = Math.min(100, Math.round((seconds / 90) * 100))
+
+  return (
+    <div
+      className="flex flex-col items-center justify-center h-full gap-6"
+      style={{ color: 'var(--text-muted)' }}
+    >
+      {/* Spinner */}
+      <div style={{ position: 'relative', width: 56, height: 56 }}>
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none" style={{ position: 'absolute', inset: 0 }}>
+          <circle cx="28" cy="28" r="24" stroke="var(--border)" strokeWidth="3" />
+          <circle
+            cx="28" cy="28" r="24"
+            stroke="var(--accent-blue)"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeDasharray={`${2 * Math.PI * 24}`}
+            strokeDashoffset={`${2 * Math.PI * 24 * (1 - pct / 100)}`}
+            style={{ transform: 'rotate(-90deg)', transformOrigin: '28px 28px', transition: 'stroke-dashoffset 0.8s ease' }}
+          />
+        </svg>
+        <span
+          className="absolute inset-0 flex items-center justify-center text-xs font-bold tabular-nums"
+          style={{ color: 'var(--accent-blue)' }}
+        >
+          {seconds}s
+        </span>
+      </div>
+
+      {/* Status */}
+      <div className="flex flex-col items-center gap-1 text-center">
+        <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+          {error ? 'Cannot reach server — retrying…' : phase.label}
+        </span>
+        <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
+          {error ? 'Check that the backend is running' : phase.detail}
+        </span>
+      </div>
+
+      {/* Progress bar */}
+      {!error && (
+        <div
+          className="rounded-full overflow-hidden"
+          style={{ width: 220, height: 3, background: 'var(--border)' }}
+        >
+          <div
+            className="h-full rounded-full"
+            style={{
+              width: `${pct}%`,
+              background: 'var(--accent-blue)',
+              transition: 'width 0.8s ease',
+            }}
+          />
+        </div>
+      )}
+
+      {/* Retry on error or after a long wait */}
+      {(error || seconds > 120) && (
+        <button
+          onClick={onRetry}
+          className="rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-wider transition-colors"
+          style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.borderColor = 'var(--accent-blue)' }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border)' }}
+        >
+          Retry now
+        </button>
       )}
     </div>
   )
