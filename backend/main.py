@@ -85,14 +85,15 @@ ASIAN_INDICES = [
     {'symbol': '^AXJO',     'name': 'ASX 200',   'region': 'AU'},
 ]
 
+# FX pairs: yfinance symbol kept for reference; schwab_symbol is what we quote from Schwab
 FX_PAIRS = [
-    {'symbol': 'JPY=X',    'name': 'USD/JPY', 'risk': 'off'},   # safe-haven: up = risk-on
-    {'symbol': 'EURUSD=X', 'name': 'EUR/USD', 'risk': 'on'},
-    {'symbol': 'GBPUSD=X', 'name': 'GBP/USD', 'risk': 'on'},
+    {'schwab_symbol': 'USD/JPY', 'name': 'USD/JPY', 'risk': 'off'},  # safe-haven
+    {'schwab_symbol': 'EUR/USD', 'name': 'EUR/USD', 'risk': 'on'},
+    {'schwab_symbol': 'GBP/USD', 'name': 'GBP/USD', 'risk': 'on'},
 ]
 
 _GLOBAL_MARKETS_CACHE: dict = {}
-_GLOBAL_MARKETS_TTL = 900   # 15 minutes
+_GLOBAL_MARKETS_TTL = 900   # 15 minutes (FX refreshes on this cadence)
 
 
 # ── In-memory cache (rebuilt from DB on startup) ───────────────────────────────
@@ -2632,78 +2633,117 @@ async def get_sr_batch(tickers: str = Query(...)):
 
 # ── Global Markets (Asian indices + FX risk-on/off) ────────────────────────────
 
-def _fetch_global_markets_sync() -> dict:
-    """Fetch Asian index daily close change and FX rates via yfinance."""
+def _fetch_asia_yfinance() -> list[dict]:
+    """Fetch Asian index daily close % change via yfinance. Returns [] on failure."""
     import yfinance as yf
-    result: dict = {'asia': [], 'fx': []}
-
-    all_syms = [x['symbol'] for x in ASIAN_INDICES + FX_PAIRS]
+    syms = [x['symbol'] for x in ASIAN_INDICES]
     try:
-        raw = yf.download(
-            all_syms, period='5d', interval='1d',
-            progress=False, auto_adjust=True,
-            group_by='column', threads=True,
-        )
-        # raw['Close'] is a DataFrame with symbol columns when >1 ticker
+        raw    = yf.download(syms, period='5d', interval='1d',
+                             progress=False, auto_adjust=True,
+                             group_by='column', threads=True)
         closes = raw['Close'] if 'Close' in raw.columns.get_level_values(0) else raw
-
+        result = []
         for item in ASIAN_INDICES:
-            sym = item['symbol']
             try:
-                col = closes[sym].dropna()
+                col = closes[item['symbol']].dropna()
                 if len(col) >= 2:
                     prev = float(col.iloc[-2])
                     last = float(col.iloc[-1])
-                    chg  = (last - prev) / prev * 100
-                    result['asia'].append({
+                    result.append({
                         'name'      : item['name'],
                         'region'    : item['region'],
                         'close'     : round(last, 2),
-                        'change_pct': round(chg, 2),
+                        'change_pct': round((last - prev) / prev * 100, 2),
                     })
             except Exception:
                 pass
-
-        for item in FX_PAIRS:
-            sym = item['symbol']
-            try:
-                col = closes[sym].dropna()
-                if len(col) >= 2:
-                    prev = float(col.iloc[-2])
-                    last = float(col.iloc[-1])
-                    chg  = (last - prev) / prev * 100
-                    result['fx'].append({
-                        'name'      : item['name'],
-                        'risk'      : item['risk'],
-                        'rate'      : round(last, 4),
-                        'change_pct': round(chg, 4),
-                    })
-            except Exception:
-                pass
+        return result
     except Exception as e:
-        log.warning('global markets fetch error: %s', e)
+        log.warning('Asia yfinance fetch error: %s', e)
+        return []
 
-    if not result['asia'] and not result['fx']:
-        log.warning('global markets returned empty — yfinance may be rate-limited on this host')
+
+def _fetch_fx_schwab() -> list[dict]:
+    """Fetch FX rates from Schwab quotes API. Returns [] on failure."""
+    try:
+        syms   = [p['schwab_symbol'] for p in FX_PAIRS]
+        quotes = get_quotes(syms)
+        result = []
+        for item in FX_PAIRS:
+            q = quotes.get(item['schwab_symbol'], {})
+            last  = q.get('last', 0)
+            close = q.get('close', 0)   # previous session close from Schwab
+            if last and close:
+                chg_pct = (last - close) / close * 100
+                result.append({
+                    'name'      : item['name'],
+                    'risk'      : item['risk'],
+                    'rate'      : round(last, 4),
+                    'change_pct': round(chg_pct, 4),
+                })
+        log.info('FX Schwab: %d pairs', len(result))
+        return result
+    except Exception as e:
+        log.warning('FX Schwab fetch error: %s', e)
+        return []
+
+
+async def _refresh_global_markets() -> dict:
+    """
+    Build the global-markets payload:
+      • FX  — live from Schwab quotes (refreshed every 15 min)
+      • Asia — yfinance daily close; written to DB on success; DB is the fallback
+    """
+    from db import cache_get, cache_set
+
+    # ── FX from Schwab ─────────────────────────────────────────────────────────
+    fx = await asyncio.to_thread(_fetch_fx_schwab)
+
+    # ── Asian indices from yfinance (once a day is enough) ────────────────────
+    today_str = datetime.now(ET).date().isoformat()
+    asia: list[dict] = []
+
+    # Check DB cache first — only re-fetch yfinance if date has changed
+    cached = await asyncio.to_thread(cache_get, 'global_markets_asia')
+    if cached and cached.get('date') == today_str and cached.get('asia'):
+        asia = cached['asia']
+        log.debug('Asia data served from DB cache for %s', today_str)
     else:
-        log.info('global markets: %d asia, %d fx', len(result['asia']), len(result['fx']))
-    return result
+        # Try yfinance; write to DB on success; fall back to DB on failure
+        fresh = await asyncio.to_thread(_fetch_asia_yfinance)
+        if fresh:
+            asia = fresh
+            await asyncio.to_thread(cache_set, 'global_markets_asia', {
+                'asia': asia,
+                'date': today_str,
+            })
+            log.info('Asia data refreshed via yfinance (%d indices) and saved to DB', len(asia))
+        elif cached and cached.get('asia'):
+            asia = cached['asia']
+            log.warning('yfinance rate-limited — serving Asia data from DB cache (date: %s)',
+                        cached.get('date', '?'))
+        else:
+            log.warning('No Asia data available: yfinance failed and DB cache is empty')
+
+    return {'asia': asia, 'fx': fx}
 
 
 @app.get('/api/global-markets')
 async def get_global_markets():
-    """Asian market daily close change % and FX risk-on/off pairs. Cached 15 min."""
+    """Asian market daily close change % and FX risk-on/off pairs.
+    Asia: yfinance, cached in DB daily. FX: live from Schwab, cached 15 min in memory."""
     now = time.time()
-    if (_GLOBAL_MARKETS_CACHE.get('ts') and
-            now - _GLOBAL_MARKETS_CACHE['ts'] < _GLOBAL_MARKETS_TTL and
-            _GLOBAL_MARKETS_CACHE.get('data')):
-        return _GLOBAL_MARKETS_CACHE['data']
+    cached_data = _GLOBAL_MARKETS_CACHE.get('data', {})
+    cache_age   = now - _GLOBAL_MARKETS_CACHE.get('ts', 0)
 
-    data = await asyncio.to_thread(_fetch_global_markets_sync)
-    # Only cache non-empty results — if yfinance returns nothing (rate-limit / transient
-    # failure) we want to retry on the next request rather than serving stale empty data
-    # for the full 15-minute TTL.
-    if data.get('asia') or data.get('fx'):
+    # Serve memory cache for FX within the TTL window (Asia is always DB-backed)
+    if cached_data and cache_age < _GLOBAL_MARKETS_TTL:
+        return cached_data
+
+    data = await _refresh_global_markets()
+
+    # Cache in memory whenever we have at least FX data
+    if data.get('fx') or data.get('asia'):
         _GLOBAL_MARKETS_CACHE['data'] = data
         _GLOBAL_MARKETS_CACHE['ts']   = now
     return data
