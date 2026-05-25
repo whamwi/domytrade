@@ -1608,7 +1608,7 @@ async def get_levels(symbol: str):
     _sym_obj = next((s for s in state['symbols'] if s['ticker'] == symbol), None)
     _sym_obj_id = _sym_obj['id'] if _sym_obj else None
     _rth_prev = state['prev_close'].get(_sym_obj_id) if _sym_obj_id else None
-    gap_baseline = prev_close or _rth_prev   # daily close wins; state fallback only at cold start
+    gap_baseline = _rth_prev or prev_close   # 4PM RTH close wins; daily candle fallback at cold start
     if gap_baseline:
         today_all_sorted = sorted(
             on_by_date.get(today, []) + rth_by_date.get(today, []),
@@ -2038,7 +2038,7 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
 
         # Gap from RTH prev close — prefer daily-candle prev_close (date-scoped, holiday-safe)
         _rth_c_agent   = state['prev_close'].get(sid_agent) if sid_agent else None
-        gap_baseline_agent = prev_close or _rth_c_agent
+        gap_baseline_agent = _rth_c_agent or prev_close
         today_all_agent = sorted(
             on_by_date.get(today, []) + rth_by_date.get(today, []),
             key=lambda c: c['datetime']
