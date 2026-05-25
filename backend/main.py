@@ -2524,9 +2524,15 @@ async def get_sr_batch(tickers: str = Query(...)):
     # 2. ONE batch DB query for all missing tickers
     db_batch = await asyncio.to_thread(get_daily_candles_batch, missing, 90)
 
+    # Require at least 60 trading days — a smaller window gives a compressed
+    # Fib range that may sit entirely below/above the live price, producing
+    # all-support or all-resistance and hiding the other side.  Fall through
+    # to Schwab if the DB doesn't have enough history yet.
+    MIN_BARS = 60
+
     still_missing = []
     for ticker, db_rows in db_batch.items():
-        if db_rows:
+        if len(db_rows) >= MIN_BARS:
             bars = [{'bar_time': r['bar_date'] + 'T00:00:00+00:00',
                      'high': float(r['high']), 'low': float(r['low']),
                      'close': float(r['close']), 'open': float(r['open'])}
@@ -2544,9 +2550,12 @@ async def get_sr_batch(tickers: str = Query(...)):
             _fib_cache_set(ticker, entry)
             result[ticker] = entry
         else:
+            # DB has too few bars (or none) — fetch from Schwab for proper 90-day range
             still_missing.append(ticker)
+            if db_rows:
+                log.debug('SR %s: only %d DB bars < %d minimum, falling back to Schwab', ticker, len(db_rows), MIN_BARS)
 
-    # 3. Schwab fallback only for tickers not yet in DB (first time ever)
+    # 3. Schwab fallback for tickers with insufficient DB history
     if still_missing:
         sem = asyncio.Semaphore(8)
 
