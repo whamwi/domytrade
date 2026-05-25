@@ -122,15 +122,23 @@ state = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _prev_rth_close(candles: list[dict]) -> float:
-    """Return the close of the most recent completed RTH bar (weekday 9:30–16:00 ET)."""
+    """Return the close of the most recent COMPLETED RTH bar (weekday 9:30–16:00 ET).
+
+    Excludes today's bars so the result is always a prior session's close, never the
+    current intraday bar. This prevents holiday CME bars (which fall in the RTH time
+    window on a weekday) from being mistaken for the prior RTH settlement price.
+    """
     if not candles:
         return 0.0
+    today = datetime.now(ET).date()
     rth = [
         (c['datetime'], c['close'])
         for c in candles
-        if (lambda dt: dt.weekday() < 5 and 9 * 60 + 30 <= dt.hour * 60 + dt.minute < 16 * 60)(
-            datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
-        )
+        if (lambda dt: (
+            dt.date() < today and                          # prior session only
+            dt.weekday() < 5 and
+            9 * 60 + 30 <= dt.hour * 60 + dt.minute < 16 * 60
+        ))(datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET))
     ]
     return float(sorted(rth)[-1][1]) if rth else 0.0
 
