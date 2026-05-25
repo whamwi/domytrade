@@ -2827,28 +2827,56 @@ _STOP_WORDS = {
     'BELOW', 'ENTRY', 'SHORT', 'FIRST', 'AFTER', 'ABOUT', 'WHICH', 'THESE',
     'THOSE', 'BEING', 'DOING', 'GOING', 'THINK', 'USING', 'BASED', 'WATCH',
     'TODAY', 'DAILY', 'INTRA', 'SWING', 'TREND', 'SMART', 'CLEAN', 'QUICK',
+    # Extra common words that happen to match real tickers
+    'WAY', 'KEY', 'ACT', 'ADD', 'AGO', 'AIM', 'ASK', 'BID', 'BOT', 'BUY',
+    'DAY', 'END', 'FED', 'FEW', 'FIB', 'FIX', 'GAP', 'HIT', 'HOD', 'LOD',
+    'LOT', 'MID', 'MIN', 'MAX', 'OFF', 'OUT', 'PAY', 'POC', 'POP', 'PRE',
+    'RAW', 'SAY', 'TAP', 'TRY', 'TWO', 'USE', 'VIX', 'VOL', 'WIN', 'YES',
 }
 
 def _detect_tickers_in_message(msg: str) -> list[str]:
     """Extract stock tickers from message.
-    Strategy: known tickers first (from holdings DB), then any 2-5 uppercase letter word
-    that isn't a common English word. Futures symbols handled separately."""
+
+    Key rules:
+    1. Only match words that are ALREADY uppercase in the original message.
+       This prevents common words like 'way', 'why', 'that' from being
+       detected after msg.upper() — the user must write 'AAPL' not 'aapl'.
+    2. Exclude stems of futures symbols so '/ES' never produces the stock 'ES'.
+       Any /TICKER pattern in the message is added to the exclusion set.
+    3. Known holdings (from DB) take priority over generic word matching.
+    """
     import re
-    words   = re.findall(r'\b([A-Z]{2,5})\b', msg.upper())
-    futures = {'/ES', '/NQ', '/YM', '/RTY', '/GC'}
-    # Priority 1: words in known holdings set
-    known = [w for w in words if w in _KNOWN_TICKERS and w not in futures]
-    # Priority 2: unknown words that look like tickers (not stop words, 2-5 chars)
+
+    # Build exclusion set: stems of all known futures symbols
+    # e.g. /ES → 'ES', /NQ → 'NQ' — these are NOT stocks
+    futures_roots = {f.lstrip('/') for f in {'/ES', '/NQ', '/YM', '/RTY', '/GC'}}
+    # Also catch any /TICKER pattern the user typed (e.g. "/CL", "/ZC")
+    for m in re.finditer(r'/([A-Z]{2,5})', msg.upper()):
+        futures_roots.add(m.group(1))
+
+    # Only extract words that are uppercase IN THE ORIGINAL message.
+    # This is the critical fix: 'way' → not matched; 'WAY' → matched.
+    words = re.findall(r'\b([A-Z]{2,5})\b', msg)   # original case, not .upper()
+
+    # Priority 1: words in known holdings set (explicit stock tickers from DB)
+    known = [w for w in words
+             if w.upper() in _KNOWN_TICKERS
+             and w.upper() not in futures_roots
+             and w.upper() not in _STOP_WORDS]
+
+    # Priority 2: other uppercase words that look like tickers
     unknown = [w for w in words
-               if w not in _KNOWN_TICKERS
-               and w not in futures
-               and w not in _STOP_WORDS
+               if w.upper() not in _KNOWN_TICKERS
+               and w.upper() not in futures_roots
+               and w.upper() not in _STOP_WORDS
                and 2 <= len(w) <= 5]
-    # Deduplicate, known first, cap at 5
+
+    # Deduplicate preserving order, known first, cap at 5
     seen: list[str] = []
     for w in known + unknown:
-        if w not in seen:
-            seen.append(w)
+        wu = w.upper()
+        if wu not in seen:
+            seen.append(wu)
     return seen[:5]
 
 
