@@ -2400,16 +2400,17 @@ def _compute_fib_sr(bars: list[dict], price_key: str = 'bar_time') -> dict:
         return {'resistance': [], 'support': [], 'fib_high': swing_high, 'fib_low': swing_low,
                 'current_price': current_price, 'bars': len(sorted_bars)}
 
-    # upward  = low came first, high came last → retracement from high down (TOS: lownumberall > highnumberall)
-    # downward = high came first, low came last → bounce from low up
-    upward = low_idx > high_idx
+    # Match TOS direction logic:
+    #   high came last (uptrend)   → draw Fib from HIGH downward: 0% = high, 100% = low
+    #   low  came last (downtrend) → draw Fib from LOW  upward:   0% = low,  100% = high
+    high_came_last = high_idx > low_idx
 
     levels = []
     for ratio, label in _FIB_RATIOS:
-        if upward:
-            price = round(swing_high - diff * ratio, 4)
+        if high_came_last:
+            price = round(swing_high - diff * ratio, 4)   # 0%=high → 100%=low
         else:
-            price = round(swing_low  + diff * ratio, 4)
+            price = round(swing_low  + diff * ratio, 4)   # 0%=low  → 100%=high
 
         dist_pct = round((price - current_price) / current_price * 100, 2) if current_price else 0
         levels.append({
@@ -2428,7 +2429,7 @@ def _compute_fib_sr(bars: list[dict], price_key: str = 'bar_time') -> dict:
         'current_price': current_price,
         'fib_high'     : round(swing_high, 4),
         'fib_low'      : round(swing_low,  4),
-        'direction'    : 'upward' if upward else 'downward',
+        'direction'    : 'high_last' if high_came_last else 'low_last',
         'bars'         : len(sorted_bars),
     }
 
