@@ -1591,14 +1591,16 @@ async def get_levels(symbol: str):
     #
     # state['prev_close'] is populated from 1-min bar filtering (last bar before
     # 16:00 ET) — the true RTH close, same source the market bias strip uses.
-    # Fall back to the daily candle prev_close only if state hasn't warmed yet.
-    #
     # Positive = gap up (opened above prior RTH close), Negative = gap down.
+    #
+    # Priority: daily-candle prev_close (already scoped to dates < today, so
+    # immune to holiday CME bars that share the 9:30–16:00 weekday window).
+    # Fall back to state['prev_close'] only when daily candles aren't loaded yet.
     gap = None
     _sym_obj = next((s for s in state['symbols'] if s['ticker'] == symbol), None)
     _sym_obj_id = _sym_obj['id'] if _sym_obj else None
     _rth_prev = state['prev_close'].get(_sym_obj_id) if _sym_obj_id else None
-    gap_baseline = _rth_prev if _rth_prev else prev_close
+    gap_baseline = prev_close or _rth_prev   # daily close wins; state fallback only at cold start
     if gap_baseline:
         today_all_sorted = sorted(
             on_by_date.get(today, []) + rth_by_date.get(today, []),
@@ -2026,9 +2028,9 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
         sid_agent     = sym_obj_agent['id'] if sym_obj_agent else None
         ib_data       = state['ib'].get(sid_agent, {}) if sid_agent else {}
 
-        # Gap from RTH prev close
+        # Gap from RTH prev close — prefer daily-candle prev_close (date-scoped, holiday-safe)
         _rth_c_agent   = state['prev_close'].get(sid_agent) if sid_agent else None
-        gap_baseline_agent = _rth_c_agent if _rth_c_agent else prev_close
+        gap_baseline_agent = prev_close or _rth_c_agent
         today_all_agent = sorted(
             on_by_date.get(today, []) + rth_by_date.get(today, []),
             key=lambda c: c['datetime']
