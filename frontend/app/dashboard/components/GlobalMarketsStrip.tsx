@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-const REFRESH_MS = 15 * 60 * 1000   // 15 min — matches backend cache TTL
+const REFRESH_MS       = 15 * 60 * 1000   // 15 min when data is good
+const RETRY_EMPTY_MS   =  2 * 60 * 1000   //  2 min retry when strip has no data yet
 
 const REGION_FLAG: Record<string, string> = {
   JP: '🇯🇵',
@@ -47,15 +48,21 @@ export default function GlobalMarketsStrip() {
   const fetchData = useCallback(async () => {
     try {
       const res  = await fetch(`${API_URL}/api/global-markets`, { cache: 'no-store' })
-      if (res.ok) setData(await res.json())
+      if (res.ok) {
+        const json: GlobalMarketsData = await res.json()
+        // Don't overwrite good data with empty — yfinance is sometimes rate-limited
+        // on Railway IPs. Keep showing the last known values until real data returns.
+        if (json.asia?.length || json.fx?.length) setData(json)
+      }
     } catch { /* keep stale */ }
   }, [])
 
   useEffect(() => {
     fetchData()
-    const id = setInterval(fetchData, REFRESH_MS)
+    // Poll faster when we have no data yet, slow down once the strip is populated
+    const id = setInterval(fetchData, data ? REFRESH_MS : RETRY_EMPTY_MS)
     return () => clearInterval(id)
-  }, [fetchData])
+  }, [fetchData, data])
 
   if (!data || (!data.asia.length && !data.fx.length)) return null
 
