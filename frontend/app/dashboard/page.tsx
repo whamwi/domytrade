@@ -26,7 +26,7 @@ interface ApiResponse {
   status: string
 }
 
-type SideFilter = 'all' | 'longs' | 'shorts'
+type SideFilter  = 'all' | 'longs' | 'shorts'
 type ModelFilter = 'all' | 'AGG' | 'CON'
 type AssetFilter = 'all' | 'equities' | 'futures' | 'sectors'
 
@@ -106,9 +106,10 @@ export default function DashboardPage() {
 
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
 
-  const [sideFilter, setSideFilter] = useState<SideFilter>('all')
+  const [sideFilter, setSideFilter]   = useState<SideFilter>('all')
   const [modelFilter, setModelFilter] = useState<ModelFilter>('all')
   const [assetFilter, setAssetFilter] = useState<AssetFilter>('all')
+  const [showAsiaFX, setShowAsiaFX]   = useState(false)
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -376,13 +377,27 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
+
+          {/* Asia / FX toggle */}
+          <button
+            onClick={() => setShowAsiaFX(v => !v)}
+            title={showAsiaFX ? 'Hide Asia & FX' : 'Show Asia & FX (Risk On/Off)'}
+            className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
+            style={
+              showAsiaFX
+                ? { background: 'var(--accent-blue)', color: '#fff' }
+                : { background: 'var(--bg-panel)', color: 'var(--text-muted)' }
+            }
+          >
+            🌏 Asia &amp; FX
+          </button>
         </div>
 
         {/* Market bias strip */}
         <MarketBias markets={marketBias} />
 
-        {/* Asian markets + FX risk-on/off strip */}
-        <GlobalMarketsStrip />
+        {/* Asian markets + FX risk-on/off strip — shown only when toggled */}
+        {showAsiaFX && <GlobalMarketsStrip />}
 
         {/* Industries performance strip (% from RTH open) */}
         <SectorStrip sectors={industries} label="INDUSTRIES" />
