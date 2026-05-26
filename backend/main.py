@@ -118,6 +118,7 @@ state = {
     'last_stats_update': None,
     'last_signal_update': None,
     'status'           : 'starting',
+    'active_contracts'  : {},   # {ticker: active_contract} e.g. {'/GC': '/GCQ26'}
 }
 
 
@@ -370,7 +371,7 @@ async def compute_all_stats():
             # Fetch 90d candles from Schwab and persist to DB
             # Futures price history requires a specific contract month symbol (e.g. /ESM26)
             # Continuous symbols like /ES:XCME are rejected by Schwab's price history API
-            candle_sym = front_month_code(tick) if tick.startswith('/') else api
+            candle_sym = _active_contract(tick) if tick.startswith('/') else api
             log.info('  %-8s  fetching candles as %s', tick, candle_sym)
             con_candles = await asyncio.to_thread(get_candles, candle_sym, CON_DAYS)
             rows = _candles_to_rows(sid, con_candles)
@@ -430,7 +431,7 @@ async def compute_all_stats():
         sid      = sym['id']
         lb_days  = 10 if tick in MARKET_TICKERS else 3
         try:
-            bars = await asyncio.to_thread(get_candles, front_month_code(tick), lb_days, 1)
+            bars = await asyncio.to_thread(get_candles, _active_contract(tick), lb_days, 1)
             rows = _candles_to_1min_rows(sid, bars)
             if rows:
                 upsert_1min(rows)
@@ -575,7 +576,7 @@ async def refresh_signals():
     # Equities/ETFs use schwab_symbol as-is.
     def _quote_sym(s):
         tick = s['ticker']
-        return front_month_code(tick) if tick.startswith('/') else s['schwab_symbol']
+        return _active_contract(tick) if tick.startswith('/') else s['schwab_symbol']
 
     quote_syms = [_quote_sym(s) for s in symbols]
     # Map back: quote_symbol → schwab_symbol so we can look up the right key
@@ -795,6 +796,58 @@ async def refresh_signals():
 STRIP_REFRESH_SECS    = 3600        # refresh strip RTH opens once per hour
 HOLDINGS_REFRESH_SECS = 86400       # refresh ETF holdings once per day
 MIN1_REFRESH_SECS     = 60          # refresh 1-min bars for all futures
+CONTRACT_REFRESH_SECS = 3600        # re-check active contracts once per hour
+
+
+def _active_contract(ticker: str) -> str:
+    """Return the Schwab-confirmed active contract symbol, e.g. '/GCQ26'.
+    Falls back to computed front_month_code if not yet populated."""
+    return state['active_contracts'].get(ticker) or front_month_code(ticker)
+
+
+async def refresh_active_contracts() -> None:
+    """Discover the true active front-month contract for every futures symbol by
+    querying Schwab with continuous symbols (e.g. /GC:XCME).
+
+    Schwab echoes back the *specific* active contract key in its response
+    (e.g. /GCQ26 instead of /GC:XCME), so we just read the response keys.
+
+    This is called at startup (before compute_all_stats) and every hour so rolls
+    are picked up automatically — no manual month-code tables needed.
+    """
+    futures = [s for s in state['symbols'] if s['ticker'].startswith('/')]
+    if not futures:
+        return
+
+    continuous_syms = [s['schwab_symbol'] for s in futures]
+    try:
+        raw = await asyncio.to_thread(get_quotes, continuous_syms)
+    except Exception as e:
+        log.warning('refresh_active_contracts error: %s', e)
+        return
+
+    # raw keys are whatever Schwab returned — specific contracts like /GCQ26 or
+    # /GCQ26:XCME.  Match each back to its base ticker by prefix.
+    # A valid contract key starts with the ticker base + a month-letter + 2-digit year.
+    # e.g. '/GCQ26' starts with '/GC', extra = 'Q26', extra[0].isalpha() ✓
+    # Continuous symbol '/GC:XCME' → split(':')[0] = '/GC', extra = '' → skip.
+    updated: dict[str, str] = {}
+    for resp_key in raw:
+        base_resp = resp_key.split(':')[0]          # strip exchange suffix
+        for sym in futures:
+            base_tick = sym['ticker']               # e.g. '/GC'
+            extra = base_resp[len(base_tick):]      # e.g. 'Q26'
+            if extra and extra[0].isalpha():        # month letter → specific contract
+                updated[base_tick] = base_resp
+                break
+
+    if updated:
+        state['active_contracts'].update(updated)
+        log.info('Active contracts (%d): %s', len(updated),
+                 '  '.join(f'{k}→{v}' for k, v in sorted(updated.items())))
+    else:
+        log.warning('refresh_active_contracts: no specific contracts found in response keys: %s',
+                    list(raw.keys())[:10])
 
 
 async def refresh_all_1min():
@@ -817,7 +870,7 @@ async def refresh_all_1min():
         tick = sym['ticker']
         sid  = sym['id']
         try:
-            api_sym = front_month_code(tick)
+            api_sym = _active_contract(tick)
             candles = await asyncio.to_thread(get_session_bars, api_sym)
             return sid, (candles or [])
         except Exception as e:
@@ -1201,6 +1254,7 @@ async def background_loop():
         _contract = front_month_code(_s['ticker'])
         log.info('  %-8s  →  %s', _s['ticker'], _contract)
 
+    await refresh_active_contracts()  # discover true active contracts FIRST (e.g. /GCQ26 not /GCM26)
     await compute_all_stats()
     await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
     await refresh_mag10_prices()  # prime MAG10 live prices before first request
@@ -1212,13 +1266,14 @@ async def background_loop():
     asyncio.create_task(refresh_ytd())
     asyncio.create_task(refresh_daily_candles(incremental=False))  # full 90-day batch
 
-    last_strip_refresh    = time.time()
-    last_holdings_refresh = time.time()
-    last_ytd_refresh      = time.time()
-    last_candle_purge     = time.time()
-    last_daily_refresh    = time.time()
-    last_daily_close_run  = ''   # 'YYYY-MM-DD' of last 4:30 PM run
-    last_1min_agg_run     = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
+    last_strip_refresh      = time.time()
+    last_holdings_refresh   = time.time()
+    last_ytd_refresh        = time.time()
+    last_candle_purge       = time.time()
+    last_daily_refresh      = time.time()
+    last_contract_refresh   = time.time()
+    last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
+    last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
@@ -1241,6 +1296,11 @@ async def background_loop():
             asyncio.create_task(refresh_etf_holdings())
             _candle_tickers.clear()   # force ticker list reload after holdings refresh
             last_holdings_refresh = time.time()
+
+        # Re-check active contracts once per hour (catches roll days automatically)
+        if time.time() - last_contract_refresh >= CONTRACT_REFRESH_SECS:
+            await refresh_active_contracts()
+            last_contract_refresh = time.time()
 
         # Refresh YTD once per day
         if time.time() - last_ytd_refresh >= HOLDINGS_REFRESH_SECS:
