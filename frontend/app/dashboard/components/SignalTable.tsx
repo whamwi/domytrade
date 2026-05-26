@@ -387,6 +387,13 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
           >
             <span style={{ fontSize: 8 }}>●</span> NEAR
           </span>
+        ) : sig.signal_state === 'NEUTRAL' ? (
+          <span
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wider"
+            style={{ background: 'rgba(100,116,139,0.12)', color: '#64748b' }}
+          >
+            NEUTRAL
+          </span>
         ) : (
           <Dash />
         )}

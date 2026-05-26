@@ -267,30 +267,44 @@ def make_signal(
         t1: float
         target: float
 
+        mid = (shortT + longT) / 2   # midpoint of neutral zone
+
         if phase1 and daily_bias:
-            # ── Phase 1: strict bias, suppress opposite side ──────────────
+            # ── Phase 1: strict bias ──────────────────────────────────────
             if daily_bias == 'LONG':
-                if last_price > shortT:
-                    continue   # price hasn't retreated enough — no signal yet
                 side   = 'LONG'
                 entry  = hourlyRLH
                 stop   = long_stop
                 t1     = long_t1
                 target = longT
-                signal_state = 'ENTRY' if last_price <= hourlyRLH else 'NEAR'
+                if last_price > shortT:
+                    signal_state = 'NEUTRAL'   # waiting for retreat
+                elif last_price <= hourlyRLH:
+                    signal_state = 'ENTRY'
+                else:
+                    signal_state = 'NEAR'
             else:  # SHORT bias
-                if last_price < longT:
-                    continue   # price hasn't bounced enough — no signal yet
                 side   = 'SHORT'
                 entry  = hourlyRHL
                 stop   = short_stop
                 t1     = short_t1
                 target = shortT
-                signal_state = 'ENTRY' if last_price >= hourlyRHL else 'NEAR'
+                if last_price < longT:
+                    signal_state = 'NEUTRAL'   # waiting for bounce
+                elif last_price >= hourlyRHL:
+                    signal_state = 'ENTRY'
+                else:
+                    signal_state = 'NEAR'
         else:
-            # ── Phase 2: position-driven, neutral zone = no signal ────────
+            # ── Phase 2 / pre-market: position-driven ────────────────────
             if shortT < last_price < longT:
-                continue   # neutral zone — suppress
+                # Neutral zone — show levels, side by nearest gray
+                side   = 'LONG'  if last_price <= mid else 'SHORT'
+                entry  = hourlyRLH if side == 'LONG' else hourlyRHL
+                stop   = long_stop if side == 'LONG' else short_stop
+                t1     = long_t1   if side == 'LONG' else short_t1
+                target = longT     if side == 'LONG' else shortT
+                signal_state = 'NEUTRAL'
             elif last_price <= shortT:
                 side   = 'LONG'
                 entry  = hourlyRLH
