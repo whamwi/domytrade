@@ -693,15 +693,28 @@ async def refresh_signals():
             except Exception:
                 pass
 
-            # Gap = RTH open vs prior CME settlement.
+            # Gap = RTH 9:30 open vs prior CME settlement.
             # prev_settle = last - net_change = exact CME settlement (most accurate for futures).
-            # rth_open: use live q_open when RTH is active; fall back to the last stored
-            # rth_open (populated each RTH session) so gap is visible off-hours too.
-            rth_open_for_gap = q_open or state['rth_open'].get(sid, 0)
+            # rth_open: find the first 1-min bar at exactly 9:30 ET from today_rows.
+            # q.get('open') from Schwab is the CME SESSION open (Sunday 6 PM), NOT 9:30 — don't use it.
+            rth_open_for_gap = None
+            try:
+                for r in today_rows:   # already ordered bar_time ASC
+                    dt_r = datetime.fromisoformat(r['bar_time']).astimezone(ET)
+                    if dt_r.hour == 9 and dt_r.minute == 30:
+                        rth_open_for_gap = r['open']
+                        break
+            except Exception:
+                pass
+            # Persist for off-hours display (so gap stays visible after 4 PM)
+            if rth_open_for_gap:
+                state['rth_open'][sid] = round(rth_open_for_gap, 4)
+            else:
+                rth_open_for_gap = state['rth_open'].get(sid)
             gap = round(rth_open_for_gap - prev_settle, 2) if (rth_open_for_gap and prev_settle) else None
             state['market_bias'][sid] = {
                 'bias': mbias, 'pts': pts,
-                'rth_open': q_open, 'prev_close': prev_settle,
+                'rth_open': rth_open_for_gap, 'prev_close': prev_settle,
                 'vwap': vp['vwap'], 'poc': vp['poc'],
                 'gap': gap,
             }
