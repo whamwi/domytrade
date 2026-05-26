@@ -98,7 +98,7 @@ def get_1min_today(symbol_id: int) -> list[dict]:
     midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
     cutoff   = midnight.astimezone(timezone.utc).isoformat()
     res = (get_db().table('ohlc_1min')
-           .select('open,high,low,close,volume')
+           .select('bar_time,open,high,low,close,volume')
            .eq('symbol_id', symbol_id)
            .gte('bar_time', cutoff)
            .order('bar_time')
@@ -259,6 +259,114 @@ def delete_old_ticker_candles(keep_days: int = 4) -> int:
            .lt('bar_time', cutoff)
            .execute())
     return len(res.data) if res.data else 0
+
+
+# ── 15-min aggregation (daily compaction job) ─────────────────────────────────
+
+def aggregate_1min_to_15min(cutoff_days: int = 2) -> dict:
+    """
+    Aggregate ohlc_1min bars older than `cutoff_days` into 15-min OHLCV bars.
+
+    Steps:
+      1. Fetch all 1-min rows older than the cutoff (in pages to avoid row cap).
+      2. Group into 15-min buckets keyed by (symbol_id, bucket_bar_time).
+         bucket_bar_time = floor(minute / 15) * 15, seconds zeroed.
+      3. Upsert into ohlc_15min — on_conflict='symbol_id,bar_time' prevents duplicates
+         (safe to re-run; existing 15-min bars are simply overwritten with the same data).
+      4. Delete the processed 1-min rows (only after successful upsert).
+
+    Returns {'aggregated': N_buckets, 'deleted': N_1min_rows}.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=cutoff_days)).isoformat()
+
+    # ── Step 1: page through old 1-min rows ───────────────────────────────────
+    rows_1min: list[dict] = []
+    PAGE = 1000
+    offset = 0
+    while True:
+        res = (get_db().table('ohlc_1min')
+               .select('symbol_id,bar_time,open,high,low,close,volume')
+               .lt('bar_time', cutoff)
+               .order('bar_time')
+               .range(offset, offset + PAGE - 1)
+               .execute())
+        rows_1min.extend(res.data)
+        if len(res.data) < PAGE:
+            break
+        offset += PAGE
+
+    if not rows_1min:
+        return {'aggregated': 0, 'deleted': 0}
+
+    # ── Step 2: group into 15-min buckets ─────────────────────────────────────
+    # We need a stable ordering within each bucket to get correct open/close.
+    # Sort by bar_time so the first row = open, last row = close.
+    rows_1min.sort(key=lambda r: r['bar_time'])
+
+    buckets: dict[tuple, dict] = {}
+    for r in rows_1min:
+        dt = datetime.fromisoformat(r['bar_time'])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        minute_floor = (dt.minute // 15) * 15
+        bucket_dt    = dt.replace(minute=minute_floor, second=0, microsecond=0)
+        key          = (r['symbol_id'], bucket_dt.isoformat())
+
+        if key not in buckets:
+            buckets[key] = {
+                'open'  : r['open'],
+                'high'  : r['high'],
+                'low'   : r['low'],
+                'close' : r['close'],
+                'volume': r.get('volume') or 0,
+            }
+        else:
+            b = buckets[key]
+            if r['high'] > b['high']:
+                b['high'] = r['high']
+            if r['low'] < b['low']:
+                b['low'] = r['low']
+            b['close']   = r['close']          # always last close in bucket
+            b['volume'] += (r.get('volume') or 0)
+
+    # ── Step 3: upsert 15-min rows (idempotent) ───────────────────────────────
+    rows_15min = [
+        {
+            'symbol_id': k[0],
+            'bar_time' : k[1],
+            'open'     : v['open'],
+            'high'     : v['high'],
+            'low'      : v['low'],
+            'close'    : v['close'],
+            'volume'   : v['volume'],
+        }
+        for k, v in buckets.items()
+    ]
+
+    # Upsert in chunks to stay well under Supabase payload limits (~500 rows/request)
+    CHUNK = 500
+    for i in range(0, len(rows_15min), CHUNK):
+        (get_db().table('ohlc_15min')
+         .upsert(rows_15min[i:i + CHUNK], on_conflict='symbol_id,bar_time')
+         .execute())
+
+    # ── Step 4: delete aggregated 1-min rows ──────────────────────────────────
+    # Delete in pages; Supabase bulk-delete has the same row-cap as select.
+    deleted = 0
+    while True:
+        res = (get_db().table('ohlc_1min')
+               .delete()
+               .lt('bar_time', cutoff)
+               .limit(CHUNK)
+               .execute())
+        batch = len(res.data) if res.data else 0
+        deleted += batch
+        if batch < CHUNK:
+            break
+
+    return {'aggregated': len(rows_15min), 'deleted': deleted}
 
 
 # ── VBH Signals ───────────────────────────────────────────────────────────────

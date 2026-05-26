@@ -23,6 +23,9 @@ export interface Signal {
   entry: number
   stop: number
   target: number
+  lower_gray: number
+  upper_gray: number
+  near_gray: boolean
   last: number
   prev_close: number
   net_change?: number | null
@@ -64,22 +67,17 @@ function fmt(price: number): string {
 
 const COLS = [
   { label: '#',           align: 'left'  },
-  { label: 'SYMBOL',       align: 'left'  },
+  { label: 'SYMBOL',      align: 'left'  },
   { label: 'LAST',        align: 'right' },
   { label: 'CHG',         align: 'right' },
+  { label: 'MODEL',       align: 'left'  },  // AGG or CON
   { label: 'SIDE',        align: 'left'  },
+  { label: 'ALERT',       align: 'left'  },  // near gray trigger
   { label: 'ENTRY',       align: 'right' },
   { label: 'STOP',        align: 'right' },
   { label: 'TARGET',      align: 'right' },
-  { label: 'SENS',        align: 'left'  },
-  { label: 'MODEL',       align: 'left'  },
   { label: 'DAILY SWING', align: 'left'  },
-  { label: 'STAGE',       align: 'left'  },
-  { label: 'DAYS',        align: 'right' },
-  { label: 'SIGNAL',      align: 'left'  },
-  { label: 'WIN%',        align: 'right' },
-  { label: 'EV',          align: 'right' },
-  { label: 'SCORE',       align: 'left'  },
+  { label: 'STAGE',       align: 'left'  },  // Phase 2
 ]
 
 function HeaderRow() {
@@ -198,6 +196,79 @@ function ETFSymbolCell({
   )
 }
 
+// ── Entry cell with h_high / h_low tooltip ──────────────────────────────────
+function EntryCell({ sig }: { sig: Signal }) {
+  const [hovered, setHovered] = useState(false)
+  const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
+  // Flat bar only meaningful for equities — futures trade 23h so flat bar = no 1-min data, not closed
+  const flatBar   = sig.hour_high === sig.hour_low && !isFutures
+
+  return (
+    <div
+      style={{ position: 'relative', display: 'inline-block', cursor: 'default' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <span style={{ color: flatBar ? 'var(--text-dim)' : 'var(--text-primary)', fontSize: '13px' }}>
+        {fmt(sig.entry)}
+      </span>
+      {flatBar && (
+        <span
+          title="No live candle — market closed or no data for this hour"
+          style={{
+            marginLeft:   4,
+            fontSize:     9,
+            fontWeight:   700,
+            letterSpacing:'0.05em',
+            color:        '#94a3b8',
+            background:   'rgba(100,116,139,0.12)',
+            borderRadius: 3,
+            padding:      '1px 4px',
+            verticalAlign:'middle',
+          }}
+        >
+          CLOSED
+        </span>
+      )}
+
+      {hovered && isFutures && (
+        <div
+          style={{
+            position:    'absolute',
+            bottom:      'calc(100% + 6px)',
+            right:       0,
+            padding:     '6px 10px',
+            borderRadius:'6px',
+            background:  'var(--bg-panel)',
+            border:      '1px solid var(--border)',
+            color:       'var(--text-muted)',
+            fontSize:    '11px',
+            whiteSpace:  'nowrap',
+            pointerEvents:'none',
+            zIndex:      50,
+            boxShadow:   '0 4px 16px rgba(0,0,0,0.4)',
+          }}
+        >
+          <div style={{ marginBottom: 2 }}>
+            <span style={{ color: 'var(--text-dim)' }}>Hour H: </span>
+            <span style={{ color: '#f87171', fontWeight: 600 }}>{fmt(sig.hour_high)}</span>
+          </div>
+          <div style={{ marginBottom: 2 }}>
+            <span style={{ color: 'var(--text-dim)' }}>Hour L: </span>
+            <span style={{ color: '#4ade80', fontWeight: 600 }}>{fmt(sig.hour_low)}</span>
+          </div>
+          <div style={{ marginTop: 4, paddingTop: 4, borderTop: '1px solid var(--border)' }}>
+            <span style={{ color: 'var(--text-dim)' }}>L1: </span>
+            <span>{sig.l1.toFixed(2)}</span>
+            <span style={{ color: 'var(--text-dim)', marginLeft: 8 }}>σ: </span>
+            <span>{(sig.l2 - sig.l1).toFixed(2)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Active signal row ────────────────────────────────────────────────────────
 interface ActiveRowProps {
   sig: Signal
@@ -210,6 +281,9 @@ interface ActiveRowProps {
 function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowProps) {
   const isSector  = SECTOR_TICKERS.has(sig.symbol)
   const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
+  // Futures trade ~23h — a flat bar just means no 1-min data, not that the market is closed.
+  // Only show the CLOSED badge for equities/ETFs where flat bar = genuinely no session.
+  const flatBar   = sig.hour_high === sig.hour_low && !isFutures
 
   // Use Schwab net_change (matches TOS) — falls back to last-prev_close if unavailable
   const change    = sig.net_change != null ? sig.net_change
@@ -222,7 +296,7 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
   return (
     <tr
       className="transition-colors"
-      style={{ borderBottom: '1px solid var(--border)' }}
+      style={{ borderBottom: '1px solid var(--border)', opacity: flatBar ? 0.45 : 1 }}
       onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-row-hover)' }}
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
     >
@@ -266,6 +340,18 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
         ) : <Dash />}
       </td>
 
+      {/* MODEL (AGG / CON) */}
+      <td className="px-3 py-2.5">
+        <span
+          className="inline-block rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
+          style={sig.model === 'AGG'
+            ? { background: 'var(--amber-bg)', color: '#fbbf24' }
+            : { background: 'var(--indigo-bg)', color: '#a5b4fc' }}
+        >
+          {sig.model}
+        </span>
+      </td>
+
       {/* SIDE */}
       <td className="px-3 py-2.5">
         <span
@@ -278,9 +364,23 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
         </span>
       </td>
 
-      {/* ENTRY */}
-      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
-        {fmt(sig.entry)}
+      {/* ALERT — price within 5 ticks of trigger gray */}
+      <td className="px-3 py-2.5">
+        {sig.near_gray ? (
+          <span
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
+            style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', animation: 'pulse 2s infinite' }}
+          >
+            <span style={{ fontSize: 8 }}>●</span> NEAR
+          </span>
+        ) : (
+          <Dash />
+        )}
+      </td>
+
+      {/* ENTRY — tooltip shows h_high / h_low */}
+      <td className="px-3 py-2.5 text-right tabular-nums" style={{ position: 'relative' }}>
+        <EntryCell sig={sig} />
       </td>
 
       {/* STOP */}
@@ -288,31 +388,9 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
         {fmt(sig.stop)}
       </td>
 
-      {/* TARGET */}
+      {/* TARGET (gray T2) */}
       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#4ade80', fontSize: '13px' }}>
         {fmt(sig.target)}
-      </td>
-
-      {/* SENS (AGG / CON) */}
-      <td className="px-3 py-2.5">
-        <span
-          className="inline-block rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
-          style={sig.model === 'AGG'
-            ? { background: 'var(--amber-bg)', color: '#fbbf24' }
-            : { background: 'var(--indigo-bg)', color: '#a5b4fc' }}
-        >
-          {sig.model}
-        </span>
-      </td>
-
-      {/* MODEL (timeframe — always HOURLY for now) */}
-      <td className="px-3 py-2.5">
-        <span
-          className="inline-block rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
-          style={{ background: '#1e293b', color: '#94a3b8' }}
-        >
-          HOURLY
-        </span>
       </td>
 
       {/* DAILY SWING */}
@@ -326,21 +404,6 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
 
       {/* STAGE — Phase 2 */}
       <td className="px-3 py-2.5 text-center"><Dash /></td>
-
-      {/* DAYS — Phase 2 */}
-      <td className="px-3 py-2.5 text-right"><Dash /></td>
-
-      {/* SIGNAL type — Phase 2 */}
-      <td className="px-3 py-2.5"><Dash /></td>
-
-      {/* WIN% — Phase 2 */}
-      <td className="px-3 py-2.5 text-right"><Dash /></td>
-
-      {/* EV — Phase 2 */}
-      <td className="px-3 py-2.5 text-right"><Dash /></td>
-
-      {/* SCORE — Phase 2 */}
-      <td className="px-3 py-2.5"><Dash /></td>
     </tr>
   )
 }
@@ -409,8 +472,8 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, ytdMap }: NoSignal
           </>
         ) : <Dash />}
       </td>
-      {/* Fill remaining 13 columns with dashes */}
-      {Array.from({ length: 13 }).map((_, i) => (
+      {/* Fill remaining 8 columns with dashes (MODEL, SIDE, ALERT, ENTRY, STOP, TARGET, DAILY SWING, STAGE) */}
+      {Array.from({ length: 8 }).map((_, i) => (
         <td key={i} className="px-3 py-2 text-center">
           <Dash />
         </td>

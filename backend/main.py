@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from schwab_client import get_quotes, get_candles, get_daily_candles, get_current_hour_ohlc, get_session_bars, front_month_code
-from vbh_engine import compute_stats, make_signal
+from vbh_engine import compute_stats, compute_stats_con, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
                 upsert_1min, get_1min_today, get_1min_range,
@@ -25,7 +25,8 @@ from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 get_last_bar_times, delete_old_ticker_candles,
                 upsert_daily_candles, get_daily_candles_db, get_daily_candles_batch,
                 get_last_daily_bar_dates, delete_old_daily_candles,
-                get_etf_holdings, set_etf_holdings)
+                get_etf_holdings, set_etf_holdings,
+                aggregate_1min_to_15min)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -381,8 +382,8 @@ async def compute_all_stats():
             cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=AGG_DAYS)).timestamp() * 1000)
             agg_candles = [c for c in con_candles if c['datetime'] >= cutoff_ms]
 
-            state['stats_agg'][sid]    = compute_stats(agg_candles)
-            state['stats_con'][sid]    = compute_stats(con_candles)
+            state['stats_agg'][sid]    = compute_stats(agg_candles, api)
+            state['stats_con'][sid]    = compute_stats_con(con_candles, api)
             state['prev_close'][sid]   = _prev_rth_close(con_candles)
             state['market_bias'][sid]  = _rth_bias(con_candles)
             # Seed last_price with the absolute last candle close (any session).
@@ -418,19 +419,22 @@ async def compute_all_stats():
         except Exception as e:
             log.warning('  %-8s  ERROR: %s', tick, e)
 
-    # Backfill 10 days of 1-min bars for the 4 market futures → DB
-    log.info('Backfilling 10d 1-min bars for market futures…')
+    # Backfill 1-min bars for ALL futures → DB
+    # Market futures (/ES /NQ /YM /RTY): 10 days — needed for VWAP/IB history.
+    # All other futures: 3 days — covers overnight + 2 prior sessions for hourly OHLC.
+    log.info('Backfilling 1-min bars for all futures…')
     for sym in symbols:
         tick = sym['ticker']
-        if tick not in MARKET_TICKERS:
+        if not tick.startswith('/'):
             continue
-        sid = sym['id']
+        sid      = sym['id']
+        lb_days  = 10 if tick in MARKET_TICKERS else 3
         try:
-            bars = await asyncio.to_thread(get_candles, front_month_code(tick), 10, 1)
+            bars = await asyncio.to_thread(get_candles, front_month_code(tick), lb_days, 1)
             rows = _candles_to_1min_rows(sid, bars)
             if rows:
                 upsert_1min(rows)
-            log.info('  %-8s  1min=%d bars saved', tick, len(rows))
+            log.info('  %-8s  1min=%d bars saved (%dd)', tick, len(rows), lb_days)
             await asyncio.sleep(0.3)
         except Exception as e:
             log.warning('  %-8s  1min ERROR: %s', tick, e)
@@ -564,12 +568,22 @@ async def refresh_signals():
     _et_min  = _now_et.hour * 60 + _now_et.minute
     _is_rth  = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
 
-    # For futures, use the specific contract month symbol for quotes (e.g. /ESM26)
-    # — the continuous symbol (/ES:XCME) may return zero net_change when CME is closed.
-    # For equities, use the schwab_symbol as-is.
+    # Quote symbol strategy:
+    #   • Market futures (/ES /NQ /YM /RTY): use the specific contract month symbol
+    #     (e.g. /ESM26) — the continuous symbol may return zero net_change when CME
+    #     is closed, which we need for the bias computation.
+    #   • All other futures: use schwab_symbol (continuous, e.g. /GC:XCME).
+    #     Continuous symbols auto-roll on Schwab and always return a live lastPrice,
+    #     avoiding near-expiry contract gaps for commodity futures (gold rolls ~3 days
+    #     before First Notice Day, energy rolls on the 20th of the prior month, etc.).
+    #   • Equities/ETFs: use schwab_symbol as-is.
     def _quote_sym(s):
         tick = s['ticker']
-        return front_month_code(tick) if tick.startswith('/') else s['schwab_symbol']
+        if not tick.startswith('/'):
+            return s['schwab_symbol']
+        if tick in MARKET_TICKERS:
+            return front_month_code(tick)   # specific contract for accurate net_change
+        return s['schwab_symbol']           # continuous — reliable last price for all others
 
     quote_syms = [_quote_sym(s) for s in symbols]
     # Map back: quote_symbol → schwab_symbol so we can look up the right key
@@ -646,16 +660,16 @@ async def refresh_signals():
                 mbias = 'BULL'
             else:
                 mbias = 'BEAR'
-            # Keep 1-min DB current: upsert today's bars, then read back for VWAP/POC
-            try:
-                fresh = await asyncio.to_thread(get_session_bars, front_month_code(tick))
-                if fresh:
-                    upsert_1min(_candles_to_1min_rows(sid, fresh))
-            except Exception:
-                pass
+            # 1-min bars are now kept current by refresh_all_1min() which runs
+            # before every refresh_signals() cycle — no need to fetch again here.
+            # Just read back what's already in DB for VWAP/POC and IB computation.
+            fresh = []
             try:
                 today_rows = get_1min_today(sid)
                 vp = _compute_vwap_poc(today_rows, MARKET_TICK.get(tick, 0.25))
+                # Convert DB rows back to candle-like dicts for IB computation below
+                fresh = [{'datetime': int(datetime.fromisoformat(r['bar_time']).timestamp() * 1000),
+                           'high': r['high'], 'low': r['low']} for r in today_rows]
             except Exception:
                 vp = {'vwap': None, 'poc': None}
 
@@ -664,7 +678,7 @@ async def refresh_signals():
                 ib_s = 9 * 60 + 30
                 ib_e = 10 * 60 + 30
                 ib_bars = []
-                for c in fresh:   # fresh = get_session_bars result (already fetched above)
+                for c in fresh:   # fresh = DB rows converted above
                     dt_c = datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET)
                     t_min_c = dt_c.hour * 60 + dt_c.minute
                     if ib_s <= t_min_c < ib_e:
@@ -683,11 +697,12 @@ async def refresh_signals():
             except Exception:
                 pass
 
-            # Gap = today's first trade vs prior RTH close (4:00 PM daily bar).
-            # Use state['prev_close'] which holds the last completed daily bar close —
-            # the 4:00 PM equity-market reference used for gap-fill analysis.
-            rth_prev_close = state['prev_close'].get(sid)
-            gap = round(q_open - rth_prev_close, 2) if (q_open and rth_prev_close) else None
+            # Gap = RTH open vs prior CME settlement.
+            # prev_settle = last - net_change = exact CME settlement (most accurate for futures).
+            # rth_open: use live q_open when RTH is active; fall back to the last stored
+            # rth_open (populated each RTH session) so gap is visible off-hours too.
+            rth_open_for_gap = q_open or state['rth_open'].get(sid, 0)
+            gap = round(rth_open_for_gap - prev_settle, 2) if (rth_open_for_gap and prev_settle) else None
             state['market_bias'][sid] = {
                 'bias': mbias, 'pts': pts,
                 'rth_open': q_open, 'prev_close': prev_settle,
@@ -697,13 +712,39 @@ async def refresh_signals():
         if not last:
             continue
 
+        # Build current-hour OHLC from 1-min bars in DB.
+        # refresh_all_1min() runs before every refresh_signals() cycle and populates
+        # 1-min bars for ALL futures — so hour_bars will be non-empty for every symbol.
+        # Fold last_price into high/low to match TOS live-tick behaviour (the current
+        # developing 1-min bar isn't closed yet so its high/low isn't in DB yet).
+        # Fallback: if no bars yet (first run, cold start) anchor to last_price only.
+        ohlc = None
         try:
-            ohlc_sym = front_month_code(tick) if tick.startswith('/') else api
-            ohlc = await asyncio.to_thread(get_current_hour_ohlc, ohlc_sym)
-        except Exception:
-            ohlc = None
+            now_et_h   = datetime.now(ET)
+            hour_floor = now_et_h.replace(minute=0, second=0, microsecond=0)
+            min_bars   = get_1min_today(sid)
+            hour_bars  = [
+                b for b in min_bars
+                if datetime.fromisoformat(b['bar_time']).astimezone(ET) >= hour_floor
+            ]
+            if hour_bars:
+                ohlc = {
+                    'open'  : hour_bars[0]['open'],
+                    'high'  : max(b['high']   for b in hour_bars),
+                    'low'   : min(b['low']    for b in hour_bars),
+                    'close' : hour_bars[-1]['close'],
+                    'volume': sum(b.get('volume', 0) for b in hour_bars),
+                }
+        except Exception as e:
+            log.warning('%s: 1min hour OHLC error: %s', tick, e)
+
         if not ohlc:
+            # Cold start or symbol not yet seeded — anchor to live price
             ohlc = {'open': last, 'high': last, 'low': last, 'close': last, 'volume': 0}
+        else:
+            # Fold live last_price in — captures the still-developing current bar
+            ohlc['high'] = max(ohlc['high'], last)
+            ohlc['low']  = min(ohlc['low'],  last)
 
         sigs = make_signal(
             tick, api, ohlc, last,
@@ -761,6 +802,50 @@ async def refresh_signals():
 
 STRIP_REFRESH_SECS    = 3600        # refresh strip RTH opens once per hour
 HOLDINGS_REFRESH_SECS = 86400       # refresh ETF holdings once per day
+MIN1_REFRESH_SECS     = 60          # refresh 1-min bars for all futures
+
+
+async def refresh_all_1min():
+    """
+    Fetch and store 1-min bars for EVERY active future every 60 seconds.
+
+    Two-stage design:
+      Stage 1 — fetch all symbols concurrently (one asyncio task per symbol).
+      Stage 2 — write results to DB sequentially (avoids DB contention).
+
+    This gives accurate hourly H/L for all futures (/GC, /ZB, /CL, /NG, /SI…)
+    not just the 4 market futures, so the HBMR box is correct for every symbol.
+    """
+    futures_syms = [s for s in state['symbols'] if s['ticker'].startswith('/')]
+    if not futures_syms:
+        return
+
+    # Stage 1 — concurrent fetches
+    async def _fetch(sym: dict) -> tuple[int, list]:
+        tick = sym['ticker']
+        sid  = sym['id']
+        try:
+            api_sym = front_month_code(tick)
+            candles = await asyncio.to_thread(get_session_bars, api_sym)
+            return sid, (candles or [])
+        except Exception as e:
+            log.warning('1min fetch %s: %s', tick, e)
+            return sid, []
+
+    results = await asyncio.gather(*[_fetch(s) for s in futures_syms])
+
+    # Stage 2 — sequential DB writes
+    stored = 0
+    for sid, candles in results:
+        if candles:
+            try:
+                rows = _candles_to_1min_rows(sid, candles)
+                upsert_1min(rows)
+                stored += 1
+            except Exception as e:
+                log.warning('1min upsert sid=%s: %s', sid, e)
+
+    log.info('1-min bars refreshed — %d/%d futures stored', stored, len(futures_syms))
 
 
 def _parse_holdings_df(df) -> list[dict]:
@@ -1120,6 +1205,7 @@ async def background_loop():
     await compute_all_stats()
     await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
     await refresh_mag10_prices()  # prime MAG10 live prices before first request
+    await refresh_all_1min()      # seed 1-min bars for ALL futures before first signal run
     await refresh_signals()
 
     # Kick off background tasks that don't block startup
@@ -1133,9 +1219,13 @@ async def background_loop():
     last_candle_purge     = time.time()
     last_daily_refresh    = time.time()
     last_daily_close_run  = ''   # 'YYYY-MM-DD' of last 4:30 PM run
+    last_1min_agg_run     = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
 
     while True:
-        await asyncio.sleep(SIGNAL_REFRESH_SECS)
+        await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
+        # Stage 1: refresh 1-min bars for ALL futures concurrently, store in DB
+        await refresh_all_1min()
+        # Stage 2: compute signals — reads fresh 1-min bars from DB
         await refresh_signals()
         await refresh_mag10_prices()
 
@@ -1178,6 +1268,16 @@ async def background_loop():
         if _et_hhmm == 16 * 60 + 30 and last_daily_close_run != _today:
             asyncio.create_task(refresh_daily_candles(incremental=True))
             last_daily_close_run = _today
+
+        # 5:00 PM ET — compact 1-min bars older than 2 days into 15-min bars
+        if _et_hhmm == 17 * 60 and last_1min_agg_run != _today:
+            try:
+                result = await asyncio.to_thread(aggregate_1min_to_15min, 2)
+                log.info('1-min → 15-min aggregation: %d buckets written, %d rows deleted',
+                         result['aggregated'], result['deleted'])
+            except Exception as e:
+                log.warning('1-min aggregation error: %s', e)
+            last_1min_agg_run = _today
 
         if time.time() - last_daily_refresh >= 86400:   # full re-sync once per day
             asyncio.create_task(refresh_daily_candles(incremental=False))
@@ -1618,31 +1718,28 @@ async def get_levels(symbol: str):
                         break
             vwap = prior_vwap
 
-    # ── Overnight gap: first bar open today vs prior RTH close (4:00 PM ET) ────
-    # Use the 4:00 PM RTH close as the gap reference for Market Profile analysis.
-    # This is where genuine two-sided value was last established (equity MOC orders,
-    # full institutional participation).  The 5:00 PM CME daily bar close is thin
-    # post-equity tape and produces a misleading (larger) gap number.
+    # ── RTH gap: 9:30 AM open vs prior CME settlement ────────────────────────
+    # Both sides must use the same reference so strip and panel agree:
+    #   baseline = prev_settle from state['market_bias'] (last - net_change = CME settlement)
+    #   open     = first RTH 1-min bar (>= 9:30 ET), NOT the 6 PM overnight open
     #
-    # state['prev_close'] is populated from 1-min bar filtering (last bar before
-    # 16:00 ET) — the true RTH close, same source the market bias strip uses.
-    # Positive = gap up (opened above prior RTH close), Negative = gap down.
-    #
-    # Priority: daily-candle prev_close (already scoped to dates < today, so
-    # immune to holiday CME bars that share the 9:30–16:00 weekday window).
-    # Fall back to state['prev_close'] only when daily candles aren't loaded yet.
+    # Falls back to state['prev_close'] (prior RTH 4 PM close) when market_bias
+    # isn't populated yet (cold start / non-market futures).
     gap = None
     _sym_obj = next((s for s in state['symbols'] if s['ticker'] == symbol), None)
     _sym_obj_id = _sym_obj['id'] if _sym_obj else None
-    _rth_prev = state['prev_close'].get(_sym_obj_id) if _sym_obj_id else None
-    gap_baseline = _rth_prev or prev_close   # 4PM RTH close wins; daily candle fallback at cold start
-    if gap_baseline:
-        today_all_sorted = sorted(
-            on_by_date.get(today, []) + rth_by_date.get(today, []),
-            key=lambda c: c['datetime']
-        )
-        if today_all_sorted:
-            gap = round(today_all_sorted[0]['open'] - gap_baseline, 2)
+    _mb = state['market_bias'].get(_sym_obj_id, {}) if _sym_obj_id else {}
+    # Prefer CME settlement from market_bias; fall back to prior RTH close
+    _prev_settle_panel = _mb.get('prev_close') or state['prev_close'].get(_sym_obj_id) or prev_close
+    # RTH open: use stored rth_open (set each session); fall back to first RTH bar
+    _rth_open_panel = _mb.get('rth_open') or (state['rth_open'].get(_sym_obj_id) if _sym_obj_id else None)
+    if not _rth_open_panel:
+        # Last resort: first bar in today's RTH window
+        today_rth_sorted = sorted(rth_by_date.get(today, []), key=lambda c: c['datetime'])
+        if today_rth_sorted:
+            _rth_open_panel = today_rth_sorted[0]['open']
+    if _rth_open_panel and _prev_settle_panel:
+        gap = round(_rth_open_panel - _prev_settle_panel, 2)
 
     # Initial Balance from today's raw_1min bars (9:30–10:30 ET)
     ib_s_levels = 9 * 60 + 30
