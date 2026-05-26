@@ -52,8 +52,8 @@ SECTOR_TICKERS = {
 STRIP_TICKERS = {'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE'}
 
 # Ordered list for the Industries strip — 11 SPDR sector ETFs only
-# S&P 500 sector weights — April 2026 GICS allocations (matches ThinkScript labels)
-# Order matches ThinkScript AddLabel order (by weight desc, with ConsDisc before Comms)
+# S&P 500 sector weights — update manually each quarter from SPDR fact sheets.
+# April 2026 GICS allocations. Order matches ThinkScript AddLabel order.
 STRIP_ETFS = [
     {'ticker': 'XLK',  'name': 'InfoTech',    'weight': 27.0},
     {'ticker': 'XLV',  'name': 'Healthcare',  'weight': 14.0},
