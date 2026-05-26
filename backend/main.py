@@ -1242,14 +1242,12 @@ async def refresh_mag10_prices():
         for t, q in quotes.items():
             last = float(q.get('last') or 0)
             if not last:
-                continue   # no price yet — keep previous value
+                continue   # no price yet — skip, keep previous value
             pct = float(q.get('net_pct_change') or 0)
-            # Fallback: if Schwab returns 0% but we have last+open, compute it
-            if pct == 0:
-                open_ = float(q.get('open') or 0)
-                if open_ > 0:
-                    pct = round((last - open_) / open_ * 100, 4)
-            state['mag10_pct_change'][t] = pct   # store even if genuinely 0%
+            # Store pct as-is — 0% is a valid value (genuinely flat stock).
+            # Do NOT fall back to (last-open)/open — that's a different metric
+            # (intraday from open vs daily from prev_close) and corrupts MAG10.
+            state['mag10_pct_change'][t] = round(pct, 4)
             state['mag10_tickers_ok'].add(t)
         log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_tickers_ok']), len(tickers))
     except Exception as e:
