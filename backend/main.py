@@ -806,53 +806,24 @@ def _active_contract(ticker: str) -> str:
 
 
 async def refresh_active_contracts() -> None:
-    """Discover the true active front-month contract for every futures symbol by
-    querying Schwab with continuous symbols (e.g. /GC:XCME).
+    """Compute the active front-month contract for every futures symbol using
+    front_month_code() — which handles energy and metals prior-month FND rolls.
 
-    Schwab echoes back the *specific* active contract key in its response
-    (e.g. /GCQ26 instead of /GC:XCME), so we just read the response keys.
-
-    This is called at startup (before compute_all_stats) and every hour so rolls
-    are picked up automatically — no manual month-code tables needed.
+    Called at startup and every hour so contract rolls are picked up automatically.
     """
     futures = [s for s in state['symbols'] if s['ticker'].startswith('/')]
     if not futures:
         return
 
-    continuous_syms = [s['schwab_symbol'] for s in futures]
-    try:
-        raw = await asyncio.to_thread(get_quotes, continuous_syms)
-    except Exception as e:
-        log.warning('refresh_active_contracts error: %s', e)
-        return
-
-    # raw keys are whatever Schwab returned — specific contracts like /GCQ26 or
-    # /GCQ26:XCME.  Match each back to its base ticker by prefix.
-    # A valid contract key starts with the ticker base + a month-letter + 2-digit year.
-    # e.g. '/GCQ26' starts with '/GC', extra = 'Q26', extra[0].isalpha() ✓
-    # Continuous symbol '/GC:XCME' → split(':')[0] = '/GC', extra = '' → skip.
-    # Log the raw Schwab response keys for verification
-    log.info('refresh_active_contracts raw keys from Schwab: %s', list(raw.keys()))
-
     updated: dict[str, str] = {}
-    for resp_key in raw:
-        base_resp = resp_key.split(':')[0]          # strip exchange suffix e.g. '/GCQ26'
-        for sym in futures:
-            base_tick = sym['ticker']               # e.g. '/GC'
-            if not base_resp.startswith(base_tick): # MUST start with the base ticker
-                continue
-            extra = base_resp[len(base_tick):]      # e.g. 'Q26'
-            if extra and extra[0].isalpha():        # month letter → specific contract
-                updated[base_tick] = base_resp
-                break
+    for sym in futures:
+        tick = sym['ticker']
+        contract = front_month_code(tick)
+        updated[tick] = contract
 
-    if updated:
-        state['active_contracts'].update(updated)
-        log.info('Active contracts (%d): %s', len(updated),
-                 '  '.join(f'{k}→{v}' for k, v in sorted(updated.items())))
-    else:
-        log.warning('refresh_active_contracts: no specific contracts found in response keys: %s',
-                    list(raw.keys())[:10])
+    state['active_contracts'].update(updated)
+    log.info('Active contracts (%d): %s', len(updated),
+             '  '.join(f'{k}→{v}' for k, v in sorted(updated.items())))
 
 
 async def refresh_all_1min():

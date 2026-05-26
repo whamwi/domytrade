@@ -58,8 +58,15 @@ FUTURES_SCHEDULES: dict[str, list[int]] = {
 # Symbols whose contract expires in the month BEFORE the delivery month.
 # e.g. CLM26 (June delivery) expires around May 20 — so the roll from M→N
 # happens in May, not June.  We use day-20 as the roll trigger.
+#
+# Two groups with the same prior-month logic but different roll days:
+#   Energy  (CL, NG, RB, HO): FND ~20th of the prior month
+#   Metals  (GC, SI, HG, PL): FND = last business day of prior month (~28-31st)
+#                              but traders roll ~day-20 of prior month for liquidity
 _PRIOR_MONTH_ROLL: frozenset[str] = frozenset({'CL', 'NG', 'RB', 'HO'})
-_ENERGY_ROLL_DAY  = 20   # approximate: NYMEX energy contracts expire ~20th of prior month
+_METALS_PRIOR_ROLL: frozenset[str] = frozenset({'GC', 'SI', 'HG', 'PL'})
+_ENERGY_ROLL_DAY  = 20   # NYMEX energy contracts expire ~20th of prior month
+_METALS_ROLL_DAY  = 20   # Metals FND is ~EOM of prior month; roll at day 20 for liquidity
 
 
 def front_month_code(base: str, ref_date: datetime | None = None) -> str:
@@ -68,16 +75,22 @@ def front_month_code(base: str, ref_date: datetime | None = None) -> str:
     e.g. front_month_code('/ES')  →  '/ESM26'
          front_month_code('/ZC')  →  '/ZCN26'  (Jul — no June corn contract)
          front_month_code('/CL')  →  '/CLN26'  (Jul — June contract expired ~May 20)
+         front_month_code('/GC')  →  '/GCQ26'  (Aug — June Gold FND ~May 29, roll day 20)
 
-    Two roll modes
-    ──────────────
-    Standard (equity index, grains, metals):
+    Three roll modes
+    ────────────────
+    Standard (equity index, grains):
         Roll happens ON or AFTER the 15th of the delivery month itself.
 
-    Prior-month (NYMEX energy: CL, NG, RB, HO):
+    Prior-month energy (CL, NG, RB, HO):
         The contract expires in the month BEFORE delivery, around the 20th.
         e.g. CLM26 (June delivery) expires ~May 20, so on May 25 the front
         month is already CLN26 (July delivery).
+
+    Prior-month metals (GC, SI, HG, PL):
+        FND is the last business day of the month BEFORE delivery.
+        e.g. GCM26 (June Gold) FND ~= May 29; we roll from day 20 of May
+        to ensure we're always quoting the liquid contract.
     """
     ROLL_DAY     = 15
     now          = ref_date or datetime.now(ZoneInfo('America/New_York'))
@@ -87,8 +100,13 @@ def front_month_code(base: str, ref_date: datetime | None = None) -> str:
     root         = base.split(':')[0]     # '/ES:XCME' → '/ES'
     bare         = root.lstrip('/')       # '/ZC'      → 'ZC'
     schedule     = FUTURES_SCHEDULES.get(bare, QUARTERLY)
-    prior_roll   = bare in _PRIOR_MONTH_ROLL
-    roll_day     = _ENERGY_ROLL_DAY if prior_roll else ROLL_DAY
+    prior_roll   = bare in _PRIOR_MONTH_ROLL or bare in _METALS_PRIOR_ROLL
+    if bare in _METALS_PRIOR_ROLL:
+        roll_day = _METALS_ROLL_DAY
+    elif bare in _PRIOR_MONTH_ROLL:
+        roll_day = _ENERGY_ROLL_DAY
+    else:
+        roll_day = ROLL_DAY
 
     chosen_m = None
     chosen_y = y
