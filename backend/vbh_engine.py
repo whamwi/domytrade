@@ -22,8 +22,9 @@ T1 (1:1 risk-reward from ThinkScript label):
   long_t1    = 2 * rlh - long_stop
   short_t1   = rhl - (rlh - long_stop)
 """
+from collections import defaultdict
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from datetime import datetime
 
 ET = ZoneInfo('America/New_York')
 
@@ -116,25 +117,78 @@ def _resolve(table: dict, base: str) -> list[tuple] | None:
     return None
 
 
+def _compute_dynamic(candles: list[dict]) -> dict[int, tuple]:
+    """Compute L1/L2/L3/L4 per ET hour from Schwab 30-min candles.
+
+    Used as an automatic fallback for symbols that have no 2022 TOS hardcoded
+    constants (e.g. /ZN, /ZC, /ZS, /PL, /RB, /BTC).
+
+    Method — for each ET hour, collect all observed hourly ranges (H-L) over
+    the full lookback window, then:
+      L1 = mean − σ   (lower typical range)
+      L2 = mean        (central typical range)
+      L3 = mean + σ   (upper typical range)
+      L4 = mean − 1.5σ (tight lower bound / conservative target)
+
+    30-min bars from the same ET hour are merged into one hourly bucket
+    (max-high / min-low) so each calendar hour contributes exactly one
+    range observation.
+    """
+    # Merge 30-min bars into hourly buckets keyed by (date, ET_hour)
+    buckets: dict[tuple, dict] = {}
+    for c in candles:
+        dt  = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        key = (dt.date(), dt.hour)
+        if key not in buckets:
+            buckets[key] = {'high': c['high'], 'low': c['low']}
+        else:
+            if c['high'] > buckets[key]['high']:
+                buckets[key]['high'] = c['high']
+            if c['low']  < buckets[key]['low']:
+                buckets[key]['low']  = c['low']
+
+    # Collect ranges per hour
+    hour_ranges: dict[int, list[float]] = defaultdict(list)
+    for (_, h), b in buckets.items():
+        r = b['high'] - b['low']
+        if r > 0:
+            hour_ranges[h].append(r)
+
+    result: dict[int, tuple] = {}
+    for h in range(24):
+        rs = hour_ranges.get(h, [])
+        if len(rs) < 3:
+            result[h] = (0.0, 0.0, 0.0, 0.0)
+            continue
+        mean = sum(rs) / len(rs)
+        sig  = (sum((r - mean) ** 2 for r in rs) / len(rs)) ** 0.5
+        l1   = max(0.0, round(mean - sig,        5))
+        l2   =          round(mean,               5)
+        l3   =          round(mean + sig,         5)
+        l4   = max(0.0, round(mean - 1.5 * sig,  5))
+        result[h] = (l1, l2, l3, l4)
+
+    return result
+
+
 def compute_stats(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]:
-    """
-    Return {hour: (L1, L2, L3, L4)} from the 2022 Aggressive study constants.
-    `candles` is unused — kept for API compatibility.
-    """
+    """Return {hour: (L1,L2,L3,L4)} — 2022 AGG constants when available,
+    otherwise computed dynamically from the provided candles (mean ± σ)."""
     base = api_symbol.split(':')[0]
     rows = _resolve(_AGG_2022, base)
-    if rows is None:
-        return {h: (0.0, 0.0, 0.0, 0.0) for h in range(24)}
-    return {h: rows[h] for h in range(24)}
+    if rows is not None:
+        return {h: rows[h] for h in range(24)}
+    return _compute_dynamic(candles)
 
 
 def compute_stats_con(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]:
-    """Return {hour: (L1, L2, L3, L4)} from the 2022 Conservative study constants."""
+    """Return {hour: (L1,L2,L3,L4)} — 2022 CON constants when available,
+    otherwise computed dynamically from the provided candles (mean ± σ)."""
     base = api_symbol.split(':')[0]
     rows = _resolve(_CON_2022, base)
-    if rows is None:
-        return {h: (0.0, 0.0, 0.0, 0.0) for h in range(24)}
-    return {h: rows[h] for h in range(24)}
+    if rows is not None:
+        return {h: rows[h] for h in range(24)}
+    return _compute_dynamic(candles)
 
 
 def make_signal(
