@@ -817,7 +817,7 @@ async def refresh_signals():
             log.warning('Signal insert error: %s', e)
 
 
-STRIP_REFRESH_SECS    = 3600        # refresh strip RTH opens once per hour
+STRIP_REFRESH_SECS    = 300         # refresh strip RTH opens every 5 min (was 3600)
 HOLDINGS_REFRESH_SECS = 86400       # refresh ETF holdings once per day
 MIN1_REFRESH_SECS     = 60          # refresh 1-min bars for all futures
 CONTRACT_REFRESH_SECS = 3600        # re-check active contracts once per hour
@@ -1347,8 +1347,11 @@ async def background_loop():
         # Incremental 1-min candle update — runs every 60s during RTH
         asyncio.create_task(refresh_holding_candles())
 
-        # Refresh strip RTH opens once per hour
-        if time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
+        # Refresh strip RTH opens every 5 min OR immediately when session not yet detected.
+        # The forced refresh catches cold-start: if the backend restarts before/at open,
+        # strip_session_date stays None until refresh_strip_opens() finds today's candle.
+        _session_not_today = state.get('strip_session_date') != datetime.now(ET).date()
+        if _session_not_today or time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
             await refresh_strip_opens()
             last_strip_refresh = time.time()
 
