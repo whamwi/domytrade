@@ -116,10 +116,7 @@ state = {
     'ib'               : {},   # {symbol_id: {'high': float, 'low': float, 'complete': bool}}
     'volatility'       : {'vix': None},   # $VIX — Fear Index
     'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
-    'mag10_open'        : {},    # {ticker: float}  — unused, kept for compatibility
-    'mag10_prev_close'  : {},    # {ticker: float}  — prev close (last - net_change) for MAG10
-    'mag10_prev_close'  : {},    # {ticker: float}  — last RTH close for MAG10 components
-    'mag10_price'       : {},    # {ticker: float}  — live last prices for MAG10 components
+    'mag10_pct_change'  : {},    # {ticker: float}  — daily % change (netPercentChangeInDouble) for MAG10
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
     'signals'           : [],
     'last_stats_update': None,
@@ -1190,34 +1187,8 @@ async def refresh_strip_opens():
     log.info('Strip RTH opens refreshed — %d/%d ETFs (session_today=%s)',
              refreshed, len(STRIP_ETFS), session_found)
 
-    # Also fetch RTH opens for MAG10 component stocks
-    mag10_refreshed = 0
-    for comp in MAG10_COMPONENTS:
-        tick = comp['ticker']
-        try:
-            candles = await asyncio.to_thread(get_daily_candles, tick, 5)
-            if not candles:
-                continue
-            chosen = None
-            for c in reversed(candles):
-                dt = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET).date()
-                if dt == today_et:
-                    chosen = c
-                    break
-            if chosen is None:
-                chosen = candles[-1]
-            if chosen['open']:
-                state['mag10_open'][tick] = round(chosen['open'], 4)
-                mag10_refreshed += 1
-            # RTH close: always use the most recent completed session's close
-            # (candles[-1] = last finished RTH day, regardless of today_et match)
-            if candles[-1]['close']:
-                state['mag10_prev_close'][tick] = round(candles[-1]['close'], 4)
-        except Exception as e:
-            log.warning('refresh_strip_opens MAG10/%s: %s', tick, e)
-        await asyncio.sleep(0.3)
-
-    log.info('MAG10 opens refreshed — %d/%d components', mag10_refreshed, len(MAG10_COMPONENTS))
+    # MAG10 live prices are refreshed separately via refresh_mag10_prices() every 60s
+    # using netPercentChangeInDouble from live quotes — no daily candles needed here.
 
 
 async def refresh_ytd():
@@ -1262,18 +1233,17 @@ async def refresh_ytd():
 
 async def refresh_mag10_prices():
     """Fetch live Schwab quotes for all MAG10 component stocks.
-    Stores last price and prev_close (last - net_change) in state.
-    MAG10 pct = weighted daily % change vs previous close — no open needed."""
+    Stores netPercentChangeInDouble (Schwab daily %) per ticker.
+    MAG10 pct = Σ(daily_pct_i × weight_i) — matches mag10.py reference script."""
     tickers = [c['ticker'] for c in MAG10_COMPONENTS]
     try:
         quotes = await asyncio.to_thread(get_quotes, tickers)
         for t, q in quotes.items():
-            last       = float(q.get('last') or 0)
-            net_change = float(q.get('net_change') or 0)
-            if last:
-                state['mag10_price'][t]     = last
-                state['mag10_prev_close'][t] = round(last - net_change, 4)
-        log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_price']), len(tickers))
+            pct = float(q.get('net_pct_change') or 0)
+            # Fallback: if Schwab returns 0% (pre-market / no data), skip update
+            if pct != 0:
+                state['mag10_pct_change'][t] = round(pct, 4)
+        log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_pct_change']), len(tickers))
     except Exception as e:
         log.warning('refresh_mag10_prices: %s', e)
 
@@ -1551,24 +1521,19 @@ def get_industries():
         pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
         result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
 
-    # MAG10 composite — weighted daily % change vs previous close.
-    # idx_now  = Σ (last_price  / div * weight)
-    # idx_prev = Σ (prev_close  / div * weight)   prev_close = last - net_change
-    # pct      = (idx_now - idx_prev) / idx_prev * 100
-    mag10_now  = 0.0
-    mag10_prev = 0.0
-    mag10_ok   = True
+    # MAG10 composite — weighted daily % change (matches mag10.py reference script).
+    # MAG10 pct = Σ(netPercentChangeInDouble_i × weight_i)
+    # Matches mag10.py reference: weighted average of individual Schwab daily %
+    mag10_weighted = 0.0
+    mag10_ok       = True
     for comp in MAG10_COMPONENTS:
-        t           = comp['ticker']
-        last_price  = state['mag10_price'].get(t, 0)
-        prev_close  = state['mag10_prev_close'].get(t, 0)
-        if not last_price or not prev_close:
+        pct_i = state['mag10_pct_change'].get(comp['ticker'], 0)
+        if pct_i == 0:
             mag10_ok = False
             break
-        mag10_now  += last_price / comp['div'] * comp['weight']
-        mag10_prev += prev_close / comp['div'] * comp['weight']
+        mag10_weighted += pct_i * comp['weight']
 
-    mag10_pct = round((mag10_now - mag10_prev) / mag10_prev * 100, 2) if (mag10_ok and mag10_prev) else 0.0
+    mag10_pct = round(mag10_weighted, 2) if mag10_ok else 0.0
     result.append({'symbol': 'MAG10', 'name': 'MAG10', 'pct': mag10_pct})
 
     return {'industries': result}

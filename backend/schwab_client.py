@@ -281,7 +281,9 @@ def get_quotes(symbols: list[str]) -> dict:
             'close'     : q.get('closePrice', 0),
             'volume'    : q.get('totalVolume', 0),
             # Futures-specific: change from previous CME settlement price
-            'net_change': q.get('netChange', 0),
+            'net_change'    : q.get('netChange', 0),
+            # Daily % change — used by MAG10 weighted pct calculation
+            'net_pct_change': q.get('netPercentChangeInDouble', 0),
             # Company/instrument name — used to label ETF holdings in the panel
             'description': q.get('description', ''),
         }
