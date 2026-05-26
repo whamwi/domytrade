@@ -55,17 +55,17 @@ STRIP_TICKERS = {'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XL
 # S&P 500 sector weights — update manually each quarter from SPDR fact sheets.
 # April 2026 GICS allocations. Order matches ThinkScript AddLabel order.
 STRIP_ETFS = [
-    {'ticker': 'XLK',  'name': 'InfoTech',    'weight': 27.0},
-    {'ticker': 'XLV',  'name': 'Healthcare',  'weight': 14.0},
-    {'ticker': 'XLF',  'name': 'Financials',  'weight': 13.0},
-    {'ticker': 'XLY',  'name': 'ConsDisc',    'weight': 10.6},
-    {'ticker': 'XLC',  'name': 'Comms',       'weight': 10.8},
-    {'ticker': 'XLI',  'name': 'Industrials', 'weight':  8.6},
-    {'ticker': 'XLP',  'name': 'ConsStaples', 'weight':  5.9},
-    {'ticker': 'XLE',  'name': 'Energy',      'weight':  3.2},
-    {'ticker': 'XLB',  'name': 'Materials',   'weight':  2.5},
-    {'ticker': 'XLU',  'name': 'Utilities',   'weight':  2.4},
-    {'ticker': 'XLRE', 'name': 'RealEstate',  'weight':  2.3},
+    {'ticker': 'XLK',  'name': 'Tech',    'weight': 27.0},
+    {'ticker': 'XLV',  'name': 'Health',  'weight': 14.0},
+    {'ticker': 'XLF',  'name': 'Fin',     'weight': 13.0},
+    {'ticker': 'XLY',  'name': 'C/Disc',  'weight': 10.6},
+    {'ticker': 'XLC',  'name': 'Comms',   'weight': 10.8},
+    {'ticker': 'XLI',  'name': 'Ind',     'weight':  8.6},
+    {'ticker': 'XLP',  'name': 'Stpls',   'weight':  5.9},
+    {'ticker': 'XLE',  'name': 'Energy',  'weight':  3.2},
+    {'ticker': 'XLB',  'name': 'Matls',   'weight':  2.5},
+    {'ticker': 'XLU',  'name': 'Utils',   'weight':  2.4},
+    {'ticker': 'XLRE', 'name': 'R/E',     'weight':  2.3},
 ]
 
 # MAG10 custom composite index — price-weighted basket of mega-cap tech
