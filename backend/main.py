@@ -109,7 +109,8 @@ state = {
     'market_bias'      : {},   # {symbol_id: {bias, pts, rth_open, prev_close}}
     'last_price'       : {},   # {symbol_id: float}  — latest price (live quote or prev_close fallback)
     'net_change'       : {},   # {symbol_id: float}  — Schwab net_change (vs CME settlement / prev close)
-    'rth_open'         : {},   # {symbol_id: float}  — today's RTH open from live quote (openPrice)
+    'rth_open'         : {},   # {symbol_id: float}  — today's RTH 9:30 open (from 1-min DB bar)
+    'prev_settle'      : {},   # {symbol_id: float}  — prior CME settlement (last - net_change), persisted
     'ib'               : {},   # {symbol_id: {'high': float, 'low': float, 'complete': bool}}
     'volatility'       : {'vix': None},   # $VIX — Fear Index
     'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
@@ -645,8 +646,14 @@ async def refresh_signals():
             net_chg  = q.get('net_change', 0)
             q_open   = q.get('open', 0)
             q_last   = last
-            # prev_settle is always accurate for futures (official CME settlement)
-            prev_settle = round(q_last - net_chg, 2) if net_chg else 0
+            # prev_settle is always accurate for futures (official CME settlement).
+            # Use None (not 0) when net_chg/last is missing so gap guard stays correct.
+            # Persist across cycles so gap stays visible when quote goes stale (off-hours).
+            if net_chg and q_last:
+                prev_settle = round(q_last - net_chg, 2)
+                state['prev_settle'][sid] = prev_settle
+            else:
+                prev_settle = state['prev_settle'].get(sid)
             # Always show the LIVE running change (current price vs prev CME settlement).
             # This matches the TOS "Change" column and stays current throughout the session.
             pts = round(net_chg, 2) if net_chg else 0.0
@@ -660,6 +667,7 @@ async def refresh_signals():
             # before every refresh_signals() cycle — no need to fetch again here.
             # Just read back what's already in DB for VWAP/POC and IB computation.
             fresh = []
+            today_rows = []   # always in scope — avoids NameError in gap loop below
             try:
                 today_rows = get_1min_today(sid)
                 vp = _compute_vwap_poc(today_rows, MARKET_TICK.get(tick, 0.25))
