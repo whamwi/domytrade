@@ -1349,11 +1349,10 @@ async def background_loop():
         # Incremental 1-min candle update — runs every 60s during RTH
         asyncio.create_task(refresh_holding_candles())
 
-        # Refresh strip RTH opens every 5 min OR immediately when session not yet detected.
-        # The forced refresh catches cold-start: if the backend restarts before/at open,
-        # strip_session_date stays None until refresh_strip_opens() finds today's candle.
-        _session_not_today = state.get('strip_session_date') != datetime.now(ET).date()
-        if _session_not_today or time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
+        # refresh_strip_opens() fetches daily candles for MAG10 open prices.
+        # rth_open for STRIP_ETFs comes from refresh_signals() live quotes — NOT here
+        # (Schwab never returns in-progress daily bars so daily candles can't give today's open).
+        if time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
             await refresh_strip_opens()
             last_strip_refresh = time.time()
 
@@ -1464,32 +1463,6 @@ def health():
     }
 
 
-@app.get('/api/debug/strip-opens')
-async def debug_strip_opens():
-    """Test get_daily_candles for all STRIP_ETFs — exposes raw candle data to diagnose rth_open=0."""
-    result = []
-    today_et = datetime.now(ET).date()
-    for etf in STRIP_ETFS:
-        tick = etf['ticker']
-        try:
-            candles = await asyncio.to_thread(get_daily_candles, tick, 5)
-            last_c = candles[-1] if candles else None
-            today_c = next((c for c in reversed(candles) if
-                datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET).date() == today_et
-            ), None) if candles else None
-            result.append({
-                'ticker': tick,
-                'candle_count': len(candles),
-                'today_candle': today_c,
-                'last_candle': last_c,
-                'state_rth_open': state['rth_open'].get(next((s['id'] for s in state['symbols'] if s['ticker']==tick), None), 'sid_not_found'),
-            })
-        except Exception as e:
-            result.append({'ticker': tick, 'error': str(e)})
-        await asyncio.sleep(0.2)
-    return {'strip_opens_debug': result, 'strip_session_date': str(state.get('strip_session_date'))}
-
-
 @app.get('/api/debug/contracts')
 def debug_contracts():
     """Expose discovered active contracts and computed front months for verification."""
@@ -1544,20 +1517,20 @@ def get_market_bias():
 @app.get('/api/industries')
 def get_industries():
     """% change from RTH open for the 11 SPDR sector ETFs — powers the Industries strip.
-    rth_open comes from get_daily_candles(needExtendedHoursData=false) → true 9:30 ET open,
-    matching TOS exactly. Refreshed hourly by refresh_strip_opens().
+    rth_open = Schwab quote open field (today's 9:30 ET open), set by refresh_signals()
+    every 60s during RTH. Schwab price-history API never returns an in-progress daily bar
+    so refresh_strip_opens() cannot be used as the source — live quote open is the only
+    reliable intraday source.
 
-    current price source:
-      - During RTH (9:30–16:00 ET weekdays, non-holiday): live last_price from Schwab quote
-      - Outside RTH or on holidays: prev_close = last RTH bar close (frozen at 4:00 PM, ignores AH)
-    This ensures the strip always reflects the true RTH session move and never picks up
-    extended-hours noise on market holidays."""
+    current price:
+      - During RTH (9:30–16:00 ET weekdays): live last_price from Schwab quote (60s refresh)
+      - Outside RTH: prev_close — frozen at 4:00 PM close, ignores extended hours"""
     _now_et = datetime.now(ET)
     _et_min = _now_et.hour * 60 + _now_et.minute
-    # Only treat as RTH if a real session opened today — prevents holidays from being
-    # treated as live sessions just because they fall on a weekday in the RTH window.
-    _session_today = state.get('strip_session_date') == _now_et.date()
-    _is_rth = _session_today and _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
+    # Simple weekday + time check — no strip_session_date dependency.
+    # Schwab never returns in-progress daily candles so session_found was always False
+    # which kept _is_rth=False all day, serving prev_close instead of live prices.
+    _is_rth = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
 
     ticker_map = {s['ticker']: s for s in state['symbols']}
     result = []
@@ -1571,8 +1544,7 @@ def get_industries():
         # Live price during RTH; RTH close (ignoring extended hours) outside RTH
         current  = state['last_price'].get(sid, 0) if _is_rth else state['prev_close'].get(sid, 0)
         pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
-        result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct,
-                        '_rth_open': rth_open, '_current': current})
+        result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
 
     # MAG10 composite index — weighted sum of mega-cap tech, % from its RTH open value
     mag10_now  = 0.0
