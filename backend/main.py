@@ -116,7 +116,8 @@ state = {
     'ib'               : {},   # {symbol_id: {'high': float, 'low': float, 'complete': bool}}
     'volatility'       : {'vix': None},   # $VIX — Fear Index
     'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
-    'mag10_open'        : {},    # {ticker: float}  — RTH open prices for MAG10 components
+    'mag10_open'        : {},    # {ticker: float}  — unused, kept for compatibility
+    'mag10_prev_close'  : {},    # {ticker: float}  — prev close (last - net_change) for MAG10
     'mag10_prev_close'  : {},    # {ticker: float}  — last RTH close for MAG10 components
     'mag10_price'       : {},    # {ticker: float}  — live last prices for MAG10 components
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
@@ -1260,25 +1261,18 @@ async def refresh_ytd():
 
 
 async def refresh_mag10_prices():
-    """Fetch live Schwab quotes for all MAG10 component stocks (most are not in symbols table).
-    Stores last price in state['mag10_price'] and today's 9:30 open in state['mag10_open'].
-    Called every 60s alongside refresh_signals.
-
-    mag10_open uses q['open'] from the live quote — Schwab's open field = today's RTH 9:30 open
-    for equities. Daily candles cannot be used because Schwab never returns in-progress bars."""
-    _now_et = datetime.now(ET)
-    _et_min = _now_et.hour * 60 + _now_et.minute
-    _is_rth = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
+    """Fetch live Schwab quotes for all MAG10 component stocks.
+    Stores last price and prev_close (last - net_change) in state.
+    MAG10 pct = weighted daily % change vs previous close — no open needed."""
     tickers = [c['ticker'] for c in MAG10_COMPONENTS]
     try:
         quotes = await asyncio.to_thread(get_quotes, tickers)
         for t, q in quotes.items():
-            if q.get('last'):
-                state['mag10_price'][t] = float(q['last'])
-            # Capture today's 9:30 RTH open from live quote during RTH.
-            # Persist so the value survives after 4 PM (for end-of-day display).
-            if _is_rth and q.get('open'):
-                state['mag10_open'][t] = round(float(q['open']), 4)
+            last       = float(q.get('last') or 0)
+            net_change = float(q.get('net_change') or 0)
+            if last:
+                state['mag10_price'][t]     = last
+                state['mag10_prev_close'][t] = round(last - net_change, 4)
         log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_price']), len(tickers))
     except Exception as e:
         log.warning('refresh_mag10_prices: %s', e)
@@ -1496,36 +1490,6 @@ def debug_contracts():
 MARKET_TICKERS = {'/ES', '/NQ', '/YM', '/RTY'}
 
 
-@app.get('/api/debug/mag10')
-async def debug_mag10():
-    """Show mag10_open, mag10_price, and raw Schwab openPrice for each component."""
-    tickers = [c['ticker'] for c in MAG10_COMPONENTS]
-    try:
-        raw_quotes = await asyncio.to_thread(get_quotes, tickers)
-    except Exception as e:
-        raw_quotes = {}
-    rows = []
-    idx_now = 0.0; idx_open = 0.0
-    for comp in MAG10_COMPONENTS:
-        t   = comp['ticker']
-        div = comp['div']
-        wt  = comp['weight']
-        rq  = raw_quotes.get(t, {})
-        schwab_open  = rq.get('open', 0)
-        schwab_last  = rq.get('last', 0)
-        state_open   = state['mag10_open'].get(t, 0)
-        state_price  = state['mag10_price'].get(t, 0)
-        use_price    = state_price or schwab_last
-        use_open     = state_open
-        if use_price: idx_now  += use_price / div * wt
-        if use_open:  idx_open += use_open  / div * wt
-        rows.append({'ticker': t, 'div': div, 'weight': wt,
-                     'schwab_open': schwab_open, 'schwab_last': schwab_last,
-                     'state_mag10_open': state_open, 'state_mag10_price': state_price})
-    pct = round((idx_now - idx_open) / idx_open * 100, 2) if idx_open else None
-    return {'components': rows, 'idx_now': round(idx_now,4), 'idx_open': round(idx_open,4), 'pct': pct}
-
-
 @app.get('/api/market-bias')
 def get_market_bias():
     result = []
@@ -1587,33 +1551,24 @@ def get_industries():
         pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
         result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
 
-    # MAG10 composite index — weighted sum of mega-cap tech, % from its RTH open value
+    # MAG10 composite — weighted daily % change vs previous close.
+    # idx_now  = Σ (last_price  / div * weight)
+    # idx_prev = Σ (prev_close  / div * weight)   prev_close = last - net_change
+    # pct      = (idx_now - idx_prev) / idx_prev * 100
     mag10_now  = 0.0
-    mag10_open = 0.0
+    mag10_prev = 0.0
     mag10_ok   = True
     for comp in MAG10_COMPONENTS:
-        t          = comp['ticker']
-        open_price = state['mag10_open'].get(t, 0)
-        if _is_rth:
-            # During RTH: live quote price
-            current_price = state['mag10_price'].get(t, 0)
-            if not current_price:
-                sym = ticker_map.get(t)
-                if sym:
-                    current_price = state['last_price'].get(sym['id'], 0)
-        else:
-            # Outside RTH: use cached RTH close (mirrors how strip ETFs use prev_close)
-            current_price = state['mag10_prev_close'].get(t, 0)
-            if not current_price:
-                # Fallback: live quote (AH price) if RTH close not yet cached
-                current_price = state['mag10_price'].get(t, 0)
-        if not open_price or not current_price:
+        t           = comp['ticker']
+        last_price  = state['mag10_price'].get(t, 0)
+        prev_close  = state['mag10_prev_close'].get(t, 0)
+        if not last_price or not prev_close:
             mag10_ok = False
             break
-        mag10_now  += current_price / comp['div'] * comp['weight']
-        mag10_open += open_price    / comp['div'] * comp['weight']
+        mag10_now  += last_price / comp['div'] * comp['weight']
+        mag10_prev += prev_close / comp['div'] * comp['weight']
 
-    mag10_pct = round((mag10_now - mag10_open) / mag10_open * 100, 2) if (mag10_ok and mag10_open) else 0.0
+    mag10_pct = round((mag10_now - mag10_prev) / mag10_prev * 100, 2) if (mag10_ok and mag10_prev) else 0.0
     result.append({'symbol': 'MAG10', 'name': 'MAG10', 'pct': mag10_pct})
 
     return {'industries': result}
