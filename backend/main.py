@@ -1496,6 +1496,36 @@ def debug_contracts():
 MARKET_TICKERS = {'/ES', '/NQ', '/YM', '/RTY'}
 
 
+@app.get('/api/debug/mag10')
+async def debug_mag10():
+    """Show mag10_open, mag10_price, and raw Schwab openPrice for each component."""
+    tickers = [c['ticker'] for c in MAG10_COMPONENTS]
+    try:
+        raw_quotes = await asyncio.to_thread(get_quotes, tickers)
+    except Exception as e:
+        raw_quotes = {}
+    rows = []
+    idx_now = 0.0; idx_open = 0.0
+    for comp in MAG10_COMPONENTS:
+        t   = comp['ticker']
+        div = comp['div']
+        wt  = comp['weight']
+        rq  = raw_quotes.get(t, {})
+        schwab_open  = rq.get('open', 0)
+        schwab_last  = rq.get('last', 0)
+        state_open   = state['mag10_open'].get(t, 0)
+        state_price  = state['mag10_price'].get(t, 0)
+        use_price    = state_price or schwab_last
+        use_open     = state_open
+        if use_price: idx_now  += use_price / div * wt
+        if use_open:  idx_open += use_open  / div * wt
+        rows.append({'ticker': t, 'div': div, 'weight': wt,
+                     'schwab_open': schwab_open, 'schwab_last': schwab_last,
+                     'state_mag10_open': state_open, 'state_mag10_price': state_price})
+    pct = round((idx_now - idx_open) / idx_open * 100, 2) if idx_open else None
+    return {'components': rows, 'idx_now': round(idx_now,4), 'idx_open': round(idx_open,4), 'pct': pct}
+
+
 @app.get('/api/market-bias')
 def get_market_bias():
     result = []
