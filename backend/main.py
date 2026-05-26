@@ -1350,6 +1350,7 @@ async def background_loop():
     last_contract_refresh   = time.time()
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
+    last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
@@ -1415,6 +1416,19 @@ async def background_loop():
             except Exception as e:
                 log.warning('1-min aggregation error: %s', e)
             last_1min_agg_run = _today
+
+        # 5:30 AM ET — daily VBH table update (overnight session just closed)
+        # Fetches new 30-min Schwab candles since last stored bar, recomputes
+        # ATR means, upserts ohlc_hourly + vbh_stats, reloads engine cache.
+        if _et_hhmm == 5 * 60 + 30 and last_vbh_update_run != _today:
+            try:
+                from vbh_updater import run_update
+                result = await asyncio.to_thread(run_update)
+                log.info('VBH scheduled update — ok=%s  failed=%s',
+                         result['ok'], result['failed'])
+            except Exception as e:
+                log.warning('VBH scheduled update error: %s', e)
+            last_vbh_update_run = _today
 
         if time.time() - last_daily_refresh >= 86400:   # full re-sync once per day
             asyncio.create_task(refresh_daily_candles(incremental=False))
