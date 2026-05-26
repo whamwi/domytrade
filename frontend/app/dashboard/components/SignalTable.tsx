@@ -9,8 +9,13 @@ import FuturesPanel, { FuturesPanelInfo } from './FuturesPanel'
 // Futures that get a clickable levels panel
 const FUTURES_PANEL_TICKERS = new Set(['/ES','/NQ','/YM','/RTY','/GC','/CL','/SI','/PL','/NG','/ZB','/ZN','/HG','/RB','/ZC','/ZS','/BTC'])
 
-// The 4 major US equity index futures — highlighted in the grid
-const MAJOR_MARKETS = new Set(['/ES', '/NQ', '/YM', '/RTY'])
+// The 4 major US equity index futures — each with a distinct accent color
+const MAJOR_MARKET_COLORS: Record<string, { border: string; bg: string; hover: string }> = {
+  '/ES' : { border: 'rgba(59,130,246,0.6)',  bg: 'rgba(59,130,246,0.05)',  hover: 'rgba(59,130,246,0.10)'  }, // blue
+  '/NQ' : { border: 'rgba(168,85,247,0.6)',  bg: 'rgba(168,85,247,0.05)',  hover: 'rgba(168,85,247,0.10)'  }, // purple
+  '/YM' : { border: 'rgba(251,146,60,0.6)',  bg: 'rgba(251,146,60,0.05)',  hover: 'rgba(251,146,60,0.10)'  }, // orange
+  '/RTY': { border: 'rgba(20,184,166,0.6)',  bg: 'rgba(20,184,166,0.05)',  hover: 'rgba(20,184,166,0.10)'  }, // teal
+}
 
 // Mirrors the set in page.tsx — used to identify sector/ETF tickers
 const SECTOR_TICKERS = new Set([
@@ -287,7 +292,7 @@ interface ActiveRowProps {
 function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowProps) {
   const isSector  = SECTOR_TICKERS.has(sig.symbol)
   const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
-  const isMajor   = MAJOR_MARKETS.has(sig.symbol)
+  const majorColor = MAJOR_MARKET_COLORS[sig.symbol]
   // Futures trade ~23h — a flat bar just means no 1-min data, not that the market is closed.
   // Only show the CLOSED badge for equities/ETFs where flat bar = genuinely no session.
   const flatBar   = sig.hour_high === sig.hour_low && !isFutures
@@ -306,13 +311,13 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
       style={{
         borderBottom: '1px solid var(--border)',
         opacity: flatBar ? 0.45 : 1,
-        ...(isMajor && {
-          background: 'rgba(99,102,241,0.05)',
-          borderLeft: '3px solid rgba(99,102,241,0.5)',
+        ...(majorColor && {
+          background: majorColor.bg,
+          borderLeft: `3px solid ${majorColor.border}`,
         }),
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = isMajor ? 'rgba(99,102,241,0.1)' : 'var(--bg-row-hover)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = isMajor ? 'rgba(99,102,241,0.05)' : 'transparent' }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = majorColor ? majorColor.hover : 'var(--bg-row-hover)' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = majorColor ? majorColor.bg : 'transparent' }}
     >
       {/* # */}
       <td className="px-3 py-2.5 tabular-nums" style={{ color: 'var(--text-dim)', fontSize: '12px' }}>
