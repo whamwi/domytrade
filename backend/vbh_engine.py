@@ -146,8 +146,8 @@ def load_stats_from_db() -> bool:
 # k1 + k3 = 2.000 exactly → L1 = mean − σ,  L3 = mean + σ  (CV ≈ 14.7%)
 # Using fixed ratios avoids the inversion bug that arises when sample CV is high
 # (mean − σ formula collapses L1/L4 when only a few observations are available).
-_K_AGG = (0.7054, 1.0000, 1.2946, 0.5920)   # L1, L2, L3, L4  — Aggressive (~2σ, wider)
-_K_CON = (0.8527, 1.0000, 1.1473, 0.7960)   # L1, L2, L3, L4  — Conservative (~1σ, tighter)
+_K_AGG = (0.8527, 1.0000, 1.1473, 0.7960)   # L1, L2, L3, L4  — Aggressive (~1σ, tighter)
+_K_CON = (0.7054, 1.0000, 1.2946, 0.5920)   # L1, L2, L3, L4  — Conservative (~2σ, wider)
 
 
 def _build_hourly_ranges(candles: list[dict]) -> dict[int, list[float]]:

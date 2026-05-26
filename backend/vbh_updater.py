@@ -29,10 +29,10 @@ LOOKBACK_DAYS = 90
 ET            = ZoneInfo('America/New_York')
 
 # Confirmed k-ratios from 3-week TOS study cross-week analysis
-# AGG = wider bands (2σ) — aggressive targets, bigger swings
-# CON = tighter bands (1σ) — conservative targets, closer to L2
-K_AGG = (0.7054, 1.0000, 1.2946, 0.5920)   # L1, L2, L3, L4 — Aggressive (~2σ, wider)
-K_CON = (0.8527, 1.0000, 1.1473, 0.7960)   # L1, L2, L3, L4 — Conservative (~1σ, tighter)
+# AGG = tighter bands (1σ) — aggressive entry, closer to L2, in/out faster
+# CON = wider bands (2σ) — conservative entry, waits for bigger move, further from L2
+K_AGG = (0.8527, 1.0000, 1.1473, 0.7960)   # L1, L2, L3, L4 — Aggressive (~1σ, tighter)
+K_CON = (0.7054, 1.0000, 1.2946, 0.5920)   # L1, L2, L3, L4 — Conservative (~2σ, wider)
 
 PRICE_HISTORY_URL = 'https://api.schwabapi.com/marketdata/v1/pricehistory'
 
