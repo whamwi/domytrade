@@ -117,6 +117,30 @@ def _resolve(table: dict, base: str) -> list[tuple] | None:
     return None
 
 
+# ── DB-backed stats cache (populated at startup via load_stats_from_db()) ─────
+# Preferred over the hardcoded 2022 tables when non-zero data is present.
+# Structure: {ticker: {'AGG': [24 tuples], 'CON': [24 tuples]}}
+_stats_db: dict = {}
+
+
+def load_stats_from_db() -> bool:
+    """Load VBH levels from Supabase into the module-level cache.
+
+    Called once at startup (from main.py lifespan) and optionally after
+    update_vbh_tables.py runs.  Returns True when at least one ticker
+    was loaded successfully.  On any error, falls back silently to the
+    hardcoded _AGG_2022 / _CON_2022 tables.
+    """
+    global _stats_db
+    try:
+        from db import load_vbh_stats_from_db
+        _stats_db = load_vbh_stats_from_db()
+        return bool(_stats_db)
+    except Exception as e:
+        print(f'[vbh_engine] DB load failed, using hardcoded tables: {e}')
+        return False
+
+
 # Confirmed k-ratios from 3-week cross-week analysis of TOS Aggressive study files.
 # L2 = mean hourly range (ATR center).  All other levels are fixed fractions of L2.
 # k1 + k3 = 2.000 exactly → L1 = mean − σ,  L3 = mean + σ  (CV ≈ 14.7%)
@@ -182,23 +206,60 @@ def _compute_dynamic(candles: list[dict], k_ratios: tuple = _K_AGG) -> dict[int,
 
 
 def compute_stats(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]:
-    """Return {hour: (L1,L2,L3,L4)} — hardcoded AGG constants when available,
-    otherwise computed dynamically from the provided candles using AGG k-ratios."""
+    """Return {hour: (L1,L2,L3,L4)} for the Aggressive model.
+
+    Priority order:
+      1. DB cache (_stats_db) — live-updated via update_vbh_tables.py + Supabase.
+         Used when the cache is populated and has at least one non-zero RTH hour.
+      2. Hardcoded 2022 tables (_AGG_2022) — original TOS study constants.
+         Used for all symbols present in the hardcoded dict.
+      3. Dynamic computation from candles — last resort for unknown symbols.
+    """
     base = api_symbol.split(':')[0]
+
+    # ── 1. DB cache (preferred — live data) ───────────────────────────────────
+    # Resolve mini-contract aliases so /MES → /ES lookup works in _stats_db too.
+    aliases = {'/MES': '/ES', '/MYM': '/YM', '/MNQ': '/NQ',
+               '/MCL': '/CL', '/MGC': '/GC', '/M2K': '/RTY'}
+    db_key = aliases.get(base, base)
+    if db_key in _stats_db and _stats_db[db_key].get('AGG'):
+        db_rows = _stats_db[db_key]['AGG']
+        # Only use DB rows if at least one non-zero hour exists (guards cold DB)
+        if any(r[1] > 0 for r in db_rows):
+            return {h: db_rows[h] for h in range(24)}
+
+    # ── 2. Hardcoded 2022 constants (reliable fallback) ───────────────────────
     rows = _resolve(_AGG_2022, base)
     if rows is not None:
         return {h: rows[h] for h in range(24)}
+
+    # ── 3. Dynamic computation from caller-supplied candles ───────────────────
     return _compute_dynamic(candles, _K_AGG)
 
 
 def compute_stats_con(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]:
-    """Return {hour: (L1,L2,L3,L4)} — hardcoded CON constants when available,
-    otherwise computed dynamically from the provided candles using CON k-ratios
-    (~2σ spread: wider cloud, tighter entry zone than AGG)."""
+    """Return {hour: (L1,L2,L3,L4)} for the Conservative model (~2σ spread).
+
+    Priority order: DB cache → hardcoded 2022 constants → dynamic computation.
+    See compute_stats() for full documentation of the fallback chain.
+    """
     base = api_symbol.split(':')[0]
+
+    # ── 1. DB cache (preferred — live data) ───────────────────────────────────
+    aliases = {'/MES': '/ES', '/MYM': '/YM', '/MNQ': '/NQ',
+               '/MCL': '/CL', '/MGC': '/GC', '/M2K': '/RTY'}
+    db_key = aliases.get(base, base)
+    if db_key in _stats_db and _stats_db[db_key].get('CON'):
+        db_rows = _stats_db[db_key]['CON']
+        if any(r[1] > 0 for r in db_rows):
+            return {h: db_rows[h] for h in range(24)}
+
+    # ── 2. Hardcoded 2022 constants (reliable fallback) ───────────────────────
     rows = _resolve(_CON_2022, base)
     if rows is not None:
         return {h: rows[h] for h in range(24)}
+
+    # ── 3. Dynamic computation from caller-supplied candles ───────────────────
     return _compute_dynamic(candles, _K_CON)
 
 

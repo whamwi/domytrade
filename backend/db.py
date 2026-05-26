@@ -412,3 +412,68 @@ def cache_set(key: str, value: dict) -> None:
         {'key': key, 'value': value, 'updated_at': datetime.now(timezone.utc).isoformat()},
         on_conflict='key'
     ).execute()
+
+
+# ── VBH incremental helpers ───────────────────────────────────────────────────
+
+def get_last_ohlc_bar_times(symbol_ids: list[int]) -> dict[int, str | None]:
+    """Return {symbol_id: max_bar_time_isoformat} for incremental candle fetching.
+    Returns None for symbols with no data yet."""
+    if not symbol_ids:
+        return {}
+    result = {sid: None for sid in symbol_ids}
+    # Query max bar_time per symbol_id using separate queries (Supabase doesn't support GROUP BY directly)
+    for sid in symbol_ids:
+        res = (get_db().table('ohlc_hourly')
+               .select('bar_time')
+               .eq('symbol_id', sid)
+               .order('bar_time', desc=True)
+               .limit(1)
+               .execute())
+        if res.data:
+            result[sid] = res.data[0]['bar_time']
+    return result
+
+
+def load_vbh_stats_from_db() -> dict[str, dict[str, list[tuple]]]:
+    """Load all vbh_stats rows from DB and return as:
+    {ticker: {'AGG': [24 tuples (l1,l2,l3,l4)], 'CON': [24 tuples]}}
+    Hours with no data get (0.0, 0.0, 0.0, 0.0).
+    """
+    # Get all symbols for ticker lookup
+    syms = get_db().table('symbols').select('id,ticker').execute().data
+    id_to_ticker = {s['id']: s['ticker'] for s in syms}
+
+    # Fetch all vbh_stats rows — paginate to avoid the 1000-row default cap
+    PAGE = 1000
+    all_rows = []
+    offset = 0
+    while True:
+        res = (get_db().table('vbh_stats')
+               .select('symbol_id,model,hour_et,l1,l2,l3,l4')
+               .range(offset, offset + PAGE - 1)
+               .execute())
+        all_rows.extend(res.data)
+        if len(res.data) < PAGE:
+            break
+        offset += PAGE
+
+    result: dict[str, dict[str, list]] = {}
+    for row in all_rows:
+        ticker = id_to_ticker.get(row['symbol_id'])
+        if not ticker:
+            continue
+        model = row['model']
+        if ticker not in result:
+            result[ticker] = {
+                'AGG': [(0.0, 0.0, 0.0, 0.0)] * 24,
+                'CON': [(0.0, 0.0, 0.0, 0.0)] * 24,
+            }
+        h = row['hour_et']
+        result[ticker][model][h] = (
+            float(row['l1'] or 0),
+            float(row['l2'] or 0),
+            float(row['l3'] or 0),
+            float(row['l4'] or 0),
+        )
+    return result

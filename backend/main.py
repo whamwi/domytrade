@@ -20,6 +20,7 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            get_current_hour_ohlc, get_session_bars,
                            front_month_code, next_contract_month,
                            set_token_refresh_callback, _token_cache as _schwab_token_cache)
+import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
@@ -1295,6 +1296,17 @@ async def background_loop():
 
     state['symbols'] = get_active_symbols()
     log.info('Loaded %d symbols', len(state['symbols']))
+
+    # ── Load VBH levels from Supabase into vbh_engine module cache ────────────
+    # Must run before compute_all_stats() so the DB cache is available as the
+    # preferred source for compute_stats() / compute_stats_con().
+    # Falls back silently to hardcoded 2022 tables if the DB is empty or unavailable.
+    db_loaded = vbh_engine.load_stats_from_db()
+    if db_loaded:
+        n_tickers = len(vbh_engine._stats_db)
+        log.info('VBH stats loaded from DB — %d ticker(s) ready', n_tickers)
+    else:
+        log.warning('VBH stats DB load failed or empty — using hardcoded 2022 tables')
 
     # ── Load last signal snapshot from DB so HTTP is useful immediately ───────
     # compute_all_stats takes 60-90s; this pre-seeds state with yesterday's
