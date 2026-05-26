@@ -9,6 +9,9 @@ import FuturesPanel, { FuturesPanelInfo } from './FuturesPanel'
 // Futures that get a clickable levels panel
 const FUTURES_PANEL_TICKERS = new Set(['/ES','/NQ','/YM','/RTY','/GC','/CL','/SI','/PL','/NG','/ZB','/ZN','/HG','/RB','/ZC','/ZS','/BTC'])
 
+// The 4 major US equity index futures — highlighted in the grid
+const MAJOR_MARKETS = new Set(['/ES', '/NQ', '/YM', '/RTY'])
+
 // Mirrors the set in page.tsx — used to identify sector/ETF tickers
 const SECTOR_TICKERS = new Set([
   'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE',
@@ -284,6 +287,7 @@ interface ActiveRowProps {
 function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowProps) {
   const isSector  = SECTOR_TICKERS.has(sig.symbol)
   const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
+  const isMajor   = MAJOR_MARKETS.has(sig.api_symbol ?? sig.symbol)
   // Futures trade ~23h — a flat bar just means no 1-min data, not that the market is closed.
   // Only show the CLOSED badge for equities/ETFs where flat bar = genuinely no session.
   const flatBar   = sig.hour_high === sig.hour_low && !isFutures
@@ -299,9 +303,16 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
   return (
     <tr
       className="transition-colors"
-      style={{ borderBottom: '1px solid var(--border)', opacity: flatBar ? 0.45 : 1 }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-row-hover)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+      style={{
+        borderBottom: '1px solid var(--border)',
+        opacity: flatBar ? 0.45 : 1,
+        ...(isMajor && {
+          background: 'rgba(99,102,241,0.05)',
+          borderLeft: '3px solid rgba(99,102,241,0.5)',
+        }),
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = isMajor ? 'rgba(99,102,241,0.1)' : 'var(--bg-row-hover)' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = isMajor ? 'rgba(99,102,241,0.05)' : 'transparent' }}
     >
       {/* # */}
       <td className="px-3 py-2.5 tabular-nums" style={{ color: 'var(--text-dim)', fontSize: '12px' }}>
