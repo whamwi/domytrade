@@ -32,35 +32,11 @@ function playAlertSound() {
       osc.start(start)
       osc.stop(start + 0.35)
     })
+    // Close context shortly after tones finish to free resources
+    setTimeout(() => ctx.close(), 1000)
   } catch {
     // AudioContext blocked (user hasn't interacted yet) — silent fail
   }
-}
-
-/** Request browser notification permission. Returns true if granted. */
-async function requestNotifPermission(): Promise<boolean> {
-  if (!('Notification' in window)) return false
-  if (Notification.permission === 'granted') return true
-  if (Notification.permission === 'denied') return false
-  const result = await Notification.requestPermission()
-  return result === 'granted'
-}
-
-/** Fire a browser notification for an economic event. */
-function fireNotification(ev: EconAlert) {
-  if (Notification.permission !== 'granted') return
-  const body = [
-    ev.forecast ? `Forecast: ${ev.forecast}` : '',
-    ev.previous ? `Previous: ${ev.previous}` : '',
-  ].filter(Boolean).join('  ·  ')
-
-  const n = new Notification(`⚡ In 15 min: ${ev.title}`, {
-    body: body || 'USD Economic Release — in 15 minutes',
-    icon: '/favicon.ico',
-    tag : ev.date,           // dedupe: same event fires only once
-    requireInteraction: false,
-  })
-  setTimeout(() => n.close(), 12_000)
 }
 
 interface Options {
@@ -68,21 +44,50 @@ interface Options {
 }
 
 export function useEconomicAlerts({ onAlert }: Options) {
-  const timersRef   = useRef<ReturnType<typeof setTimeout>[]>([])
+  const timersRef    = useRef<ReturnType<typeof setTimeout>[]>([])
   const scheduledRef = useRef<Set<string>>(new Set())
+  // Batch window: group events firing within the same minute into one alert
+  const batchRef     = useRef<{ timer: ReturnType<typeof setTimeout> | null; events: EconAlert[] }>({
+    timer: null, events: [],
+  })
 
   const clearTimers = useCallback(() => {
     timersRef.current.forEach(clearTimeout)
     timersRef.current = []
+    if (batchRef.current.timer) {
+      clearTimeout(batchRef.current.timer)
+      batchRef.current = { timer: null, events: [] }
+    }
   }, [])
+
+  /** Collect events that fire within 200ms of each other into one toast + one beep. */
+  const queueAlert = useCallback((ev: EconAlert) => {
+    batchRef.current.events.push(ev)
+    if (batchRef.current.timer) return   // already waiting to flush
+
+    batchRef.current.timer = setTimeout(() => {
+      const batch = batchRef.current.events
+      batchRef.current = { timer: null, events: [] }
+
+      // One beep regardless of how many events fired at once
+      playAlertSound()
+
+      // If multiple events share the same time, combine titles into one alert
+      if (batch.length === 1) {
+        onAlert(batch[0])
+      } else {
+        const combined: EconAlert = {
+          ...batch[0],
+          title: batch.map(e => e.title).join('  ·  '),
+        }
+        onAlert(combined)
+      }
+    }, 200)
+  }, [onAlert])
 
   const scheduleAlerts = useCallback(async () => {
     clearTimers()
     scheduledRef.current.clear()
-
-    // Request permission early (needs user gesture on some browsers;
-    // this runs after the page loads so the browser should allow it)
-    await requestNotifPermission()
 
     try {
       const res  = await fetch(`${API_URL}/api/briefing`, { cache: 'no-store' })
@@ -97,19 +102,15 @@ export function useEconomicAlerts({ onAlert }: Options) {
 
       for (const ev of events) {
         const fireAt = new Date(ev.date).getTime()
-        const delay  = fireAt - now
+        const alertAt = fireAt - 15 * 60 * 1000   // 15 min before event
+        const delay   = alertAt - now
 
         // Only schedule future events (skip if already past or >7 days out)
         if (delay <= 0 || delay > 7 * 24 * 60 * 60 * 1000) continue
         if (scheduledRef.current.has(ev.date)) continue
         scheduledRef.current.add(ev.date)
 
-        const t = setTimeout(() => {
-          playAlertSound()
-          fireNotification(ev)
-          onAlert(ev)
-        }, delay - 15 * 60 * 1000)
-
+        const t = setTimeout(() => queueAlert(ev), delay)
         timersRef.current.push(t)
         scheduled++
       }
@@ -120,7 +121,7 @@ export function useEconomicAlerts({ onAlert }: Options) {
     } catch {
       // Network error — will retry on next refresh cycle
     }
-  }, [clearTimers, onAlert])
+  }, [clearTimers, queueAlert])
 
   useEffect(() => {
     scheduleAlerts()

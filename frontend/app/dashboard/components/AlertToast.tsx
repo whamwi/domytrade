@@ -20,11 +20,11 @@ export default function AlertToast({ alert, onDismiss }: Props) {
   // Animate in
   useEffect(() => {
     const t1 = setTimeout(() => setVisible(true), 10)
-    // Auto-dismiss after 12s
+    // Auto-dismiss after 8s
     const t2 = setTimeout(() => {
       setVisible(false)
       setTimeout(onDismiss, 300)
-    }, 12_000)
+    }, 8_000)
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [onDismiss])
 
@@ -64,9 +64,10 @@ export default function AlertToast({ alert, onDismiss }: Props) {
         </div>
         <button
           onClick={() => { setVisible(false); setTimeout(onDismiss, 300) }}
-          style={{ color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}
+          style={{ color: 'var(--text-muted)', background: 'rgba(255,255,255,0.06)', border: 'none', cursor: 'pointer', padding: '4px 7px', borderRadius: 6, lineHeight: 1 }}
+          title="Dismiss"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
         </button>
