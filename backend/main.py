@@ -831,11 +831,16 @@ async def refresh_active_contracts() -> None:
     # A valid contract key starts with the ticker base + a month-letter + 2-digit year.
     # e.g. '/GCQ26' starts with '/GC', extra = 'Q26', extra[0].isalpha() ✓
     # Continuous symbol '/GC:XCME' → split(':')[0] = '/GC', extra = '' → skip.
+    # Log the raw Schwab response keys for verification
+    log.info('refresh_active_contracts raw keys from Schwab: %s', list(raw.keys()))
+
     updated: dict[str, str] = {}
     for resp_key in raw:
-        base_resp = resp_key.split(':')[0]          # strip exchange suffix
+        base_resp = resp_key.split(':')[0]          # strip exchange suffix e.g. '/GCQ26'
         for sym in futures:
             base_tick = sym['ticker']               # e.g. '/GC'
+            if not base_resp.startswith(base_tick): # MUST start with the base ticker
+                continue
             extra = base_resp[len(base_tick):]      # e.g. 'Q26'
             if extra and extra[0].isalpha():        # month letter → specific contract
                 updated[base_tick] = base_resp
@@ -1396,6 +1401,25 @@ def health():
         'signals': len(state['signals']),
         'symbols': len(state['symbols']),
     }
+
+
+@app.get('/api/debug/contracts')
+def debug_contracts():
+    """Expose discovered active contracts and computed front months for verification."""
+    futures = [s for s in state['symbols'] if s['ticker'].startswith('/')]
+    result = []
+    for sym in futures:
+        tick = sym['ticker']
+        active  = state['active_contracts'].get(tick)
+        computed = front_month_code(tick)
+        result.append({
+            'ticker'          : tick,
+            'schwab_symbol'   : sym['schwab_symbol'],
+            'active_contract' : active,
+            'computed_front'  : computed,
+            'using'           : active or computed,
+        })
+    return {'contracts': result, 'total': len(result)}
 
 
 MARKET_TICKERS = {'/ES', '/NQ', '/YM', '/RTY'}
