@@ -1545,7 +1545,8 @@ def get_industries():
         # Live price during RTH; RTH close (ignoring extended hours) outside RTH
         current  = state['last_price'].get(sid, 0) if _is_rth else state['prev_close'].get(sid, 0)
         pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
-        result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
+        result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct,
+                        '_rth_open': rth_open, '_current': current})
 
     # MAG10 composite index — weighted sum of mega-cap tech, % from its RTH open value
     mag10_now  = 0.0
