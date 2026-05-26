@@ -806,64 +806,63 @@ def _active_contract(ticker: str) -> str:
 
 
 async def refresh_active_contracts() -> None:
-    """Determine the active front-month contract for every futures symbol.
+    """Determine the active front-month contract by comparing CME volume.
 
-    Algorithm (self-correcting, no manual calendar needed):
-      1. Compute best-guess contract via front_month_code() for each ticker.
-      2. Quote all guesses in one Schwab call.
-      3. Any ticker whose quote returns last=0 (expired / wrong month) →
-         step to the NEXT contract month in the CME schedule and re-probe.
-      4. If both guesses return 0 (exchange closed) → keep the formula guess
-         so we don't accidentally move to a bad contract.
+    Algorithm:
+      1. For each futures ticker, generate 3 candidate contracts:
+           c0 = formula front month (front_month_code)
+           c1 = next listed month after c0
+           c2 = next listed month after c1
+      2. Quote all candidates in ONE Schwab call (batched across all tickers).
+      3. Pick the candidate with the highest totalVolume per ticker.
+         Volume is always concentrated in the active contract — it never lies.
+      4. If ALL three return volume=0 (exchange closed / holiday) → keep c0
+         so we never drift to a wrong contract based on stale/absent data.
 
-    Called at startup and every hour so rolls are picked up automatically.
+    Called at startup and every hour — automatic roll detection with no
+    manual calendar to maintain.
     """
     futures = [s for s in state['symbols'] if s['ticker'].startswith('/')]
     if not futures:
         return
 
-    # ── Step 1: compute formula-based front months ─────────────────────────────
-    guesses: dict[str, str] = {sym['ticker']: front_month_code(sym['ticker'])
-                                for sym in futures}
+    # ── Step 1: build 3 candidate contracts per ticker ────────────────────────
+    candidates: dict[str, list[str]] = {}
+    for sym in futures:
+        tick = sym['ticker']
+        c0   = front_month_code(tick)
+        c1   = next_contract_month(tick, c0)
+        c2   = next_contract_month(tick, c1)
+        candidates[tick] = [c0, c1, c2]
 
-    # ── Step 2: probe all guesses in a single Schwab call ─────────────────────
+    # ── Step 2: quote all candidates in a single Schwab call ─────────────────
+    all_syms = list({c for cs in candidates.values() for c in cs})
     try:
-        raw = await asyncio.to_thread(get_quotes, list(guesses.values()))
+        raw = await asyncio.to_thread(get_quotes, all_syms)
     except Exception as e:
-        log.warning('refresh_active_contracts probe error: %s — using formula guesses', e)
-        state['active_contracts'].update(guesses)
-        log.info('Active contracts (formula fallback, %d): %s', len(guesses),
-                 '  '.join(f'{k}→{v}' for k, v in sorted(guesses.items())))
+        log.warning('refresh_active_contracts error: %s — falling back to formula', e)
+        fallback = {sym['ticker']: front_month_code(sym['ticker']) for sym in futures}
+        state['active_contracts'].update(fallback)
+        log.info('Active contracts (formula fallback %d): %s', len(fallback),
+                 '  '.join(f'{k}→{v}' for k, v in sorted(fallback.items())))
         return
 
-    # ── Step 3: identify tickers with 0 price (wrong/expired contract) ─────────
+    # ── Step 3: pick highest-volume candidate per ticker ─────────────────────
     confirmed: dict[str, str] = {}
-    needs_retry: list[str]    = []
-    for tick, contract in guesses.items():
-        if (raw.get(contract, {}).get('last') or 0) != 0:
-            confirmed[tick] = contract
+    for tick, cs in candidates.items():
+        vols    = [(raw.get(c, {}).get('volume') or 0, c) for c in cs]
+        best_v, best_c = max(vols, key=lambda x: x[0])
+        formula = cs[0]
+
+        if best_v == 0:
+            # Exchange closed / holiday — all volumes zero, keep formula guess
+            confirmed[tick] = formula
         else:
-            needs_retry.append(tick)
-
-    # ── Step 4: retry with the NEXT contract month for zero-price tickers ──────
-    if needs_retry:
-        next_guesses: dict[str, str] = {
-            tick: next_contract_month(tick, guesses[tick])
-            for tick in needs_retry
-        }
-        try:
-            next_raw = await asyncio.to_thread(get_quotes, list(next_guesses.values()))
-        except Exception:
-            next_raw = {}
-
-        for tick, contract in next_guesses.items():
-            if (next_raw.get(contract, {}).get('last') or 0) != 0:
-                confirmed[tick] = contract          # next month has data → use it
-                log.info('  %s rolled: %s → %s', tick, guesses[tick], contract)
-            else:
-                confirmed[tick] = guesses[tick]    # both 0 (exchange closed) → keep formula
-                log.debug('  %s: both %s and %s returned 0 — keeping formula guess',
-                           tick, guesses[tick], contract)
+            confirmed[tick] = best_c
+            if best_c != formula:
+                log.info('  %s  volume roll detected: %s (vol=%s) beats formula %s (vol=%s)',
+                         tick, best_c, best_v, formula,
+                         raw.get(formula, {}).get('volume') or 0)
 
     state['active_contracts'].update(confirmed)
     log.info('Active contracts (%d): %s', len(confirmed),
