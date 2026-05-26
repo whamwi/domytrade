@@ -470,6 +470,26 @@ export default function DashboardPage() {
       {activeAlert && (
         <AlertToast alert={activeAlert} onDismiss={() => setActiveAlert(null)} />
       )}
+
+      {/* DEV: test alert button — remove after testing */}
+      <button
+        onClick={() => setActiveAlert({
+          title: 'CB Consumer Confidence  ·  HPI m/m',
+          impact: 'High',
+          forecast: '91.9',
+          previous: '92.8',
+          date: new Date().toISOString(),
+          country: 'USD',
+        })}
+        style={{
+          position: 'fixed', bottom: 24, left: 24, zIndex: 200,
+          background: '#1e293b', border: '1px solid #334155',
+          color: '#94a3b8', fontSize: 11, padding: '5px 10px',
+          borderRadius: 6, cursor: 'pointer',
+        }}
+      >
+        🔔 Test Alert
+      </button>
     </div>
   )
 }
