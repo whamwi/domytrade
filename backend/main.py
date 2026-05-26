@@ -1261,13 +1261,24 @@ async def refresh_ytd():
 
 async def refresh_mag10_prices():
     """Fetch live Schwab quotes for all MAG10 component stocks (most are not in symbols table).
-    Stores last price in state['mag10_price'] — called every 60 s alongside refresh_signals."""
+    Stores last price in state['mag10_price'] and today's 9:30 open in state['mag10_open'].
+    Called every 60s alongside refresh_signals.
+
+    mag10_open uses q['open'] from the live quote — Schwab's open field = today's RTH 9:30 open
+    for equities. Daily candles cannot be used because Schwab never returns in-progress bars."""
+    _now_et = datetime.now(ET)
+    _et_min = _now_et.hour * 60 + _now_et.minute
+    _is_rth = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
     tickers = [c['ticker'] for c in MAG10_COMPONENTS]
     try:
         quotes = await asyncio.to_thread(get_quotes, tickers)
         for t, q in quotes.items():
             if q.get('last'):
                 state['mag10_price'][t] = float(q['last'])
+            # Capture today's 9:30 RTH open from live quote during RTH.
+            # Persist so the value survives after 4 PM (for end-of-day display).
+            if _is_rth and q.get('open'):
+                state['mag10_open'][t] = round(float(q['open']), 4)
         log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_price']), len(tickers))
     except Exception as e:
         log.warning('refresh_mag10_prices: %s', e)
