@@ -297,28 +297,48 @@ def make_signal(
                     signal_state = 'NEAR'
         else:
             # ── Phase 2 / pre-market: position-driven ────────────────────
-            if shortT < last_price < longT:
-                # Neutral zone — show levels, side by nearest gray
-                side   = 'LONG'  if last_price <= mid else 'SHORT'
+            # Position % within the full L1-to-L1 range (0% = LONG L1, 100% = SHORT L1)
+            l1_range = hourlyRHL - hourlyRLH
+            pos_pct  = ((last_price - hourlyRLH) / l1_range * 100) if l1_range > 0 else 50.0
+
+            if last_price <= hourlyRLH:
+                # At or beyond LONG L1 — ENTRY LONG
+                side         = 'LONG'
+                entry, stop, t1, target = hourlyRLH, long_stop, long_t1, longT
+                signal_state = 'ENTRY'
+            elif last_price <= shortT:
+                # Between LONG L1 and lower gray — NEAR LONG
+                side         = 'LONG'
+                entry, stop, t1, target = hourlyRLH, long_stop, long_t1, longT
+                signal_state = 'NEAR'
+            elif pos_pct < 25:
+                # Lower quarter of L1 range — neutral but drifting LONG
+                side         = 'LONG'
+                entry, stop, t1, target = hourlyRLH, long_stop, long_t1, longT
+                signal_state = 'NEUTRAL'
+            elif pos_pct <= 75:
+                # Middle 50% — pure neutral, show nearest side by midpoint
+                side         = 'LONG' if last_price <= mid else 'SHORT'
                 entry  = hourlyRLH if side == 'LONG' else hourlyRHL
                 stop   = long_stop if side == 'LONG' else short_stop
                 t1     = long_t1   if side == 'LONG' else short_t1
                 target = longT     if side == 'LONG' else shortT
                 signal_state = 'NEUTRAL'
-            elif last_price <= shortT:
-                side   = 'LONG'
-                entry  = hourlyRLH
-                stop   = long_stop
-                t1     = long_t1
-                target = longT
-                signal_state = 'ENTRY' if last_price <= hourlyRLH else 'NEAR'
-            else:  # last_price >= longT
-                side   = 'SHORT'
-                entry  = hourlyRHL
-                stop   = short_stop
-                t1     = short_t1
-                target = shortT
-                signal_state = 'ENTRY' if last_price >= hourlyRHL else 'NEAR'
+            elif last_price < longT:
+                # Upper quarter of L1 range — neutral but drifting SHORT
+                side         = 'SHORT'
+                entry, stop, t1, target = hourlyRHL, short_stop, short_t1, shortT
+                signal_state = 'NEUTRAL'
+            elif last_price < hourlyRHL:
+                # Between upper gray and SHORT L1 — NEAR SHORT
+                side         = 'SHORT'
+                entry, stop, t1, target = hourlyRHL, short_stop, short_t1, shortT
+                signal_state = 'NEAR'
+            else:
+                # At or beyond SHORT L1 — ENTRY SHORT
+                side         = 'SHORT'
+                entry, stop, t1, target = hourlyRHL, short_stop, short_t1, shortT
+                signal_state = 'ENTRY'
 
         typical = l3
         swing_pct = round(current_range / typical * 100, 1) if typical else 0
