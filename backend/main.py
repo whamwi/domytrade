@@ -2278,14 +2278,21 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
         sid_agent     = sym_obj_agent['id'] if sym_obj_agent else None
         ib_data       = state['ib'].get(sid_agent, {}) if sid_agent else {}
 
-        # Gap from RTH prev close — prefer daily-candle prev_close (date-scoped, holiday-safe)
-        _rth_c_agent   = state['prev_close'].get(sid_agent) if sid_agent else None
-        gap_baseline_agent = _rth_c_agent or prev_close
-        today_all_agent = sorted(
-            on_by_date.get(today, []) + rth_by_date.get(today, []),
-            key=lambda c: c['datetime']
-        )
-        gap_agent = round(today_all_agent[0]['open'] - gap_baseline_agent, 2) if (today_all_agent and gap_baseline_agent) else None
+        # Gap: RTH open vs prior CME settlement — reuse the value already computed
+        # in refresh_signals() (state['market_bias'][sid]['gap']) which uses:
+        #   prev_settle = last - net_change  (exact CME settlement, most accurate)
+        #   rth_open    = true 9:30 ET open from live Schwab quote
+        # Fallback: find the first RTH bar (≥09:30) and diff against prev_close.
+        _mb_agent  = state['market_bias'].get(sid_agent, {}) if sid_agent else {}
+        gap_agent  = _mb_agent.get('gap')
+        if gap_agent is None:
+            # Fallback when market_bias not yet populated (e.g. pre-market)
+            rth_today = rth_by_date.get(today, [])
+            if rth_today:
+                rth_open_bar = min(rth_today, key=lambda c: c['datetime'])
+                _settle = _mb_agent.get('prev_close') or prev_close
+                if _settle:
+                    gap_agent = round(rth_open_bar['open'] - _settle, 2)
 
         levels = {
             'session_vpoc': session_vpoc, 'session_vah': session_vah, 'session_val': session_val,
