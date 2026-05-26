@@ -568,22 +568,14 @@ async def refresh_signals():
     _et_min  = _now_et.hour * 60 + _now_et.minute
     _is_rth  = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
 
-    # Quote symbol strategy:
-    #   • Market futures (/ES /NQ /YM /RTY): use the specific contract month symbol
-    #     (e.g. /ESM26) — the continuous symbol may return zero net_change when CME
-    #     is closed, which we need for the bias computation.
-    #   • All other futures: use schwab_symbol (continuous, e.g. /GC:XCME).
-    #     Continuous symbols auto-roll on Schwab and always return a live lastPrice,
-    #     avoiding near-expiry contract gaps for commodity futures (gold rolls ~3 days
-    #     before First Notice Day, energy rolls on the 20th of the prior month, etc.).
-    #   • Equities/ETFs: use schwab_symbol as-is.
+    # All futures use the specific front-month contract symbol for quotes (e.g. /ESM26).
+    # Schwab echoes back the same key we send, so quote_key maps it back to schwab_symbol.
+    # Continuous symbols (e.g. /GC:XCME) would have Schwab respond with the front-month
+    # key (/GCM26), breaking the round-trip lookup → last=0 → no signal generated.
+    # Equities/ETFs use schwab_symbol as-is.
     def _quote_sym(s):
         tick = s['ticker']
-        if not tick.startswith('/'):
-            return s['schwab_symbol']
-        if tick in MARKET_TICKERS:
-            return front_month_code(tick)   # specific contract for accurate net_change
-        return s['schwab_symbol']           # continuous — reliable last price for all others
+        return front_month_code(tick) if tick.startswith('/') else s['schwab_symbol']
 
     quote_syms = [_quote_sym(s) for s in symbols]
     # Map back: quote_symbol → schwab_symbol so we can look up the right key
@@ -1201,6 +1193,13 @@ async def background_loop():
                      len(state['signals']), state['last_signal_update'])
     except Exception as e:
         log.warning('Signal snapshot load error: %s', e)
+
+    # ── Validate front-month contract letters for all active futures ────────────
+    futures_syms = [s for s in state['symbols'] if s['ticker'].startswith('/')]
+    log.info('Front-month contracts for %d active futures:', len(futures_syms))
+    for _s in futures_syms:
+        _contract = front_month_code(_s['ticker'])
+        log.info('  %-8s  →  %s', _s['ticker'], _contract)
 
     await compute_all_stats()
     await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
