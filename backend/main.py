@@ -118,6 +118,8 @@ state = {
     'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
     'mag10_last'        : {},    # {ticker: float}  — live last price
     'mag10_prev_close'  : {},    # {ticker: float}  — prev close = last - net_change
+    'daily_bias'        : {},    # {symbol_id: 'LONG'|'SHORT'}  — RTH open vs prev_settle
+    'prev_signal_state' : {},    # {sid_model: 'NEAR'|'ENTRY'}  — for ENTRY transition detection
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
     'signals'           : [],
     'last_stats_update': None,
@@ -764,10 +766,25 @@ async def refresh_signals():
             ohlc['high'] = max(ohlc['high'], last)
             ohlc['low']  = min(ohlc['low'],  last)
 
+        # ── Daily bias: RTH open vs prev_settle ──────────────────────────
+        rth_open_val   = state['rth_open'].get(sid, 0)
+        prev_settl_val = state['prev_settle'].get(sid)
+        if rth_open_val and prev_settl_val:
+            if rth_open_val > prev_settl_val:
+                state['daily_bias'][sid] = 'LONG'
+            elif rth_open_val < prev_settl_val:
+                state['daily_bias'][sid] = 'SHORT'
+        bias_val = state['daily_bias'].get(sid)
+
+        now_et     = datetime.now(ET)
+        et_minute  = now_et.hour * 60 + now_et.minute
+
         sigs = make_signal(
             tick, api, ohlc, last,
             state['stats_agg'].get(sid, {}),
             state['stats_con'].get(sid, {}),
+            daily_bias=bias_val,
+            et_minute=et_minute,
         )
         if sigs:
             for s in sigs:
@@ -775,6 +792,11 @@ async def refresh_signals():
                 s['signal_hour'] = signal_hour.isoformat()
                 s['prev_close']  = round(prev_close, 4)
                 s['net_change']  = round(net_chg_raw, 4)
+                # Detect NEAR → ENTRY transition for one-shot beep on frontend
+                sk = f"{sid}_{s['model']}"
+                prev_st = state['prev_signal_state'].get(sk)
+                s['entry_alert'] = (s['signal_state'] == 'ENTRY' and prev_st != 'ENTRY')
+                state['prev_signal_state'][sk] = s['signal_state']
             rows.extend(sigs)
         await asyncio.sleep(0.1)
 

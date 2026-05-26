@@ -200,10 +200,21 @@ def make_signal(
     stats_con: dict,
     dollar_risk: float = 50.0,
     hour_override: int | None = None,
+    daily_bias: str | None = None,   # 'LONG' | 'SHORT' — RTH open vs prev_settle
+    et_minute: int | None = None,    # minutes since midnight ET, for phase detection
 ) -> list[dict] | None:
     """
-    Build signal rows for one symbol, matching the TOS VBH ThinkScript exactly.
-    Returns a list (one per model with data) or None.
+    Build signal rows for one symbol using HBMR rules.
+
+    HBMR level ordering (low → high price):
+      hourlyRLH (h_high−L1)  ← LONG entry
+      shortT    (h_high−L4)  ← NEAR/NEUTRAL boundary (LONG side)
+          [NEUTRAL ZONE]
+      longT     (h_low+L4)   ← NEAR/NEUTRAL boundary (SHORT side)
+      hourlyRHL (h_low+L1)   ← SHORT entry
+
+    Phase 1 (9:30–11:00 ET): bias-driven, strict side suppression.
+    Phase 2 (after 11:00 ET): position-driven, neutral zone suppressed.
     """
     now_et = datetime.now(ET)
     h = hour_override if hour_override is not None else now_et.hour
@@ -244,42 +255,56 @@ def make_signal(
         long_t1  = round((hourlyRLH + stop_translated) / ts) * ts
         short_t1 = round((hourlyRHL - stop_translated) / ts) * ts
 
-        # ── Signal side ───────────────────────────────────────────────────
-        # Gray lines are the TRIGGERS; cyan lines are the ENTRIES.
-        # Lower gray = shortT = h_high - L4  → LONG trigger
-        # Upper gray = longT  = h_low  + L4  → SHORT trigger
-        # No mid-box signal — only fire when near a gray level.
-        if last_price <= hourlyRLH:
-            side   = 'LONG'
-            entry  = hourlyRLH   # lower cyan
-            stop   = long_stop
-            t1     = long_t1
-            target = longT       # upper gray (T2)
-        elif last_price >= hourlyRHL:
-            side   = 'SHORT'
-            entry  = hourlyRHL   # upper cyan
-            stop   = short_stop
-            t1     = short_t1
-            target = shortT      # lower gray (T2)
-        else:
-            # Price inside box — show nearest cyan (directional bias only)
-            mid = (hourlyRLH + hourlyRHL) / 2
-            if last_price <= mid:
+        # ── HBMR signal state ────────────────────────────────────────────
+        # Phase 1 = 9:30–11:00 (bias-driven, strict suppression of opposing side)
+        # Phase 2 = after 11:00 (position-driven, neutral zone hidden)
+        phase1 = et_minute is not None and (9 * 60 + 30) <= et_minute < (11 * 60)
+
+        signal_state: str   # 'NEAR' | 'ENTRY'
+        side: str
+        entry: float
+        stop: float
+        t1: float
+        target: float
+
+        if phase1 and daily_bias:
+            # ── Phase 1: strict bias, suppress opposite side ──────────────
+            if daily_bias == 'LONG':
+                if last_price > shortT:
+                    continue   # price hasn't retreated enough — no signal yet
                 side   = 'LONG'
                 entry  = hourlyRLH
                 stop   = long_stop
                 t1     = long_t1
                 target = longT
-            else:
+                signal_state = 'ENTRY' if last_price <= hourlyRLH else 'NEAR'
+            else:  # SHORT bias
+                if last_price < longT:
+                    continue   # price hasn't bounced enough — no signal yet
                 side   = 'SHORT'
                 entry  = hourlyRHL
                 stop   = short_stop
                 t1     = short_t1
                 target = shortT
-
-        # ── Alert: price within 5 ticks of the trigger gray ──────────────
-        trigger_gray = shortT if side == 'LONG' else longT   # relevant gray for this side
-        near_gray = abs(last_price - trigger_gray) <= 5 * ts
+                signal_state = 'ENTRY' if last_price >= hourlyRHL else 'NEAR'
+        else:
+            # ── Phase 2: position-driven, neutral zone = no signal ────────
+            if shortT < last_price < longT:
+                continue   # neutral zone — suppress
+            elif last_price <= shortT:
+                side   = 'LONG'
+                entry  = hourlyRLH
+                stop   = long_stop
+                t1     = long_t1
+                target = longT
+                signal_state = 'ENTRY' if last_price <= hourlyRLH else 'NEAR'
+            else:  # last_price >= longT
+                side   = 'SHORT'
+                entry  = hourlyRHL
+                stop   = short_stop
+                t1     = short_t1
+                target = shortT
+                signal_state = 'ENTRY' if last_price >= hourlyRHL else 'NEAR'
 
         typical = l3
         swing_pct = round(current_range / typical * 100, 1) if typical else 0
@@ -289,13 +314,14 @@ def make_signal(
             'api_symbol'    : api_symbol,
             'side'          : side,
             'model'         : label,
+            'signal_state'  : signal_state,       # 'NEAR' | 'ENTRY'
+            'daily_bias'    : daily_bias,          # 'LONG' | 'SHORT' | None
             'entry'         : round(entry,  4),
             'stop'          : round(stop,   4),
             't1'            : round(t1,     4),
             'target'        : round(target, 4),   # T2 (gray)
             'lower_gray'    : round(shortT, 4),   # h_high - L4  (LONG trigger)
             'upper_gray'    : round(longT,  4),   # h_low  + L4  (SHORT trigger)
-            'near_gray'     : near_gray,           # price within 5 ticks of trigger gray
             'last'          : round(last_price, 4),
             'hour_high'     : round(h_high, 4),
             'hour_low'      : round(h_low,  4),

@@ -12,6 +12,7 @@ import AlertToast from './components/AlertToast'
 import FuturesBrief from './components/FuturesBrief'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
+import { Signal } from './components/SignalTable'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL       = 60_000   // normal polling once data is live
@@ -109,6 +110,13 @@ export default function DashboardPage() {
   const warmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
+
+  // Play one beep when any signal transitions NEAR → ENTRY
+  useEffect(() => {
+    if (!data?.signals) return
+    const hasEntryAlert = data.signals.some((s: Signal) => s.entry_alert)
+    if (hasEntryAlert) playAlertSound()
+  }, [data?.signals])
 
   // Warm-up timer: count elapsed seconds while signals haven't arrived yet
   const isWarmingUp = !error && (data === null || data.signals.length === 0)

@@ -25,7 +25,10 @@ export interface Signal {
   target: number
   lower_gray: number
   upper_gray: number
-  near_gray: boolean
+  near_gray?: boolean          // legacy — kept for compatibility
+  signal_state?: 'NEAR' | 'ENTRY'
+  entry_alert?: boolean        // true only on NEAR→ENTRY transition
+  daily_bias?: 'LONG' | 'SHORT' | null
   last: number
   prev_close: number
   net_change?: number | null
@@ -364,9 +367,20 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
         </span>
       </td>
 
-      {/* ALERT — price within 5 ticks of trigger gray */}
+      {/* ALERT — NEAR or ENTRY state */}
       <td className="px-3 py-2.5">
-        {sig.near_gray ? (
+        {sig.signal_state === 'ENTRY' ? (
+          <span
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
+            style={{
+              background: sig.side === 'LONG' ? 'rgba(74,222,128,0.18)' : 'rgba(248,113,113,0.18)',
+              color: sig.side === 'LONG' ? '#4ade80' : '#f87171',
+              animation: 'pulse 1.5s infinite',
+            }}
+          >
+            <span style={{ fontSize: 8 }}>●</span> ENTRY
+          </span>
+        ) : sig.signal_state === 'NEAR' || sig.near_gray ? (
           <span
             className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
             style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', animation: 'pulse 2s infinite' }}
