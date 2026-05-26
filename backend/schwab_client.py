@@ -3,7 +3,7 @@ Schwab API client — quotes and intraday candles.
 Token management is self-contained: reads from env vars, refreshes in memory.
 No dependency on local token.json or market_hours.py.
 """
-import os, time, base64, requests
+import os, time, base64, requests, threading
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -195,16 +195,20 @@ TOKEN_URL         = 'https://api.schwabapi.com/v1/oauth/token'
 API_KEY    = os.environ['SCHWAB_API_KEY']
 API_SECRET = os.environ['SCHWAB_API_SECRET']
 
-# In-memory token cache
+# In-memory token cache + lock to prevent concurrent refresh races.
+# refresh_all_1min() dispatches 16 threads simultaneously; without the lock
+# they all see an expired token and all call _refresh_access_token() at once,
+# causing Schwab to reject duplicate refresh requests with 400/403.
 _token_cache = {
     'access_token' : None,
     'refresh_token': os.environ.get('SCHWAB_REFRESH_TOKEN', ''),
     'expires_at'   : 0,
 }
+_token_lock = threading.Lock()
 
 
 def _refresh_access_token() -> str:
-    """Use refresh token to get a new access token."""
+    """Use refresh token to get a new access token (must be called under _token_lock)."""
     creds = base64.b64encode(f'{API_KEY}:{API_SECRET}'.encode()).decode()
     r = requests.post(TOKEN_URL,
         headers={'Authorization': f'Basic {creds}',
@@ -222,9 +226,10 @@ def _refresh_access_token() -> str:
 
 
 def _get_token() -> str:
-    if not _token_cache['access_token'] or time.time() >= _token_cache['expires_at']:
-        return _refresh_access_token()
-    return _token_cache['access_token']
+    with _token_lock:
+        if not _token_cache['access_token'] or time.time() >= _token_cache['expires_at']:
+            return _refresh_access_token()
+        return _token_cache['access_token']
 
 
 def _headers() -> dict:
