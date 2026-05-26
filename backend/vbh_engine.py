@@ -117,24 +117,17 @@ def _resolve(table: dict, base: str) -> list[tuple] | None:
     return None
 
 
-def _compute_dynamic(candles: list[dict]) -> dict[int, tuple]:
-    """Compute L1/L2/L3/L4 per ET hour from Schwab 30-min candles.
+# Confirmed k-ratios from 3-week cross-week analysis of TOS Aggressive study files.
+# L2 = mean hourly range (ATR center).  All other levels are fixed fractions of L2.
+# k1 + k3 = 2.000 exactly → L1 = mean − σ,  L3 = mean + σ  (CV ≈ 14.7%)
+# Using fixed ratios avoids the inversion bug that arises when sample CV is high
+# (mean − σ formula collapses L1/L4 when only a few observations are available).
+_K_AGG = (0.8527, 1.0000, 1.1473, 0.7960)   # L1, L2, L3, L4  — Aggressive (~1σ)
+_K_CON = (0.7054, 1.0000, 1.2946, 0.5920)   # L1, L2, L3, L4  — Conservative (~2σ)
 
-    Used as an automatic fallback for symbols that have no 2022 TOS hardcoded
-    constants (e.g. /ZN, /ZC, /ZS, /PL, /RB, /BTC).
 
-    Method — for each ET hour, collect all observed hourly ranges (H-L) over
-    the full lookback window, then:
-      L1 = mean − σ   (lower typical range)
-      L2 = mean        (central typical range)
-      L3 = mean + σ   (upper typical range)
-      L4 = mean − 1.5σ (tight lower bound / conservative target)
-
-    30-min bars from the same ET hour are merged into one hourly bucket
-    (max-high / min-low) so each calendar hour contributes exactly one
-    range observation.
-    """
-    # Merge 30-min bars into hourly buckets keyed by (date, ET_hour)
+def _build_hourly_ranges(candles: list[dict]) -> dict[int, list[float]]:
+    """Merge sub-hourly candles into per-ET-hour buckets and return H-L ranges."""
     buckets: dict[tuple, dict] = {}
     for c in candles:
         dt  = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
@@ -147,12 +140,29 @@ def _compute_dynamic(candles: list[dict]) -> dict[int, tuple]:
             if c['low']  < buckets[key]['low']:
                 buckets[key]['low']  = c['low']
 
-    # Collect ranges per hour
     hour_ranges: dict[int, list[float]] = defaultdict(list)
     for (_, h), b in buckets.items():
         r = b['high'] - b['low']
         if r > 0:
             hour_ranges[h].append(r)
+    return hour_ranges
+
+
+def _compute_dynamic(candles: list[dict], k_ratios: tuple = _K_AGG) -> dict[int, tuple]:
+    """Compute L1/L2/L3/L4 per ET hour from Schwab sub-hourly candles.
+
+    Used as an automatic fallback for symbols that have no hardcoded constants.
+
+    Method — for each ET hour, take the mean hourly range (= L2, the ATR center),
+    then scale by the confirmed VBH k-ratios to obtain L1/L3/L4.  This guarantees
+    L4 < L1 < L2 < L3 at every hour regardless of sample size or volatility regime.
+
+    Previous approach (mean ± σ) caused L1/L4 to collapse toward zero when CV was
+    high (few observations), producing an inversion where the gray T2 target landed
+    below the cyan entry trigger — the so-called "cyan above gray" bug.
+    """
+    k1, k2, k3, k4 = k_ratios
+    hour_ranges = _build_hourly_ranges(candles)
 
     result: dict[int, tuple] = {}
     for h in range(24):
@@ -160,35 +170,36 @@ def _compute_dynamic(candles: list[dict]) -> dict[int, tuple]:
         if len(rs) < 3:
             result[h] = (0.0, 0.0, 0.0, 0.0)
             continue
-        mean = sum(rs) / len(rs)
-        sig  = (sum((r - mean) ** 2 for r in rs) / len(rs)) ** 0.5
-        l1   = max(0.0, round(mean - sig,        5))
-        l2   =          round(mean,               5)
-        l3   =          round(mean + sig,         5)
-        l4   = max(0.0, round(mean - 1.5 * sig,  5))
-        result[h] = (l1, l2, l3, l4)
+        l2 = sum(rs) / len(rs)           # ATR center = mean hourly range
+        result[h] = (
+            round(l2 * k1, 5),
+            round(l2,      5),
+            round(l2 * k3, 5),
+            round(l2 * k4, 5),
+        )
 
     return result
 
 
 def compute_stats(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]:
-    """Return {hour: (L1,L2,L3,L4)} — 2022 AGG constants when available,
-    otherwise computed dynamically from the provided candles (mean ± σ)."""
+    """Return {hour: (L1,L2,L3,L4)} — hardcoded AGG constants when available,
+    otherwise computed dynamically from the provided candles using AGG k-ratios."""
     base = api_symbol.split(':')[0]
     rows = _resolve(_AGG_2022, base)
     if rows is not None:
         return {h: rows[h] for h in range(24)}
-    return _compute_dynamic(candles)
+    return _compute_dynamic(candles, _K_AGG)
 
 
 def compute_stats_con(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]:
-    """Return {hour: (L1,L2,L3,L4)} — 2022 CON constants when available,
-    otherwise computed dynamically from the provided candles (mean ± σ)."""
+    """Return {hour: (L1,L2,L3,L4)} — hardcoded CON constants when available,
+    otherwise computed dynamically from the provided candles using CON k-ratios
+    (~2σ spread: wider cloud, tighter entry zone than AGG)."""
     base = api_symbol.split(':')[0]
     rows = _resolve(_CON_2022, base)
     if rows is not None:
         return {h: rows[h] for h in range(24)}
-    return _compute_dynamic(candles)
+    return _compute_dynamic(candles, _K_CON)
 
 
 def make_signal(
