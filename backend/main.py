@@ -117,6 +117,7 @@ state = {
     'volatility'       : {'vix': None},   # $VIX — Fear Index
     'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
     'mag10_pct_change'  : {},    # {ticker: float}  — daily % change (netPercentChangeInDouble) for MAG10
+    'mag10_tickers_ok'  : set(), # set of tickers that have a valid last price (separate from pct=0 which is legitimate)
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
     'signals'           : [],
     'last_stats_update': None,
@@ -1239,11 +1240,18 @@ async def refresh_mag10_prices():
     try:
         quotes = await asyncio.to_thread(get_quotes, tickers)
         for t, q in quotes.items():
+            last = float(q.get('last') or 0)
+            if not last:
+                continue   # no price yet — keep previous value
             pct = float(q.get('net_pct_change') or 0)
-            # Fallback: if Schwab returns 0% (pre-market / no data), skip update
-            if pct != 0:
-                state['mag10_pct_change'][t] = round(pct, 4)
-        log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_pct_change']), len(tickers))
+            # Fallback: if Schwab returns 0% but we have last+open, compute it
+            if pct == 0:
+                open_ = float(q.get('open') or 0)
+                if open_ > 0:
+                    pct = round((last - open_) / open_ * 100, 4)
+            state['mag10_pct_change'][t] = pct   # store even if genuinely 0%
+            state['mag10_tickers_ok'].add(t)
+        log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_tickers_ok']), len(tickers))
     except Exception as e:
         log.warning('refresh_mag10_prices: %s', e)
 
@@ -1527,11 +1535,11 @@ def get_industries():
     mag10_weighted = 0.0
     mag10_ok       = True
     for comp in MAG10_COMPONENTS:
-        pct_i = state['mag10_pct_change'].get(comp['ticker'], 0)
-        if pct_i == 0:
-            mag10_ok = False
+        t = comp['ticker']
+        if t not in state['mag10_tickers_ok']:
+            mag10_ok = False   # no valid price received yet for this ticker
             break
-        mag10_weighted += pct_i * comp['weight']
+        mag10_weighted += state['mag10_pct_change'].get(t, 0) * comp['weight']
 
     mag10_pct = round(mag10_weighted, 2) if mag10_ok else 0.0
     result.append({'symbol': 'MAG10', 'name': 'MAG10', 'pct': mag10_pct})
