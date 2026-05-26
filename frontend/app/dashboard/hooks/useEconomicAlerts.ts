@@ -14,7 +14,7 @@ export interface EconAlert {
 }
 
 /** Play a short two-tone alert using the Web Audio API. */
-function playAlertSound() {
+export function playAlertSound() {
   try {
     const ctx = new AudioContext()
     const tones = [880, 1100]

@@ -11,7 +11,7 @@ import BriefingModal from './components/BriefingModal'
 import AlertToast from './components/AlertToast'
 import FuturesBrief from './components/FuturesBrief'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
-import { useEconomicAlerts, EconAlert } from './hooks/useEconomicAlerts'
+import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL       = 60_000   // normal polling once data is live
@@ -473,14 +473,17 @@ export default function DashboardPage() {
 
       {/* DEV: test alert button — remove after testing */}
       <button
-        onClick={() => setActiveAlert({
-          title: 'CB Consumer Confidence  ·  HPI m/m',
-          impact: 'High',
-          forecast: '91.9',
-          previous: '92.8',
-          date: new Date().toISOString(),
-          country: 'USD',
-        })}
+        onClick={() => {
+          playAlertSound()
+          setActiveAlert({
+            title: 'CB Consumer Confidence  ·  HPI m/m',
+            impact: 'High',
+            forecast: '91.9',
+            previous: '92.8',
+            date: new Date().toISOString(),
+            country: 'USD',
+          })
+        }}
         style={{
           position: 'fixed', bottom: 24, left: 24, zIndex: 200,
           background: '#1e293b', border: '1px solid #334155',
