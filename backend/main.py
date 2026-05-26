@@ -52,18 +52,20 @@ SECTOR_TICKERS = {
 STRIP_TICKERS = {'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE'}
 
 # Ordered list for the Industries strip — 11 SPDR sector ETFs only
+# S&P 500 sector weights — April 2026 GICS allocations (matches ThinkScript labels)
+# Order matches ThinkScript AddLabel order (by weight desc, with ConsDisc before Comms)
 STRIP_ETFS = [
-    {'ticker': 'XLK',  'name': 'Tech'},
-    {'ticker': 'XLV',  'name': 'Health'},
-    {'ticker': 'XLF',  'name': 'Fin'},
-    {'ticker': 'XLC',  'name': 'Com'},
-    {'ticker': 'XLY',  'name': 'C/Disc'},
-    {'ticker': 'XLI',  'name': 'Ind'},
-    {'ticker': 'XLP',  'name': 'Stpls'},
-    {'ticker': 'XLE',  'name': 'Energy'},
-    {'ticker': 'XLB',  'name': 'Matls'},
-    {'ticker': 'XLU',  'name': 'Utils'},
-    {'ticker': 'XLRE', 'name': 'R/E'},
+    {'ticker': 'XLK',  'name': 'InfoTech',    'weight': 27.0},
+    {'ticker': 'XLV',  'name': 'Healthcare',  'weight': 14.0},
+    {'ticker': 'XLF',  'name': 'Financials',  'weight': 13.0},
+    {'ticker': 'XLY',  'name': 'ConsDisc',    'weight': 10.6},
+    {'ticker': 'XLC',  'name': 'Comms',       'weight': 10.8},
+    {'ticker': 'XLI',  'name': 'Industrials', 'weight':  8.6},
+    {'ticker': 'XLP',  'name': 'ConsStaples', 'weight':  5.9},
+    {'ticker': 'XLE',  'name': 'Energy',      'weight':  3.2},
+    {'ticker': 'XLB',  'name': 'Materials',   'weight':  2.5},
+    {'ticker': 'XLU',  'name': 'Utilities',   'weight':  2.4},
+    {'ticker': 'XLRE', 'name': 'RealEstate',  'weight':  2.3},
 ]
 
 # MAG10 custom composite index — price-weighted basket of mega-cap tech
@@ -1543,7 +1545,7 @@ def get_industries():
         # Live price during RTH; RTH close (ignoring extended hours) outside RTH
         current  = state['last_price'].get(sid, 0) if _is_rth else state['prev_close'].get(sid, 0)
         pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
-        result.append({'symbol': tick, 'name': etf['name'], 'pct': pct})
+        result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
 
     # MAG10 composite index — weighted sum of mega-cap tech, % from its RTH open value
     mag10_now  = 0.0

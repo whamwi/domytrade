@@ -36,23 +36,22 @@ export default function SectorStrip({ sectors, label = 'Sectors' }: SectorStripP
           ? 'rgba(248,113,113,0.07)'
           : 'rgba(100,116,139,0.06)'
 
+        // Label format matches ThinkScript: "InfoTech 27.0%: -0.24"
+        const label = s.weight != null
+          ? `${s.name} ${s.weight}%: ${pos ? '+' : ''}${s.pct.toFixed(2)}`
+          : `${s.name} ${pos ? '+' : ''}${s.pct.toFixed(2)}%`
+
         return (
           <div
             key={s.symbol}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 shrink-0"
+            className="flex items-center rounded-lg px-2.5 py-1 shrink-0"
             style={{ background: bg }}
           >
             <span
-              className="text-xs font-semibold tracking-wide"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              {s.name}
-            </span>
-            <span
-              className="text-xs font-bold tabular-nums"
+              className="text-xs font-semibold tabular-nums tracking-wide"
               style={{ color }}
             >
-              {`${pos ? '+' : ''}${s.pct.toFixed(2)}%`}
+              {label}
             </span>
           </div>
         )
