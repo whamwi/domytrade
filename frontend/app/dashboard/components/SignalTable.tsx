@@ -287,7 +287,7 @@ interface ActiveRowProps {
 function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowProps) {
   const isSector  = SECTOR_TICKERS.has(sig.symbol)
   const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
-  const isMajor   = MAJOR_MARKETS.has(sig.api_symbol ?? sig.symbol)
+  const isMajor   = MAJOR_MARKETS.has(sig.symbol)
   // Futures trade ~23h — a flat bar just means no 1-min data, not that the market is closed.
   // Only show the CLOSED badge for equities/ETFs where flat bar = genuinely no session.
   const flatBar   = sig.hour_high === sig.hour_low && !isFutures
