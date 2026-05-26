@@ -148,6 +148,44 @@ def front_month_code(base: str, ref_date: datetime | None = None) -> str:
     year_2d = str(chosen_y)[-2:]
     return f'{root}{code}{year_2d}'
 
+LETTER_TO_MONTH: dict[str, int] = {v: k for k, v in MONTH_CODES.items()}
+
+
+def next_contract_month(base: str, current_contract: str) -> str:
+    """Return the next listed contract month after current_contract.
+
+    e.g. next_contract_month('/GC', '/GCQ26') → '/GCV26' (Oct)
+         next_contract_month('/ES', '/ESM26') → '/ESU26' (Sep)
+
+    Wraps to January of the next year if no more months remain.
+    """
+    root     = base.split(':')[0]          # '/GC'
+    bare     = root.lstrip('/')            # 'GC'
+    schedule = FUTURES_SCHEDULES.get(bare, QUARTERLY)
+
+    # Parse current contract: strip root prefix → 'Q26'
+    rest = current_contract[len(root):]    # e.g. 'Q26'
+    if len(rest) < 3:
+        return current_contract            # can't parse — return unchanged
+
+    month_letter = rest[0]                 # 'Q'
+    year_2d      = rest[1:]                # '26'
+    cur_month    = LETTER_TO_MONTH.get(month_letter)
+    if cur_month is None:
+        return current_contract
+
+    cur_year = 2000 + int(year_2d)
+
+    # Find next month in schedule after cur_month (same year)
+    for m in schedule:
+        if m > cur_month:
+            return f'{root}{MONTH_CODES[m]}{year_2d}'
+
+    # Wrap to next year — first listed month
+    next_year = cur_year + 1
+    return f'{root}{MONTH_CODES[schedule[0]]}{str(next_year)[-2:]}'
+
+
 load_dotenv()
 
 PRICE_HISTORY_URL = 'https://api.schwabapi.com/marketdata/v1/pricehistory'

@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from schwab_client import get_quotes, get_candles, get_daily_candles, get_current_hour_ohlc, get_session_bars, front_month_code
+from schwab_client import get_quotes, get_candles, get_daily_candles, get_current_hour_ohlc, get_session_bars, front_month_code, next_contract_month
 from vbh_engine import compute_stats, compute_stats_con, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
@@ -806,24 +806,68 @@ def _active_contract(ticker: str) -> str:
 
 
 async def refresh_active_contracts() -> None:
-    """Compute the active front-month contract for every futures symbol using
-    front_month_code() — which handles energy and metals prior-month FND rolls.
+    """Determine the active front-month contract for every futures symbol.
 
-    Called at startup and every hour so contract rolls are picked up automatically.
+    Algorithm (self-correcting, no manual calendar needed):
+      1. Compute best-guess contract via front_month_code() for each ticker.
+      2. Quote all guesses in one Schwab call.
+      3. Any ticker whose quote returns last=0 (expired / wrong month) →
+         step to the NEXT contract month in the CME schedule and re-probe.
+      4. If both guesses return 0 (exchange closed) → keep the formula guess
+         so we don't accidentally move to a bad contract.
+
+    Called at startup and every hour so rolls are picked up automatically.
     """
     futures = [s for s in state['symbols'] if s['ticker'].startswith('/')]
     if not futures:
         return
 
-    updated: dict[str, str] = {}
-    for sym in futures:
-        tick = sym['ticker']
-        contract = front_month_code(tick)
-        updated[tick] = contract
+    # ── Step 1: compute formula-based front months ─────────────────────────────
+    guesses: dict[str, str] = {sym['ticker']: front_month_code(sym['ticker'])
+                                for sym in futures}
 
-    state['active_contracts'].update(updated)
-    log.info('Active contracts (%d): %s', len(updated),
-             '  '.join(f'{k}→{v}' for k, v in sorted(updated.items())))
+    # ── Step 2: probe all guesses in a single Schwab call ─────────────────────
+    try:
+        raw = await asyncio.to_thread(get_quotes, list(guesses.values()))
+    except Exception as e:
+        log.warning('refresh_active_contracts probe error: %s — using formula guesses', e)
+        state['active_contracts'].update(guesses)
+        log.info('Active contracts (formula fallback, %d): %s', len(guesses),
+                 '  '.join(f'{k}→{v}' for k, v in sorted(guesses.items())))
+        return
+
+    # ── Step 3: identify tickers with 0 price (wrong/expired contract) ─────────
+    confirmed: dict[str, str] = {}
+    needs_retry: list[str]    = []
+    for tick, contract in guesses.items():
+        if (raw.get(contract, {}).get('last') or 0) != 0:
+            confirmed[tick] = contract
+        else:
+            needs_retry.append(tick)
+
+    # ── Step 4: retry with the NEXT contract month for zero-price tickers ──────
+    if needs_retry:
+        next_guesses: dict[str, str] = {
+            tick: next_contract_month(tick, guesses[tick])
+            for tick in needs_retry
+        }
+        try:
+            next_raw = await asyncio.to_thread(get_quotes, list(next_guesses.values()))
+        except Exception:
+            next_raw = {}
+
+        for tick, contract in next_guesses.items():
+            if (next_raw.get(contract, {}).get('last') or 0) != 0:
+                confirmed[tick] = contract          # next month has data → use it
+                log.info('  %s rolled: %s → %s', tick, guesses[tick], contract)
+            else:
+                confirmed[tick] = guesses[tick]    # both 0 (exchange closed) → keep formula
+                log.debug('  %s: both %s and %s returned 0 — keeping formula guess',
+                           tick, guesses[tick], contract)
+
+    state['active_contracts'].update(confirmed)
+    log.info('Active contracts (%d): %s', len(confirmed),
+             '  '.join(f'{k}→{v}' for k, v in sorted(confirmed.items())))
 
 
 async def refresh_all_1min():
