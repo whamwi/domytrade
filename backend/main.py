@@ -2541,7 +2541,7 @@ async def ai_futures_brief(bust: str | None = None):
                 prompt = _build_claude_prompt(valid)
                 message = client.messages.create(
                     model='claude-haiku-4-5',
-                    max_tokens=400,
+                    max_tokens=900,
                     system=_MP_SYSTEM_PROMPT,
                     messages=[{'role': 'user', 'content': prompt}],
                 )
@@ -3182,7 +3182,7 @@ async def ai_chat(body: dict = Body(...)):
         )
         resp = client.messages.create(
             model      = 'claude-haiku-4-5',
-            max_tokens = 400,
+            max_tokens = 700,
             system     = (
                 'You are a concise trading assistant with access to live futures and intraday stock S/R data.\n\n'
                 f'LIVE FUTURES DATA:\n{futures_ctx}\n'
