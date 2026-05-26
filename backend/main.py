@@ -116,8 +116,8 @@ state = {
     'ib'               : {},   # {symbol_id: {'high': float, 'low': float, 'complete': bool}}
     'volatility'       : {'vix': None},   # $VIX — Fear Index
     'ytd'              : {},   # {ticker: float}  — YTD % for all SECTOR_TICKERS + SPY
-    'mag10_pct_change'  : {},    # {ticker: float}  — daily % change (netPercentChangeInDouble) for MAG10
-    'mag10_tickers_ok'  : set(), # set of tickers that have a valid last price (separate from pct=0 which is legitimate)
+    'mag10_last'        : {},    # {ticker: float}  — live last price
+    'mag10_prev_close'  : {},    # {ticker: float}  — prev close = last - net_change
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
     'signals'           : [],
     'last_stats_update': None,
@@ -1234,22 +1234,20 @@ async def refresh_ytd():
 
 async def refresh_mag10_prices():
     """Fetch live Schwab quotes for all MAG10 component stocks.
-    Stores netPercentChangeInDouble (Schwab daily %) per ticker.
-    MAG10 pct = Σ(daily_pct_i × weight_i) — matches mag10.py reference script."""
+    MAG10 index = Σ(last / div × weight)  — same formula as TOS ThinkScript.
+    pct = (idx_now - idx_prev) / idx_prev × 100
+    prev_close = last - net_change  (Schwab dollar net change from prior session)."""
     tickers = [c['ticker'] for c in MAG10_COMPONENTS]
     try:
         quotes = await asyncio.to_thread(get_quotes, tickers)
         for t, q in quotes.items():
-            last = float(q.get('last') or 0)
+            last       = float(q.get('last') or 0)
+            net_change = float(q.get('net_change') or 0)
             if not last:
-                continue   # no price yet — skip, keep previous value
-            pct = float(q.get('net_pct_change') or 0)
-            # Store pct as-is — 0% is a valid value (genuinely flat stock).
-            # Do NOT fall back to (last-open)/open — that's a different metric
-            # (intraday from open vs daily from prev_close) and corrupts MAG10.
-            state['mag10_pct_change'][t] = round(pct, 4)
-            state['mag10_tickers_ok'].add(t)
-        log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_tickers_ok']), len(tickers))
+                continue   # no price yet — keep previous values
+            state['mag10_last'][t]       = last
+            state['mag10_prev_close'][t] = round(last - net_change, 4)
+        log.debug('MAG10 prices refreshed — %d/%d tickers', len(state['mag10_last']), len(tickers))
     except Exception as e:
         log.warning('refresh_mag10_prices: %s', e)
 
@@ -1527,19 +1525,23 @@ def get_industries():
         pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
         result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
 
-    # MAG10 composite — weighted daily % change (matches mag10.py reference script).
-    # MAG10 pct = Σ(netPercentChangeInDouble_i × weight_i)
-    # Matches mag10.py reference: weighted average of individual Schwab daily %
-    mag10_weighted = 0.0
-    mag10_ok       = True
+    # MAG10 index — same formula as TOS ThinkScript:
+    #   idx = Σ(price / div × weight)
+    #   pct = (idx_now - idx_prev) / idx_prev × 100
+    idx_now  = 0.0
+    idx_prev = 0.0
+    mag10_ok = True
     for comp in MAG10_COMPONENTS:
-        t = comp['ticker']
-        if t not in state['mag10_tickers_ok']:
-            mag10_ok = False   # no valid price received yet for this ticker
+        t          = comp['ticker']
+        last       = state['mag10_last'].get(t, 0)
+        prev_close = state['mag10_prev_close'].get(t, 0)
+        if not last or not prev_close:
+            mag10_ok = False
             break
-        mag10_weighted += state['mag10_pct_change'].get(t, 0) * comp['weight']
+        idx_now  += last       / comp['div'] * comp['weight']
+        idx_prev += prev_close / comp['div'] * comp['weight']
 
-    mag10_pct = round(mag10_weighted, 2) if mag10_ok else 0.0
+    mag10_pct = round((idx_now - idx_prev) / idx_prev * 100, 2) if (mag10_ok and idx_prev) else 0.0
     result.append({'symbol': 'MAG10', 'name': 'MAG10', 'pct': mag10_pct})
 
     return {'industries': result}
