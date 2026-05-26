@@ -16,7 +16,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from schwab_client import get_quotes, get_candles, get_daily_candles, get_current_hour_ohlc, get_session_bars, front_month_code, next_contract_month
+from schwab_client import (get_quotes, get_candles, get_daily_candles,
+                           get_current_hour_ohlc, get_session_bars,
+                           front_month_code, next_contract_month,
+                           set_token_refresh_callback, _token_cache as _schwab_token_cache)
 from vbh_engine import compute_stats, compute_stats_con, make_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
@@ -1248,6 +1251,24 @@ async def refresh_mag10_prices():
 
 
 async def background_loop():
+    # ── Schwab token persistence ──────────────────────────────────────────────
+    # Schwab uses ROTATING refresh tokens — each use generates a new one.
+    # The Railway env var holds the original token which becomes stale after
+    # the first use.  Load the latest persisted token from DB (if available)
+    # so restarts / new deploys always start with a valid token.
+    try:
+        from db import cache_get, cache_set
+        saved_token = cache_get('schwab_refresh_token')
+        if saved_token and saved_token.get('token'):
+            _schwab_token_cache['refresh_token'] = saved_token['token']
+            log.info('Schwab refresh token loaded from DB cache')
+        # Register callback so every future rotation is persisted automatically
+        set_token_refresh_callback(
+            lambda t: cache_set('schwab_refresh_token', {'token': t})
+        )
+    except Exception as e:
+        log.warning('Schwab token cache load error: %s', e)
+
     state['symbols'] = get_active_symbols()
     log.info('Loaded %d symbols', len(state['symbols']))
 

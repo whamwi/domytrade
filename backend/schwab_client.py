@@ -206,6 +206,16 @@ _token_cache = {
 }
 _token_lock = threading.Lock()
 
+# Optional callback — called with the new refresh token whenever Schwab rotates it.
+# Set this from main.py to persist tokens across restarts (e.g. db.cache_set).
+_on_token_refreshed = None
+
+
+def set_token_refresh_callback(fn) -> None:
+    """Register a callback(new_refresh_token: str) invoked on every token rotation."""
+    global _on_token_refreshed
+    _on_token_refreshed = fn
+
 
 def _refresh_access_token() -> str:
     """Use refresh token to get a new access token (must be called under _token_lock)."""
@@ -222,6 +232,12 @@ def _refresh_access_token() -> str:
     _token_cache['expires_at']   = time.time() + data.get('expires_in', 1800) - 120
     if 'refresh_token' in data:
         _token_cache['refresh_token'] = data['refresh_token']
+        # Persist the new token so the next restart doesn't use a stale one
+        if _on_token_refreshed:
+            try:
+                _on_token_refreshed(_token_cache['refresh_token'])
+            except Exception:
+                pass  # never crash on persist failure
     return _token_cache['access_token']
 
 
