@@ -12,7 +12,6 @@ import AlertToast from './components/AlertToast'
 import FuturesBrief from './components/FuturesBrief'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
-import { Signal } from './components/SignalTable'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL       = 60_000   // normal polling once data is live
