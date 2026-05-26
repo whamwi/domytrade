@@ -1464,6 +1464,32 @@ def health():
     }
 
 
+@app.get('/api/debug/strip-opens')
+async def debug_strip_opens():
+    """Test get_daily_candles for all STRIP_ETFs — exposes raw candle data to diagnose rth_open=0."""
+    result = []
+    today_et = datetime.now(ET).date()
+    for etf in STRIP_ETFS:
+        tick = etf['ticker']
+        try:
+            candles = await asyncio.to_thread(get_daily_candles, tick, 5)
+            last_c = candles[-1] if candles else None
+            today_c = next((c for c in reversed(candles) if
+                datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET).date() == today_et
+            ), None) if candles else None
+            result.append({
+                'ticker': tick,
+                'candle_count': len(candles),
+                'today_candle': today_c,
+                'last_candle': last_c,
+                'state_rth_open': state['rth_open'].get(next((s['id'] for s in state['symbols'] if s['ticker']==tick), None), 'sid_not_found'),
+            })
+        except Exception as e:
+            result.append({'ticker': tick, 'error': str(e)})
+        await asyncio.sleep(0.2)
+    return {'strip_opens_debug': result, 'strip_session_date': str(state.get('strip_session_date'))}
+
+
 @app.get('/api/debug/contracts')
 def debug_contracts():
     """Expose discovered active contracts and computed front months for verification."""
