@@ -41,6 +41,7 @@ AGG_DAYS = 30
 CON_DAYS = 90
 STATS_REFRESH_HOURS = 24
 SIGNAL_REFRESH_SECS = 60
+HL_REFRESH_SECS     = 10   # fast H/L accumulator — closes gap with TOS tick-by-tick
 
 
 # Sector / industry ETF tickers — used by frontend for "Sectors" filter
@@ -941,6 +942,41 @@ async def refresh_active_contracts() -> None:
              '  '.join(f'{k}→{v}' for k, v in sorted(confirmed.items())))
 
 
+async def refresh_hourly_hl():
+    """Lightweight quote fetch (every 10s) to keep hourly H/L accumulators current.
+
+    Fetches only the lastPrice for all active futures and updates
+    state['hourly_high'] / state['hourly_low'] so current_hour_ohlc in
+    refresh_signals() matches TOS tick-by-tick tracking as closely as possible.
+    Does NOT update signals, 1-min bars, or any other state.
+    """
+    futures_syms = [s for s in state['symbols'] if s['ticker'].startswith('/')]
+    if not futures_syms:
+        return
+
+    try:
+        quote_syms = [s['schwab_symbol'] for s in futures_syms]
+        raw = await asyncio.to_thread(get_quotes, quote_syms)
+    except Exception as e:
+        log.debug('HL refresh quote error: %s', e)
+        return
+
+    cur_hour = datetime.now(ET).hour
+    for sym in futures_syms:
+        sid = sym['id']
+        q   = raw.get(sym['schwab_symbol'], {})
+        px  = q.get('last', 0)
+        if not px:
+            continue
+        if state['hourly_hour'].get(sid) != cur_hour:
+            state['hourly_hour'][sid] = cur_hour
+            state['hourly_high'][sid] = px
+            state['hourly_low'][sid]  = px
+        else:
+            state['hourly_high'][sid] = max(state['hourly_high'].get(sid, px), px)
+            state['hourly_low'][sid]  = min(state['hourly_low'].get(sid,  px), px)
+
+
 async def refresh_all_1min():
     """
     Fetch and store 1-min bars for EVERY active future every 60 seconds.
@@ -1360,6 +1396,7 @@ async def background_loop():
     await refresh_mag10_prices()  # prime MAG10 live prices before first request
     await refresh_all_1min()      # seed 1-min bars for ALL futures before first signal run
     await refresh_signals()
+    asyncio.create_task(_hl_loop())   # fast H/L accumulator — runs independently at 10s
 
     # Kick off background tasks that don't block startup
     asyncio.create_task(refresh_etf_holdings())
@@ -1375,6 +1412,12 @@ async def background_loop():
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
+
+    async def _hl_loop():
+        """Independent 10s loop — updates hourly H/L accumulators between signal refreshes."""
+        while True:
+            await asyncio.sleep(HL_REFRESH_SECS)
+            await refresh_hourly_hl()
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
