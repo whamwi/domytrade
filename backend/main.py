@@ -121,6 +121,9 @@ state = {
     'mag10_prev_close'  : {},    # {ticker: float}  — prev close = last - net_change
     'daily_bias'        : {},    # {symbol_id: 'LONG'|'SHORT'}  — RTH open vs prev_settle
     'prev_signal_state' : {},    # {sid_model: 'NEAR'|'ENTRY'}  — for ENTRY transition detection
+    'hourly_high'       : {},    # {symbol_id: float}  — running max of last_price since current ET hour started
+    'hourly_low'        : {},    # {symbol_id: float}  — running min of last_price since current ET hour started
+    'hourly_hour'       : {},    # {symbol_id: int}    — ET hour when above accumulators were last reset
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
     'signals'           : [],
     'last_stats_update': None,
@@ -628,6 +631,21 @@ async def refresh_signals():
         if display_price:
             state['last_price'][sid] = round(display_price, 4)
 
+        # ── Running hourly high/low accumulator ───────────────────────────────
+        # Accumulates every live quote sample since the current ET hour started.
+        # This gives ~60s-resolution tracking of the hourly H/L, matching TOS
+        # much more closely than using only the instantaneous last_price.
+        if display_price:
+            cur_hour = datetime.now(ET).hour
+            if state['hourly_hour'].get(sid) != cur_hour:
+                # New hour — reset accumulators
+                state['hourly_hour'][sid] = cur_hour
+                state['hourly_high'][sid] = display_price
+                state['hourly_low'][sid]  = display_price
+            else:
+                state['hourly_high'][sid] = max(state['hourly_high'].get(sid, display_price), display_price)
+                state['hourly_low'][sid]  = min(state['hourly_low'].get(sid,  display_price), display_price)
+
         # During RTH, keep rth_open current for strip ETFs from the live quote's openPrice.
         # Schwab openPrice = official 9:30 ET open once the regular session is underway.
         # We skip pre-market / after-hours to avoid using a pre-market first-trade as the open.
@@ -759,13 +777,19 @@ async def refresh_signals():
         except Exception as e:
             log.warning('%s: 1min hour OHLC error: %s', tick, e)
 
+        # Use accumulated hourly high/low — tracks every 60s quote sample since
+        # the hour started, giving much closer match to TOS tick-by-tick tracking.
+        acc_high = state['hourly_high'].get(sid, display_price)
+        acc_low  = state['hourly_low'].get(sid,  display_price)
+
         if not ohlc:
-            # Cold start or symbol not yet seeded — anchor to live price
-            ohlc = {'open': last, 'high': last, 'low': last, 'close': last, 'volume': 0}
+            # Cold start — anchor to accumulated H/L (or live price if no accumulator yet)
+            ohlc = {'open': display_price, 'high': acc_high, 'low': acc_low,
+                    'close': display_price, 'volume': 0}
         else:
-            # Fold live last_price in — captures the still-developing current bar
-            ohlc['high'] = max(ohlc['high'], last)
-            ohlc['low']  = min(ohlc['low'],  last)
+            # Merge closed 1-min bars with accumulated live H/L
+            ohlc['high'] = max(ohlc['high'], acc_high)
+            ohlc['low']  = min(ohlc['low'],  acc_low)
 
         # ── Daily bias: RTH open vs prev_settle ──────────────────────────
         rth_open_val   = state['rth_open'].get(sid, 0)
