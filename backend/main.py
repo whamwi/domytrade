@@ -990,32 +990,39 @@ async def refresh_hourly_hl():
 
 async def refresh_all_1min():
     """
-    Fetch and store 1-min bars for EVERY active future every 60 seconds.
+    Fetch and store 1-min bars for ALL active symbols (futures + stocks/ETFs) every cycle.
 
     Two-stage design:
-      Stage 1 — fetch all symbols concurrently (one asyncio task per symbol).
+      Stage 1 — fetch all 44 symbols concurrently (one asyncio task per symbol).
       Stage 2 — write results to DB sequentially (avoids DB contention).
 
-    This gives accurate hourly H/L for all futures (/GC, /ZB, /CL, /NG, /SI…)
-    not just the 4 market futures, so the HBMR box is correct for every symbol.
+    Concurrent fetches mean wall-clock time is bounded by the slowest single
+    Schwab response (~15-20s) regardless of symbol count — adding 28 stocks
+    costs essentially nothing extra vs futures-only.
+
+    This gives accurate hourly H/L for every signal symbol, not just futures.
+    Stocks/ETFs previously relied on a one-time startup backfill and the live-
+    quote accumulator, missing closed 1-min bar extremes mid-session.
     """
-    futures_syms = [s for s in state['symbols'] if s['ticker'].startswith('/')]
-    if not futures_syms:
+    all_syms = state['symbols']
+    if not all_syms:
         return
 
-    # Stage 1 — concurrent fetches
+    # Stage 1 — concurrent fetches for all symbols
     async def _fetch(sym: dict) -> tuple[int, list]:
         tick = sym['ticker']
         sid  = sym['id']
         try:
-            api_sym = _active_contract(tick)
+            # Futures: use the active front-month contract symbol
+            # Stocks/ETFs: use schwab_symbol directly
+            api_sym = _active_contract(tick) if tick.startswith('/') else sym['schwab_symbol']
             candles = await asyncio.to_thread(get_session_bars, api_sym)
             return sid, (candles or [])
         except Exception as e:
             log.warning('1min fetch %s: %s', tick, e)
             return sid, []
 
-    results = await asyncio.gather(*[_fetch(s) for s in futures_syms])
+    results = await asyncio.gather(*[_fetch(s) for s in all_syms])
 
     # Stage 2 — sequential DB writes
     stored = 0
@@ -1028,7 +1035,10 @@ async def refresh_all_1min():
             except Exception as e:
                 log.warning('1min upsert sid=%s: %s', sid, e)
 
-    log.info('1-min bars refreshed — %d/%d futures stored', stored, len(futures_syms))
+    futures_n = sum(1 for s in all_syms if s['ticker'].startswith('/'))
+    stocks_n  = len(all_syms) - futures_n
+    log.info('1-min bars refreshed — %d/%d symbols stored (%d futures, %d stocks/ETFs)',
+             stored, len(all_syms), futures_n, stocks_n)
 
 
 def _parse_holdings_df(df) -> list[dict]:
