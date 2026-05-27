@@ -21,7 +21,7 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            front_month_code, next_contract_month,
                            set_token_refresh_callback, _token_cache as _schwab_token_cache)
 import vbh_engine
-from vbh_engine import compute_stats, compute_stats_con, make_signal
+from vbh_engine import compute_stats, compute_stats_con, compute_stats_wide, make_signal
 from squeeze import calc_squeeze_5min, squeeze_confirms_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
@@ -71,6 +71,18 @@ STRIP_ETFS = [
     {'ticker': 'XLRE', 'name': 'R/E',     'weight':  2.3},
 ]
 
+# Key sectors to watch per futures instrument — ordered by relevance
+SECTORS_FOR = {
+    '/NQ' : [('XLK', 'Tech'), ('XLC', 'Comms'), ('XLY', 'C.Disc')],
+    '/MNQ': [('XLK', 'Tech'), ('XLC', 'Comms'), ('XLY', 'C.Disc')],
+    '/YM' : [('XLV', 'Health'), ('XLF', 'Fin'), ('XLI', 'Ind'), ('XLY', 'C.Disc')],
+    '/MYM': [('XLV', 'Health'), ('XLF', 'Fin'), ('XLI', 'Ind'), ('XLY', 'C.Disc')],
+    '/ES' : [('XLK', 'Tech'), ('XLF', 'Fin'), ('XLV', 'Health')],
+    '/MES': [('XLK', 'Tech'), ('XLF', 'Fin'), ('XLV', 'Health')],
+    '/RTY': [('XLF', 'Fin'), ('XLV', 'Health'), ('XLI', 'Ind')],
+    '/M2K': [('XLF', 'Fin'), ('XLV', 'Health'), ('XLI', 'Ind')],
+}
+
 # MAG10 custom composite index — price-weighted basket of mega-cap tech
 # Formula: Σ (price / divisor * weight) — % from RTH open
 MAG10_COMPONENTS = [
@@ -110,6 +122,7 @@ state = {
     'symbols'          : [],   # [{id, ticker, schwab_symbol, asset_type}]
     'stats_agg'        : {},   # {symbol_id: {hour: (L1,L2,L3,L4)}}
     'stats_con'        : {},
+    'stats_wide'       : {},   # WIDE (extra-conservative) model — shift=4.0σ
     'prev_close'       : {},   # {symbol_id: float}  — last RTH close from candles
     'market_bias'      : {},   # {symbol_id: {bias, pts, rth_open, prev_close}}
     'last_price'       : {},   # {symbol_id: float}  — latest price (live quote or prev_close fallback)
@@ -399,6 +412,7 @@ async def compute_all_stats():
 
             state['stats_agg'][sid]    = compute_stats(agg_candles, api)
             state['stats_con'][sid]    = compute_stats_con(con_candles, api)
+            state['stats_wide'][sid]   = compute_stats_wide(con_candles, api)
             state['prev_close'][sid]   = _prev_rth_close(con_candles)
             state['market_bias'][sid]  = _rth_bias(con_candles)
             # Seed last_price with the absolute last candle close (any session).
@@ -411,8 +425,9 @@ async def compute_all_stats():
             # Persist stats to DB
             stat_rows = []
             for h in range(24):
-                for model, stats_dict in [('AGG', state['stats_agg'][sid]),
-                                           ('CON', state['stats_con'][sid])]:
+                for model, stats_dict in [('AGG',  state['stats_agg'][sid]),
+                                           ('CON',  state['stats_con'][sid]),
+                                           ('WIDE', state['stats_wide'][sid])]:
                     l1, l2, l3, l4 = stats_dict.get(h, (0, 0, 0, 0))
                     stat_rows.append({
                         'symbol_id'    : sid,
@@ -835,6 +850,7 @@ async def refresh_signals():
             state['stats_con'].get(sid, {}),
             daily_bias=bias_val,
             et_minute=et_minute,
+            stats_wide=state['stats_wide'].get(sid, {}),
         )
         if sigs:
             for s in sigs:
@@ -1287,7 +1303,12 @@ async def refresh_strip_opens():
     found — used by get_industries() to detect holidays (no session = use prev_close
     instead of live price, so extended-hours movement doesn't corrupt the strip)."""
     ticker_map = {s['ticker']: s for s in state['symbols']}
-    today_et   = datetime.now(ET).date()
+    now_et     = datetime.now(ET)
+    today_et   = now_et.date()
+    et_min     = now_et.hour * 60 + now_et.minute
+    # After 9:30 AM ET on a trading day, refresh_signals() owns rth_open for STRIP_TICKERS
+    # via the live quote openPrice field — this function must NOT overwrite that value.
+    is_rth_or_after = now_et.weekday() < 5 and et_min >= (9 * 60 + 30)
     refreshed  = 0
     session_found = False   # True once we confirm today has a real RTH candle
 
@@ -1312,7 +1333,10 @@ async def refresh_strip_opens():
             if chosen is None:
                 chosen = candles[-1]   # holiday / pre-market: use last session as placeholder
             if chosen['open']:
-                state['rth_open'][sid] = round(chosen['open'], 4)
+                # During/after RTH, refresh_signals() sets rth_open from live quote openPrice.
+                # Skip writing here to avoid stomping the correct value every 5 minutes.
+                if tick not in STRIP_TICKERS or not is_rth_or_after:
+                    state['rth_open'][sid] = round(chosen['open'], 4)
                 refreshed += 1
         except Exception as e:
             log.warning('refresh_strip_opens %s: %s', tick, e)
@@ -1390,13 +1414,12 @@ async def refresh_mag10_prices():
 
 
 def _seed_state_stats_from_db() -> None:
-    """Instantly populate state['stats_agg'] and state['stats_con'] from the
-    vbh_engine DB cache (_stats_db) already loaded at startup.
+    """Instantly populate state['stats_agg'], state['stats_con'], and state['stats_wide']
+    from the vbh_engine DB cache (_stats_db) already loaded at startup.
 
-    compute_stats() / compute_stats_con() check _stats_db first and return
-    DB rows without needing Schwab candles — so calling them with [] gives us
-    the DB-backed levels in milliseconds rather than waiting 3-10 min for
-    44 Schwab candle fetches.
+    compute_stats*() check _stats_db first and return DB rows without needing Schwab
+    candles — so calling them with [] gives us the DB-backed levels in milliseconds
+    rather than waiting 3-10 min for 44 Schwab candle fetches.
 
     state['prev_close'] and state['last_price'] are seeded by refresh_signals()
     from live Schwab quotes, so they don't need compute_all_stats() either.
@@ -1406,11 +1429,13 @@ def _seed_state_stats_from_db() -> None:
         sid = sym['id']
         api = sym['schwab_symbol']
         try:
-            agg = compute_stats([], api)          # uses _stats_db → instant
-            con = compute_stats_con([], api)      # uses _stats_db → instant
+            agg  = compute_stats([], api)           # uses _stats_db → instant
+            con  = compute_stats_con([], api)       # uses _stats_db → instant
+            wide = compute_stats_wide([], api)      # uses _stats_db → instant
             if agg or con:
-                state['stats_agg'][sid] = agg
-                state['stats_con'][sid] = con
+                state['stats_agg'][sid]  = agg
+                state['stats_con'][sid]  = con
+                state['stats_wide'][sid] = wide
                 seeded += 1
         except Exception as e:
             log.warning('_seed_state_stats_from_db %s: %s', sym['ticker'], e)
@@ -1508,6 +1533,7 @@ async def background_loop():
     asyncio.create_task(refresh_etf_holdings())
     asyncio.create_task(refresh_ytd())
     asyncio.create_task(refresh_daily_candles(incremental=False))  # full 90-day batch
+    asyncio.create_task(_refresh_global_markets())                 # prime Asia + FX immediately
 
     last_strip_refresh      = time.time()
     last_holdings_refresh   = time.time()
@@ -1515,6 +1541,7 @@ async def background_loop():
     last_candle_purge       = time.time()
     last_daily_refresh      = time.time()
     last_contract_refresh   = time.time()
+    last_global_markets     = 0.0  # force refresh on first tick
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
@@ -1543,6 +1570,21 @@ async def background_loop():
         if time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
             await refresh_strip_opens()
             last_strip_refresh = time.time()
+
+        # Proactive global-markets refresh — 15 min during US hours, 30 min during
+        # Asian session (6 PM – 8 AM ET).  _refresh_global_markets() honours its own
+        # DB-cache TTL so this is cheap on most ticks.
+        _gm_et_hour = datetime.now(ET).hour
+        _gm_ttl     = 1800 if (_gm_et_hour >= 18 or _gm_et_hour < 8) else 900
+        if time.time() - last_global_markets >= _gm_ttl:
+            try:
+                gm_data = await _refresh_global_markets()
+                if gm_data.get('fx') or gm_data.get('asia'):
+                    _GLOBAL_MARKETS_CACHE['data'] = gm_data
+                    _GLOBAL_MARKETS_CACHE['ts']   = time.time()
+                last_global_markets = time.time()
+            except Exception as e:
+                log.warning('Background global-markets refresh error: %s', e)
 
         # Refresh ETF holdings once per day
         if time.time() - last_holdings_refresh >= HOLDINGS_REFRESH_SECS:
@@ -2575,7 +2617,49 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
         return None
 
 
-def _build_claude_prompt(symbols_data: list[dict]) -> str:
+def _sector_pcts() -> dict[str, float]:
+    """Intraday % change for all sector ETFs from RTH open."""
+    ticker_map = {s['ticker']: s for s in state['symbols']}
+    result: dict[str, float] = {}
+    for etf in STRIP_ETFS:
+        tick = etf['ticker']
+        sym  = ticker_map.get(tick)
+        if not sym:
+            continue
+        sid      = sym['id']
+        rth_open = state['rth_open'].get(sid, 0)
+        last     = state['last_price'].get(sid, 0) or state['prev_close'].get(sid, 0)
+        result[tick] = round((last - rth_open) / rth_open * 100, 2) if (rth_open and last) else 0.0
+    return result
+
+
+async def _internals_snapshot() -> dict:
+    """Fetch $TICK, $TRIN, $ADVN/$DECN, $VIX/$VXN via existing schwab_client."""
+    try:
+        raw = await asyncio.to_thread(
+            get_quotes, ['$TICK', '$TRIN', '$ADVN', '$DECN', '$VIX', '$VXN']
+        )
+        def _v(sym): return raw.get(sym, {}).get('last', 0) or 0
+        tick = _v('$TICK'); trin = _v('$TRIN')
+        advn = int(_v('$ADVN')); decn = int(_v('$DECN'))
+        return {
+            'tick' : tick,
+            'trin' : trin,
+            'advn' : advn,
+            'decn' : decn,
+            'adspd': advn - decn,
+            'vix'  : _v('$VIX'),
+            'vxn'  : _v('$VXN'),
+        }
+    except Exception as exc:
+        log.warning('_internals_snapshot failed: %s', exc)
+        return {}
+
+
+def _build_claude_prompt(symbols_data: list[dict],
+                         signals: list[dict] | None     = None,
+                         internals: dict | None          = None,
+                         sector_pcts: dict[str, float]  | None = None) -> str:
     """Format all futures into a structured Market Profile prompt for Claude."""
     now_et = datetime.now(ET)
     t_min  = now_et.hour * 60 + now_et.minute
@@ -2679,6 +2763,29 @@ def _build_claude_prompt(symbols_data: list[dict]) -> str:
         es_str = (f"  Entry: {es['side']} @ {es['entry']}  |  Stop: {es['stop']}  |  Risk: {es['risk']} pts"
                   if es else "  Entry: No trade — NEUTRAL bias")
 
+        # VBH signals for this instrument
+        sym_base = d['symbol'].split(':')[0]   # '/NQ' from '/NQ:XCME'
+        vbh_lines = []
+        if signals:
+            sym_sigs = [s for s in signals if s.get('symbol', '').split(':')[0] == sym_base]
+            for sig in sym_sigs:
+                mo  = sig.get('mo_state', '—')
+                sqc = sig.get('sq_confirm', '—')
+                vbh_lines.append(
+                    f"  VBH {sig['model']} {sig['side']} [{sig['signal_state']}] "
+                    f"entry:{sig['entry']}  L1:{sig['l1']}  stop:{sig['stop']}  "
+                    f"momentum:{mo}  squeeze:{sqc}"
+                )
+
+        # Sector alignment for this instrument
+        sec_parts = []
+        if sector_pcts:
+            for ticker, name in SECTORS_FOR.get(sym_base, []):
+                pct = sector_pcts.get(ticker, 0.0)
+                arrow = '▲' if pct > 0 else ('▼' if pct < 0 else '—')
+                sec_parts.append(f"{ticker} {arrow}{abs(pct):.2f}%")
+        sec_str = '  Sectors: ' + '  '.join(sec_parts) if sec_parts else ''
+
         lines += [
             '',
             f"{d['symbol']}  |  Price: {price}  Change: {d['change']:+.2f} ({d['change_pct']:+.2f}%)",
@@ -2697,6 +2804,34 @@ def _build_claude_prompt(symbols_data: list[dict]) -> str:
             f"  Naked POCs (unfilled magnets): {nvpoc_str}",
             es_str,
         ]
+        if vbh_lines:
+            lines.append('  VBH Signals:')
+            lines.extend(vbh_lines)
+        if sec_str:
+            lines.append(sec_str)
+
+    # Market internals block (appended once, after all symbols)
+    if internals and any(internals.values()):
+        tick  = internals.get('tick', 0)
+        trin  = internals.get('trin', 0)
+        adspd = internals.get('adspd', 0)
+        advn  = internals.get('advn', 0)
+        decn  = internals.get('decn', 0)
+        vix   = internals.get('vix', 0)
+        vxn   = internals.get('vxn', 0)
+
+        tick_bias = ('BULL' if tick > 600 else 'BEAR' if tick < -600
+                     else 'mild-bull' if tick > 200 else 'mild-bear' if tick < -200 else 'neutral')
+        trin_bias = ('BULL' if trin < 0.8 else 'BEAR' if trin > 1.5 else 'neutral')
+        ad_ratio  = f"{advn/decn:.2f}:1" if decn > 0 else '—'
+
+        lines += [
+            '',
+            'MARKET INTERNALS:',
+            f"  $TICK: {tick:+.0f} ({tick_bias})   $TRIN: {trin:.2f} ({trin_bias})",
+            f"  A/D:  {ad_ratio} NYSE  ({advn:,}↑ / {decn:,}↓)  ADSPD: {adspd:+,}",
+            f"  $VIX: {vix:.2f}   $VXN: {vxn:.2f}",
+        ]
 
     return '\n'.join(lines)
 
@@ -2706,10 +2841,13 @@ def _build_claude_prompt(symbols_data: list[dict]) -> str:
 # → cache always cold → write fee (125%) on every call with no read savings.
 # Caching will be added to the per-user chat feature where calls cluster within 5 min.
 _MP_SYSTEM_PROMPT = (
-    'You are a concise futures trading assistant with expertise in Market Profile theory. '
-    'Analyze the provided data — Value Area (VAH/VAL/POC), Initial Balance, gap, open type, '
-    'naked POCs — and give brief actionable recommendations. '
-    '2-3 sentences per symbol: open type assessment, key level to watch, one clear action.'
+    'You are a concise futures trading assistant combining Market Profile theory with VBH '
+    '(Volume-Based Harmonic) mean-reversion signals and market internals. '
+    'For each symbol analyze: open type, Value Area position, VBH signal state (ENTRY = at the zone, '
+    'NEAR = approaching), momentum (POS_DN = decelerating = prime entry, NEG_UP = exhausted), '
+    'squeeze confirmation, sector alignment, and internals ($TICK >600 = skip shorts, <-600 = skip longs). '
+    'Keep it to 2-3 sentences per symbol: key level context, VBH signal quality, one clear action. '
+    'Flag conflicts (e.g. VBH SHORT but $TICK >800 = wait). No tables.'
 )
 
 
@@ -2725,9 +2863,10 @@ async def ai_futures_brief(bust: str | None = None):
     """
     import os, hashlib
 
-    # Fetch all 5 symbols concurrently
-    results = await asyncio.gather(*[_fetch_agent_symbol_data(s) for s in AGENT_FUTURES])
-    valid   = [r for r in results if r is not None]
+    # Fetch all 5 symbols + internals concurrently
+    fetches = [_fetch_agent_symbol_data(s) for s in AGENT_FUTURES]
+    *sym_results, internals = await asyncio.gather(*fetches, _internals_snapshot())
+    valid = [r for r in sym_results if r is not None]
 
     if not valid:
         log.warning('ai_futures_brief: all symbol fetches failed — returning empty response')
@@ -2762,7 +2901,12 @@ async def ai_futures_brief(bust: str | None = None):
             api_key = os.environ.get('ANTHROPIC_API_KEY', '')
             if api_key:
                 client = anthropic.Anthropic(api_key=api_key)
-                prompt = _build_claude_prompt(valid)
+                prompt = _build_claude_prompt(
+                    valid,
+                    signals     = state.get('signals', []),
+                    internals   = internals,
+                    sector_pcts = _sector_pcts(),
+                )
                 message = client.messages.create(
                     model='claude-haiku-4-5',
                     max_tokens=900,
@@ -3100,33 +3244,32 @@ async def get_sr_batch(tickers: str = Query(...)):
 # ── Global Markets (Asian indices + FX risk-on/off) ────────────────────────────
 
 def _fetch_asia_yfinance() -> list[dict]:
-    """Fetch Asian index daily close % change via yfinance. Returns [] on failure."""
+    """Fetch Asian index daily close % change via yfinance (per-symbol to avoid batch failure).
+    yfinance 0.2.x handles Yahoo Finance crumb/cookie auth automatically.
+    Fetching per-symbol means one bad index doesn't block the rest.
+    Returns [] only if ALL symbols fail — partial results are normal."""
     import yfinance as yf
-    syms = [x['symbol'] for x in ASIAN_INDICES]
-    try:
-        raw    = yf.download(syms, period='5d', interval='1d',
-                             progress=False, auto_adjust=True,
-                             group_by='column', threads=True)
-        closes = raw['Close'] if 'Close' in raw.columns.get_level_values(0) else raw
-        result = []
-        for item in ASIAN_INDICES:
-            try:
-                col = closes[item['symbol']].dropna()
-                if len(col) >= 2:
-                    prev = float(col.iloc[-2])
-                    last = float(col.iloc[-1])
-                    result.append({
-                        'name'      : item['name'],
-                        'region'    : item['region'],
-                        'close'     : round(last, 2),
-                        'change_pct': round((last - prev) / prev * 100, 2),
-                    })
-            except Exception:
-                pass
-        return result
-    except Exception as e:
-        log.warning('Asia yfinance fetch error: %s', e)
-        return []
+    result = []
+    for item in ASIAN_INDICES:
+        try:
+            ticker = yf.Ticker(item['symbol'])
+            hist   = ticker.history(period='5d', interval='1d', auto_adjust=True)
+            if hist is None or len(hist) < 2:
+                log.debug('Asia yfinance %s: < 2 rows', item['symbol'])
+                continue
+            prev = float(hist['Close'].iloc[-2])
+            last = float(hist['Close'].iloc[-1])
+            result.append({
+                'name'      : item['name'],
+                'region'    : item['region'],
+                'close'     : round(last, 2),
+                'change_pct': round((last - prev) / prev * 100, 2),
+            })
+        except Exception as e:
+            log.debug('Asia yfinance %s error: %s', item['symbol'], e)
+        time.sleep(0.4)   # gentle pacing between symbols
+    log.info('Asia yfinance fetch: %d/%d indices', len(result), len(ASIAN_INDICES))
+    return result
 
 
 def _fetch_fx_schwab() -> list[dict]:
@@ -3157,39 +3300,53 @@ def _fetch_fx_schwab() -> list[dict]:
 async def _refresh_global_markets() -> dict:
     """
     Build the global-markets payload:
-      • FX  — live from Schwab quotes (refreshed every 15 min)
-      • Asia — yfinance daily close; written to DB on success; DB is the fallback
+      • FX   — live from Schwab quotes (refreshed every 15 min)
+      • Asia — Yahoo Finance v8 direct API; cached in DB; refreshed every 30 min
+                during Asian session hours (6 PM – 8 AM ET), daily otherwise.
     """
     from db import cache_get, cache_set
 
     # ── FX from Schwab ─────────────────────────────────────────────────────────
     fx = await asyncio.to_thread(_fetch_fx_schwab)
 
-    # ── Asian indices from yfinance (once a day is enough) ────────────────────
-    today_str = datetime.now(ET).date().isoformat()
-    asia: list[dict] = []
+    # ── Asian indices: refresh cadence depends on session hours ────────────────
+    now_et    = datetime.now(ET)
+    today_str = now_et.date().isoformat()
+    et_hour   = now_et.hour
 
-    # Check DB cache first — only re-fetch yfinance if date has changed
+    # Asian session roughly 6 PM – 8 AM ET; refresh every 30 min during that window
+    # and daily otherwise (markets are closed, data is stale anyway).
+    is_asian_session = et_hour >= 18 or et_hour < 8
+    ASIA_TTL_SECS    = 1800 if is_asian_session else 86400
+
+    asia: list[dict] = []
     cached = await asyncio.to_thread(cache_get, 'global_markets_asia')
-    if cached and cached.get('date') == today_str and cached.get('asia'):
-        asia = cached['asia']
-        log.debug('Asia data served from DB cache for %s', today_str)
-    else:
-        # Try yfinance; write to DB on success; fall back to DB on failure
+
+    # Use cache if fresh enough
+    if cached and cached.get('asia'):
+        fetched_at = cached.get('fetched_at', 0)
+        age        = time.time() - fetched_at if fetched_at else ASIA_TTL_SECS + 1
+        if age < ASIA_TTL_SECS:
+            asia = cached['asia']
+            log.debug('Asia data from DB cache (age %.0fs, TTL %ds)', age, ASIA_TTL_SECS)
+
+    if not asia:
+        # Cache stale or empty — fetch fresh via yfinance (handles crumb auth internally)
         fresh = await asyncio.to_thread(_fetch_asia_yfinance)
         if fresh:
             asia = fresh
             await asyncio.to_thread(cache_set, 'global_markets_asia', {
-                'asia': asia,
-                'date': today_str,
+                'asia'      : asia,
+                'date'      : today_str,
+                'fetched_at': time.time(),
             })
-            log.info('Asia data refreshed via yfinance (%d indices) and saved to DB', len(asia))
+            log.info('Asia data refreshed via yfinance (%d indices)', len(asia))
         elif cached and cached.get('asia'):
             asia = cached['asia']
-            log.warning('yfinance rate-limited — serving Asia data from DB cache (date: %s)',
+            log.warning('yfinance failed — serving stale Asia data from DB (date: %s)',
                         cached.get('date', '?'))
         else:
-            log.warning('No Asia data available: yfinance failed and DB cache is empty')
+            log.warning('No Asia data: yfinance failed and DB cache is empty')
 
     return {'asia': asia, 'fx': fx}
 
@@ -3197,7 +3354,9 @@ async def _refresh_global_markets() -> dict:
 @app.get('/api/global-markets')
 async def get_global_markets():
     """Asian market daily close change % and FX risk-on/off pairs.
-    Asia: yfinance, cached in DB daily. FX: live from Schwab, cached 15 min in memory."""
+    Asia: Yahoo Finance v8 direct API, DB-cached (30 min during Asian session, daily otherwise).
+    FX: live from Schwab, memory-cached 15 min.
+    Background loop proactively refreshes both — this endpoint usually serves from cache."""
     now = time.time()
     cached_data = _GLOBAL_MARKETS_CACHE.get('data', {})
     cache_age   = now - _GLOBAL_MARKETS_CACHE.get('ts', 0)
