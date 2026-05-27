@@ -142,12 +142,11 @@ def load_stats_from_db() -> bool:
 
 
 # Confirmed k-ratios from 3-week cross-week analysis of TOS Aggressive study files.
-# L2 = mean hourly range (ATR center).  All other levels are fixed fractions of L2.
-# k1 + k3 = 2.000 exactly → L1 = mean − σ,  L3 = mean + σ  (CV ≈ 14.7%)
-# Using fixed ratios avoids the inversion bug that arises when sample CV is high
-# (mean − σ formula collapses L1/L4 when only a few observations are available).
-_K_AGG = (0.8527, 1.0000, 1.1473, 0.7960)   # L1, L2, L3, L4  — Aggressive (~1σ, tighter)
-_K_CON = (0.7054, 1.0000, 1.2946, 0.5920)   # L1, L2, L3, L4  — Conservative (~2σ, wider)
+# 2022 original methodology:
+#   μ = mean hourly range,  σ = sample std dev of hourly ranges
+#   AGG: L1=μ-σ,      L2=μ,       L3=μ+σ,      L4≈L1
+#   CON: L1=μ+1.4σ,   L2=μ+2.4σ,  L3=μ+3.4σ,   L4≈L1_con
+_CON_SHIFT = 2.4   # CON centre = μ + _CON_SHIFT × σ
 
 
 def _build_hourly_ranges(candles: list[dict]) -> dict[int, list[float]]:
@@ -172,20 +171,24 @@ def _build_hourly_ranges(candles: list[dict]) -> dict[int, list[float]]:
     return hour_ranges
 
 
-def _compute_dynamic(candles: list[dict], k_ratios: tuple = _K_AGG) -> dict[int, tuple]:
+def _compute_dynamic(candles: list[dict], con: bool = False) -> dict[int, tuple]:
     """Compute L1/L2/L3/L4 per ET hour from Schwab sub-hourly candles.
 
-    Used as an automatic fallback for symbols that have no hardcoded constants.
+    Replicates the 2022 original methodology with σ_eff cap:
+      μ        = mean hourly range,  σ = sample std dev
+      σ_eff    = min(σ, μ × 0.1473)  ← cap matches 2022 study character:
+                  _AGG_2022 shows a uniform σ/μ = 14.730% (±0.003%) across all 240
+                  non-zero RTH pairs, confirming the study used a fixed k-ratio rather
+                  than raw σ.  Capping at 14.73% keeps L1 ≥ 0.8527μ, consistent
+                  with 2022 inversion frequency.
+      AGG (con=False): L1=μ-σ_eff,    L2=μ,          L3=μ+σ_eff,    L4=L1-0.385·σ_eff
+      CON (con=True):  L1=μ+1.4σ_eff, L2=μ+2.4σ_eff, L3=μ+3.4σ_eff, L4=L1-0.385·σ_eff
 
-    Method — for each ET hour, take the mean hourly range (= L2, the ATR center),
-    then scale by the confirmed VBH k-ratios to obtain L1/L3/L4.  This guarantees
-    L4 < L1 < L2 < L3 at every hour regardless of sample size or volatility regime.
-
-    Previous approach (mean ± σ) caused L1/L4 to collapse toward zero when CV was
-    high (few observations), producing an inversion where the gray T2 target landed
-    below the cyan entry trigger — the so-called "cyan above gray" bug.
+    L4 is 0.385·σ_eff LESS than L1 so that:
+      longT  = hourlyLow  + L4  sits just OUTSIDE (below) the short entry
+      shortT = hourlyHigh - L4  sits just OUTSIDE (above) the long  entry
+    (0.385 derived from _AGG_2022: (L1−L4)/σ = 0.3849 ±0.003, all 240 pairs)
     """
-    k1, k2, k3, k4 = k_ratios
     hour_ranges = _build_hourly_ranges(candles)
 
     result: dict[int, tuple] = {}
@@ -194,13 +197,25 @@ def _compute_dynamic(candles: list[dict], k_ratios: tuple = _K_AGG) -> dict[int,
         if len(rs) < 3:
             result[h] = (0.0, 0.0, 0.0, 0.0)
             continue
-        l2 = sum(rs) / len(rs)           # ATR center = mean hourly range
-        result[h] = (
-            round(l2 * k1, 5),
-            round(l2,      5),
-            round(l2 * k3, 5),
-            round(l2 * k4, 5),
-        )
+        mu  = sum(rs) / len(rs)
+        var = sum((x - mu) ** 2 for x in rs) / (len(rs) - 1)
+        sigma = var ** 0.5
+
+        # Cap σ at 14.73% of μ — matches 2022 study fixed k-ratio character
+        sigma_eff = min(sigma, mu * 0.1473)
+
+        if not con:
+            l2 = mu
+            l1 = max(l2 - sigma_eff, 0.0)
+            l3 = l2 + sigma_eff
+        else:
+            l2 = mu + _CON_SHIFT * sigma_eff
+            l1 = l2 - sigma_eff              # = μ + 1.4σ_eff
+            l3 = l2 + sigma_eff              # = μ + 3.4σ_eff
+
+        l4 = max(l1 - sigma_eff * 0.385, 0.0)  # T2: 0.385·σ_eff outside entry line
+
+        result[h] = (round(l1,5), round(l2,5), round(l3,5), round(l4,5))
 
     return result
 
@@ -234,11 +249,11 @@ def compute_stats(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]
         return {h: rows[h] for h in range(24)}
 
     # ── 3. Dynamic computation from caller-supplied candles ───────────────────
-    return _compute_dynamic(candles, _K_AGG)
+    return _compute_dynamic(candles, con=False)
 
 
 def compute_stats_con(candles: list[dict], api_symbol: str = '') -> dict[int, tuple]:
-    """Return {hour: (L1,L2,L3,L4)} for the Conservative model (~2σ spread).
+    """Return {hour: (L1,L2,L3,L4)} for the Conservative model.
 
     Priority order: DB cache → hardcoded 2022 constants → dynamic computation.
     See compute_stats() for full documentation of the fallback chain.
@@ -260,7 +275,7 @@ def compute_stats_con(candles: list[dict], api_symbol: str = '') -> dict[int, tu
         return {h: rows[h] for h in range(24)}
 
     # ── 3. Dynamic computation from caller-supplied candles ───────────────────
-    return _compute_dynamic(candles, _K_CON)
+    return _compute_dynamic(candles, con=True)
 
 
 def make_signal(

@@ -28,11 +28,18 @@ log = logging.getLogger(__name__)
 LOOKBACK_DAYS = 90
 ET            = ZoneInfo('America/New_York')
 
-# Confirmed k-ratios from 3-week TOS study cross-week analysis
-# AGG = tighter bands (1σ) — aggressive entry, closer to L2, in/out faster
-# CON = wider bands (2σ) — conservative entry, waits for bigger move, further from L2
-K_AGG = (0.8527, 1.0000, 1.1473, 0.7960)   # L1, L2, L3, L4 — Aggressive (~1σ, tighter)
-K_CON = (0.7054, 1.0000, 1.2946, 0.5920)   # L1, L2, L3, L4 — Conservative (~2σ, wider)
+# 2022 original methodology (reverse-engineered from Dec-2022 TOS study):
+#
+#   μ  = mean of hourly (H-L) ranges over lookback period
+#   σ  = sample std dev of hourly (H-L) ranges over lookback period
+#
+#   AGG: L1 = μ - σ        L2 = μ          L3 = μ + σ        L4 ≈ L1
+#   CON: L1 = μ + 1.4σ     L2 = μ + 2.4σ   L3 = μ + 3.4σ     L4 ≈ L1
+#
+#   CON is a 1σ-wide band identical to AGG but shifted up by 2.4σ — representing
+#   a more volatile expected range. Both studies share the same σ.
+#   L4 (T2 target) ≈ L1 in both studies (confirmed from 2022 data; exact formula unknown).
+CON_SHIFT = 2.4   # CON centre = μ + CON_SHIFT × σ
 
 PRICE_HISTORY_URL = 'https://api.schwabapi.com/marketdata/v1/pricehistory'
 
@@ -124,44 +131,74 @@ def _aggregate_to_hourly(symbol_id: int, candles: list[dict]) -> list[dict]:
 
 
 def _compute_vbh_rows(symbol_id: int, ohlc_rows: list[dict]) -> list[dict]:
-    """Compute AGG + CON vbh_stats rows from 90-day ohlc_hourly data."""
+    """Compute AGG + CON vbh_stats rows from 90-day ohlc_hourly data.
+
+    Replicates the 2022 TOS study methodology:
+      μ         = mean of hourly (H-L) ranges
+      σ         = sample std dev of hourly (H-L) ranges
+      σ_eff     = min(σ, μ × 0.1473)   ← cap matches 2022 fixed k-ratio
+
+    WHY 14.73%:
+      Analysis of _AGG_2022 (the authoritative 2022 reference hardcoded in
+      vbh_engine.py) shows σ/μ = 14.730% ±0.003% across ALL 240 non-zero RTH
+      hour/symbol pairs — impossibly uniform for raw σ.  Conclusion: the 2022
+      study applied a fixed k-ratio of 14.73% rather than the raw sample σ.
+      Capping at 14.73% replicates this character: L1 ≥ 0.8527μ → inversions
+      only when range > 1.705μ.  In 2026, raw σ/μ ~34%; the cap brings
+      effective σ back to 2022 proportions.
+
+    L4: T2 target sits 0.385·σ_eff OUTSIDE L1 (away from centre).
+      (_AGG_2022: (L1−L4)/σ_eff = 0.3849 ±0.003, consistent across all 240 pairs.)
+
+      AGG: L1=μ-σ_eff,         L2=μ,            L3=μ+σ_eff,       L4=L1-0.385·σ_eff
+      CON: L1=μ+1.4σ_eff,      L2=μ+2.4σ_eff,   L3=μ+3.4σ_eff,    L4=L1-0.385·σ_eff
+    """
     hour_ranges: dict[int, list[float]] = defaultdict(list)
     for row in ohlc_rows:
         r = row['high'] - row['low']
         if r > 0:
             hour_ranges[row['hour_et']].append(r)
 
-    rows     = []
-    now_iso  = datetime.now(timezone.utc).isoformat()
+    rows    = []
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     for h in range(24):
         rs  = hour_ranges.get(h, [])
         obs = len(rs)
 
-        # AGG
         if obs >= 3:
-            l2_raw = sum(rs) / obs
-            l1 = round(l2_raw * K_AGG[0], 5)
-            l2 = round(l2_raw,             5)
-            l3 = round(l2_raw * K_AGG[2], 5)
-            l4 = round(l2_raw * K_AGG[3], 5)
+            mu  = sum(rs) / obs
+            var = sum((x - mu) ** 2 for x in rs) / (obs - 1)   # sample variance
+            sigma = var ** 0.5
+
+            # Cap σ at 14.73% of μ — matches 2022 study fixed k-ratio character.
+            # _AGG_2022 shows σ/μ = 14.730% ±0.003% across all 240 non-zero RTH pairs,
+            # confirming the 2022 study used a fixed k-ratio rather than raw σ.
+            sigma_eff = min(sigma, mu * 0.1473)
+
+            # AGG — band centred at μ, width = σ_eff
+            a_l2 = mu
+            a_l1 = max(a_l2 - sigma_eff, 0.0)
+            a_l3 = a_l2 + sigma_eff
+            a_l4 = max(a_l1 - sigma_eff * 0.385, 0.0)  # T2: 0.385·σ_eff outside entry
+
+            # CON — same ±σ_eff band shifted up by 2.4 × σ_eff
+            c_l2 = mu + CON_SHIFT * sigma_eff
+            c_l1 = c_l2 - sigma_eff              # = μ + 1.4σ_eff
+            c_l3 = c_l2 + sigma_eff              # = μ + 3.4σ_eff
+            c_l4 = max(c_l1 - sigma_eff * 0.385, 0.0)  # T2: 0.385·σ_eff outside entry
+
+            r5 = lambda v: round(v, 5)
+            l1, l2, l3, l4    = r5(a_l1), r5(a_l2), r5(a_l3), r5(a_l4)
+            cl1, cl2, cl3, cl4 = r5(c_l1), r5(c_l2), r5(c_l3), r5(c_l4)
         else:
             l1 = l2 = l3 = l4 = 0.0
+            cl1 = cl2 = cl3 = cl4 = 0.0
 
         rows.append({'symbol_id': symbol_id, 'model': 'AGG', 'hour_et': h,
                      'l1': l1, 'l2': l2, 'l3': l3, 'l4': l4,
                      'sample_count': obs, 'lookback_days': LOOKBACK_DAYS,
                      'computed_at': now_iso})
-
-        # CON
-        if obs >= 3:
-            cl2_raw = sum(rs) / obs
-            cl1 = round(cl2_raw * K_CON[0], 5)
-            cl2 = round(cl2_raw,             5)
-            cl3 = round(cl2_raw * K_CON[2], 5)
-            cl4 = round(cl2_raw * K_CON[3], 5)
-        else:
-            cl1 = cl2 = cl3 = cl4 = 0.0
 
         rows.append({'symbol_id': symbol_id, 'model': 'CON', 'hour_et': h,
                      'l1': cl1, 'l2': cl2, 'l3': cl3, 'l4': cl4,
@@ -173,11 +210,15 @@ def _compute_vbh_rows(symbol_id: int, ohlc_rows: list[dict]) -> list[dict]:
 
 # ── Main update function ───────────────────────────────────────────────────────
 
-def run_update(tickers: list[str] | None = None) -> dict:
+def run_update(tickers: list[str] | None = None,
+               include_stocks: bool = False) -> dict:
     """Fetch new candles, update ohlc_hourly + vbh_stats, reload vbh_engine cache.
 
-    tickers — optional list of /XX tickers (e.g. ['/ES', '/NQ']).
-              If None, updates all active futures.
+    tickers        — optional list of tickers to restrict to (default: all active).
+                     Futures: '/ES', '/NQ', …   Stocks: 'SPY', 'QQQ', …
+    include_stocks — when True, also updates stocks/ETFs (default: False, futures only).
+                     Stocks use the same 90-day lookback and σ_eff formula as futures.
+
     Returns {'ok': [...], 'failed': [...]}
     """
     from db import (get_db, upsert_ohlc, get_ohlc, upsert_vbh_stats,
@@ -189,14 +230,18 @@ def run_update(tickers: list[str] | None = None) -> dict:
                 .select('id,ticker,schwab_symbol,asset_type')
                 .eq('is_active', True).order('id').execute().data)
 
-    targets = [s for s in all_syms if s['ticker'].startswith('/')]
+    if include_stocks:
+        targets = list(all_syms)                          # futures + stocks
+    else:
+        targets = [s for s in all_syms if s['ticker'].startswith('/')]  # futures only
 
     if tickers:
-        clean_tickers = [t if t.startswith('/') else f'/{t}' for t in tickers]
-        targets = [s for s in targets if s['ticker'] in clean_tickers]
+        # Accept both '/ES' and 'SPY' style — match against ticker column
+        targets = [s for s in targets if s['ticker'] in tickers
+                   or s['ticker'].lstrip('/') in tickers]
 
     if not targets:
-        log.warning('VBH update: no active futures symbols found')
+        log.warning('VBH update: no active symbols found')
         return {'ok': [], 'failed': []}
 
     log.info('VBH update starting — %d symbol(s)', len(targets))

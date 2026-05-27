@@ -7,8 +7,10 @@ Use this for manual runs or one-off backfills.
 The app runs the same logic automatically at 5:30 AM ET via background_loop().
 
 Usage:
-    python3 update_vbh_tables.py            # all active futures
-    python3 update_vbh_tables.py /ES /NQ    # specific symbols only
+    python3 update_vbh_tables.py                     # all active futures
+    python3 update_vbh_tables.py /ES /NQ             # specific futures only
+    python3 update_vbh_tables.py --stocks            # all futures + all stocks/ETFs
+    python3 update_vbh_tables.py --stocks SPY QQQ    # specific stocks only
 """
 
 import json, sys, time
@@ -32,8 +34,11 @@ except Exception as _e:
 from vbh_updater import run_update
 
 if __name__ == '__main__':
-    tickers = sys.argv[1:] or None
-    result  = run_update(tickers=tickers)
+    args           = sys.argv[1:]
+    include_stocks = '--stocks' in args
+    tickers        = [a for a in args if a != '--stocks'] or None
+
+    result = run_update(tickers=tickers, include_stocks=include_stocks)
     print(f'\nUpdated : {result["ok"]}')
     if result['failed']:
         print(f'Failed  : {result["failed"]}')
