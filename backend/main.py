@@ -632,20 +632,9 @@ async def refresh_signals():
         if display_price:
             state['last_price'][sid] = round(display_price, 4)
 
-        # ── Running hourly high/low accumulator ───────────────────────────────
-        # Accumulates every live quote sample since the current ET hour started.
-        # This gives ~60s-resolution tracking of the hourly H/L, matching TOS
-        # much more closely than using only the instantaneous last_price.
-        if display_price:
-            cur_hour = datetime.now(ET).hour
-            if state['hourly_hour'].get(sid) != cur_hour:
-                # New hour — reset accumulators
-                state['hourly_hour'][sid] = cur_hour
-                state['hourly_high'][sid] = display_price
-                state['hourly_low'][sid]  = display_price
-            else:
-                state['hourly_high'][sid] = max(state['hourly_high'].get(sid, display_price), display_price)
-                state['hourly_low'][sid]  = min(state['hourly_low'].get(sid,  display_price), display_price)
+        # Hourly H/L accumulator is updated AFTER building hour_bars (below) so
+        # that on hour change / cold start it can be seeded from DB bar data
+        # rather than just the live price.  See the block after ohlc = None.
 
         # During RTH, keep rth_open current for strip ETFs from the live quote's openPrice.
         # Schwab openPrice = official 9:30 ET open once the regular session is underway.
@@ -758,9 +747,11 @@ async def refresh_signals():
         # Fold last_price into high/low to match TOS live-tick behaviour (the current
         # developing 1-min bar isn't closed yet so its high/low isn't in DB yet).
         # Fallback: if no bars yet (first run, cold start) anchor to last_price only.
-        ohlc = None
+        ohlc     = None
+        cur_hour = datetime.now(ET).hour   # fallback if try block throws
         try:
             now_et_h   = datetime.now(ET)
+            cur_hour   = now_et_h.hour
             hour_floor = now_et_h.replace(minute=0, second=0, microsecond=0)
             min_bars   = get_1min_today(sid)
             hour_bars  = [
@@ -778,8 +769,28 @@ async def refresh_signals():
         except Exception as e:
             log.warning('%s: 1min hour OHLC error: %s', tick, e)
 
-        # Use accumulated hourly high/low — tracks every 60s quote sample since
-        # the hour started, giving much closer match to TOS tick-by-tick tracking.
+        # ── Running hourly H/L accumulator ────────────────────────────────────
+        # Updated HERE (after hour_bars) so on hour change / cold start we can
+        # seed from DB bar H/L instead of just the live price.  This eliminates
+        # the "h_high = h_low = last" problem on fresh deployments and at hour
+        # boundaries — the DB bars already capture extremes since the hour opened.
+        if display_price:
+            if state['hourly_hour'].get(sid) != cur_hour:
+                # New hour or cold start: prefer DB bar range; fall back to live price.
+                state['hourly_hour'][sid] = cur_hour
+                if ohlc:
+                    state['hourly_high'][sid] = max(ohlc['high'], display_price)
+                    state['hourly_low'][sid]  = min(ohlc['low'],  display_price)
+                else:
+                    # No closed bars yet (first ~60s of a new hour)
+                    state['hourly_high'][sid] = display_price
+                    state['hourly_low'][sid]  = display_price
+            else:
+                state['hourly_high'][sid] = max(state['hourly_high'].get(sid, display_price), display_price)
+                state['hourly_low'][sid]  = min(state['hourly_low'].get(sid,  display_price), display_price)
+
+        # Merge accumulator (tracks live ticks between 1-min bar closes) with ohlc.
+        # acc_high / acc_low extend the DB bars to cover the developing bar's extremes.
         acc_high = state['hourly_high'].get(sid, display_price)
         acc_low  = state['hourly_low'].get(sid,  display_price)
 
