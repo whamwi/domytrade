@@ -1346,6 +1346,35 @@ async def refresh_mag10_prices():
         log.warning('refresh_mag10_prices: %s', e)
 
 
+def _seed_state_stats_from_db() -> None:
+    """Instantly populate state['stats_agg'] and state['stats_con'] from the
+    vbh_engine DB cache (_stats_db) already loaded at startup.
+
+    compute_stats() / compute_stats_con() check _stats_db first and return
+    DB rows without needing Schwab candles — so calling them with [] gives us
+    the DB-backed levels in milliseconds rather than waiting 3-10 min for
+    44 Schwab candle fetches.
+
+    state['prev_close'] and state['last_price'] are seeded by refresh_signals()
+    from live Schwab quotes, so they don't need compute_all_stats() either.
+    """
+    seeded = 0
+    for sym in state['symbols']:
+        sid = sym['id']
+        api = sym['schwab_symbol']
+        try:
+            agg = compute_stats([], api)          # uses _stats_db → instant
+            con = compute_stats_con([], api)      # uses _stats_db → instant
+            if agg or con:
+                state['stats_agg'][sid] = agg
+                state['stats_con'][sid] = con
+                seeded += 1
+        except Exception as e:
+            log.warning('_seed_state_stats_from_db %s: %s', sym['ticker'], e)
+    log.info('Stats seeded from DB for %d/%d symbols (instant, no Schwab calls)',
+             seeded, len(state['symbols']))
+
+
 async def background_loop():
     # ── Schwab token persistence ──────────────────────────────────────────────
     # Schwab uses ROTATING refresh tokens — each use generates a new one.
@@ -1402,7 +1431,16 @@ async def background_loop():
         log.info('  %-8s  →  %s', _s['ticker'], _contract)
 
     await refresh_active_contracts()  # discover true active contracts FIRST (e.g. /GCQ26 not /GCM26)
-    await compute_all_stats()
+
+    # ── Seed stats from DB instantly, then compute fresh in background ─────────
+    # compute_all_stats() fetches 90-day Schwab candles for 44 symbols and can
+    # take 3-10+ minutes, blocking the first signal refresh entirely.
+    # vbh_engine.load_stats_from_db() already loaded _stats_db at startup.
+    # compute_stats() / compute_stats_con() use _stats_db first — so we only
+    # need to call them with empty candles to populate state['stats_agg/con'].
+    _seed_state_stats_from_db()   # instant — no network calls
+    asyncio.create_task(compute_all_stats())  # refresh from Schwab in background
+
     await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
     await refresh_mag10_prices()  # prime MAG10 live prices before first request
     await refresh_all_1min()      # seed 1-min bars for ALL futures before first signal run
