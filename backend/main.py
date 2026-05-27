@@ -1443,8 +1443,14 @@ async def background_loop():
 
     await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
     await refresh_mag10_prices()  # prime MAG10 live prices before first request
-    await refresh_all_1min()      # seed 1-min bars for ALL futures before first signal run
-    await refresh_signals()
+    try:
+        await asyncio.wait_for(refresh_all_1min(), timeout=45)
+    except asyncio.TimeoutError:
+        log.warning('startup refresh_all_1min timed out (45s) — continuing')
+    try:
+        await asyncio.wait_for(refresh_signals(), timeout=90)
+    except asyncio.TimeoutError:
+        log.warning('startup refresh_signals timed out (90s) — continuing')
     asyncio.create_task(_hl_loop())   # fast H/L accumulator — runs independently at 10s
 
     # Kick off background tasks that don't block startup
@@ -1470,10 +1476,17 @@ async def background_loop():
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
-        # Stage 1: refresh 1-min bars for ALL futures concurrently, store in DB
-        await refresh_all_1min()
+        # Stage 1: refresh 1-min bars — hard 45s cap so a slow Schwab response
+        # (headers arrive fast, body trickles) can't block the whole cycle.
+        try:
+            await asyncio.wait_for(refresh_all_1min(), timeout=45)
+        except asyncio.TimeoutError:
+            log.warning('refresh_all_1min timed out (45s) — skipping this cycle')
         # Stage 2: compute signals — reads fresh 1-min bars from DB
-        await refresh_signals()
+        try:
+            await asyncio.wait_for(refresh_signals(), timeout=90)
+        except asyncio.TimeoutError:
+            log.warning('refresh_signals timed out (90s) — skipping this cycle')
         await refresh_mag10_prices()
 
         # Incremental 1-min candle update — runs every 60s during RTH
