@@ -1451,6 +1451,14 @@ async def background_loop():
         await asyncio.wait_for(refresh_signals(), timeout=90)
     except asyncio.TimeoutError:
         log.warning('startup refresh_signals timed out (90s) — continuing')
+
+    # ── Define inner loops BEFORE creating tasks ───────────────────────────────
+    async def _hl_loop():
+        """Independent 10s loop — updates hourly H/L accumulators between signal refreshes."""
+        while True:
+            await asyncio.sleep(HL_REFRESH_SECS)
+            await refresh_hourly_hl()
+
     asyncio.create_task(_hl_loop())   # fast H/L accumulator — runs independently at 10s
 
     # Kick off background tasks that don't block startup
@@ -1467,12 +1475,6 @@ async def background_loop():
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
-
-    async def _hl_loop():
-        """Independent 10s loop — updates hourly H/L accumulators between signal refreshes."""
-        while True:
-            await asyncio.sleep(HL_REFRESH_SECS)
-            await refresh_hourly_hl()
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
