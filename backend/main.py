@@ -22,6 +22,7 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            set_token_refresh_callback, _token_cache as _schwab_token_cache)
 import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, make_signal
+from squeeze import calc_squeeze_5min, squeeze_confirms_signal
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
                 upsert_1min, get_1min_today, get_1min_range,
@@ -127,6 +128,7 @@ state = {
     'hourly_hour'       : {},    # {symbol_id: int}    — ET hour when above accumulators were last reset
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
     'signals'           : [],
+    'squeeze'           : {},   # {symbol_id: sq_result} — 5-min SqueezePRO for MARKET_TICKERS
     'last_stats_update': None,
     'last_signal_update': None,
     'status'           : 'starting',
@@ -681,7 +683,7 @@ async def refresh_signals():
             fresh = []
             today_rows = []   # always in scope — avoids NameError in gap loop below
             try:
-                today_rows = get_1min_today(sid)
+                today_rows = await asyncio.to_thread(get_1min_today, sid)
                 vp = _compute_vwap_poc(today_rows, MARKET_TICK.get(tick, 0.25))
                 # Convert DB rows back to candle-like dicts for IB computation below
                 fresh = [{'datetime': int(datetime.fromisoformat(r['bar_time']).timestamp() * 1000),
@@ -738,6 +740,17 @@ async def refresh_signals():
                 'vwap': vp['vwap'], 'poc': vp['poc'],
                 'gap': gap,
             }
+
+            # ── 5-min SqueezePRO — computed once per signal cycle for market futures ──
+            # Uses 3 days of 1-min bars already in DB → ~828 five-min bars after agg.
+            # Result cached in state['squeeze'][sid] and attached to signal rows below.
+            try:
+                _sq_rows = await asyncio.to_thread(get_1min_range, sid, 3)
+                # Run numpy/pandas squeeze compute in thread pool — keeps event loop free
+                state['squeeze'][sid] = await asyncio.to_thread(calc_squeeze_5min, _sq_rows)
+            except Exception as _sq_e:
+                log.warning('Squeeze error %s: %s', tick, _sq_e)
+
         if not last:
             continue
 
@@ -753,7 +766,7 @@ async def refresh_signals():
             now_et_h   = datetime.now(ET)
             cur_hour   = now_et_h.hour
             hour_floor = now_et_h.replace(minute=0, second=0, microsecond=0)
-            min_bars   = get_1min_today(sid)
+            min_bars   = await asyncio.to_thread(get_1min_today, sid)
             hour_bars  = [
                 b for b in min_bars
                 if datetime.fromisoformat(b['bar_time']).astimezone(ET) >= hour_floor
@@ -829,6 +842,20 @@ async def refresh_signals():
                 s['signal_hour'] = signal_hour.isoformat()
                 s['prev_close']  = round(prev_close, 4)
                 s['net_change']  = round(net_chg_raw, 4)
+                # Squeeze confirmation — 4 major market futures only
+                if tick in MARKET_TICKERS:
+                    _sq = state['squeeze'].get(sid)
+                    if _sq and 'error' not in _sq:
+                        s['sq_state']   = _sq['sq_state']
+                        s['mo_state']   = _sq['mo_state']
+                        _verd, _rsn     = squeeze_confirms_signal(s['side'], _sq)
+                        s['sq_confirm'] = _verd
+                        s['sq_reason']  = _rsn
+                    else:
+                        s['sq_state']   = None
+                        s['mo_state']   = None
+                        s['sq_confirm'] = 'NEUTRAL'
+                        s['sq_reason']  = 'no squeeze data'
                 # Detect NEAR → ENTRY transition for one-shot beep on frontend
                 sk = f"{sid}_{s['model']}"
                 prev_st = state['prev_signal_state'].get(sk)
@@ -872,7 +899,7 @@ async def refresh_signals():
             'signal_hour'  : signal_hour.isoformat(),
         } for r in rows]
         try:
-            insert_signals(db_rows)
+            await asyncio.to_thread(insert_signals, db_rows)
         except Exception as e:
             log.warning('Signal insert error: %s', e)
 
@@ -1024,16 +1051,22 @@ async def refresh_all_1min():
 
     results = await asyncio.gather(*[_fetch(s) for s in all_syms])
 
-    # Stage 2 — sequential DB writes
+    # Stage 2 — concurrent DB writes (each in its own thread to avoid blocking the event loop)
     stored = 0
-    for sid, candles in results:
-        if candles:
-            try:
-                rows = _candles_to_1min_rows(sid, candles)
-                upsert_1min(rows)
-                stored += 1
-            except Exception as e:
-                log.warning('1min upsert sid=%s: %s', sid, e)
+
+    async def _upsert(sid: int, candles: list) -> bool:
+        try:
+            rows = _candles_to_1min_rows(sid, candles)
+            await asyncio.to_thread(upsert_1min, rows)
+            return True
+        except Exception as e:
+            log.warning('1min upsert sid=%s: %s', sid, e)
+            return False
+
+    upsert_results = await asyncio.gather(*[
+        _upsert(sid, candles) for sid, candles in results if candles
+    ])
+    stored = sum(upsert_results)
 
     futures_n = sum(1 for s in all_syms if s['ticker'].startswith('/'))
     stocks_n  = len(all_syms) - futures_n
@@ -2254,7 +2287,8 @@ def _agent_nearest_levels(price: float, levels: dict, naked_vpocs: list) -> dict
     }
     all_levels = []
     for key, val in levels.items():
-        if val is None:
+        # Skip None, booleans (e.g. ib_complete), and anything non-numeric
+        if not isinstance(val, (int, float)) or isinstance(val, bool):
             continue
         all_levels.append({'name': label_map.get(key, key), 'price': val, 'type': 'key'})
     for nv in naked_vpocs:

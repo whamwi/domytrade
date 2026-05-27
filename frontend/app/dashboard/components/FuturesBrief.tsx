@@ -66,6 +66,12 @@ function secsUntilRefresh(tsMs: number | null, ttlS: number): number {
   return Math.max(0, ttlS - elapsed)
 }
 
+/** Safe price formatter — returns '—' if the value is not a finite number */
+function fmtPx(p: unknown, decimals = 2): string {
+  if (typeof p !== 'number' || !isFinite(p)) return '—'
+  return p.toFixed(decimals)
+}
+
 interface Level  { name: string; price: number; type: string }
 interface Targets { t1: Level | null; t2: Level | null; t3: Level | null }
 interface Nearest { above: Level[]; below: Level[] }
@@ -115,14 +121,15 @@ const SYMBOL_NAMES: Record<string, string> = {
 
 function TargetBadge({ label, level, price }: { label: string; level: Level | null; price: number }) {
   if (!level) return null
-  const dist  = level.price - price
+  const lp    = typeof level.price === 'number' && isFinite(level.price) ? level.price : null
+  const dist  = lp !== null ? lp - price : null
   const color = level.type === 'naked' ? '#22d3ee' : '#a78bfa'
   return (
     <div className="flex items-center gap-1.5">
       <span className="text-xs font-bold" style={{ color: '#94a3b8', minWidth: '16px' }}>{label}</span>
-      <span className="text-xs font-bold tabular-nums" style={{ color }}>{level.price.toFixed(2)}</span>
+      <span className="text-xs font-bold tabular-nums" style={{ color }}>{fmtPx(level.price)}</span>
       <span className="text-xs tabular-nums" style={{ color: '#60a5fa', opacity: 0.7, fontSize: '10px' }}>
-        {dist >= 0 ? '+' : ''}{dist.toFixed(2)}
+        {dist !== null ? `${dist >= 0 ? '+' : ''}${dist.toFixed(2)}` : ''}
       </span>
     </div>
   )
@@ -150,7 +157,7 @@ function SymbolCard({ d, onOpenLevels }: { d: SymbolData; onOpenLevels: () => vo
             {d.symbol}
           </span>
           <div className="text-sm font-bold tabular-nums" style={{ color: 'var(--text-primary)' }}>
-            {d.price.toFixed(2)}
+            {fmtPx(d.price)}
           </div>
           <div className="text-xs tabular-nums" style={{ color: changeColor }}>
             {isUp ? '+' : ''}{d.change.toFixed(2)} ({isUp ? '+' : ''}{d.change_pct.toFixed(2)}%)
@@ -189,7 +196,7 @@ function SymbolCard({ d, onOpenLevels }: { d: SymbolData; onOpenLevels: () => vo
           <div key={i} className="flex items-center gap-1.5">
             <span className="text-xs" style={{ color: '#94a3b8', fontSize: '9px' }}>▲</span>
             <span className="text-xs font-medium" style={{ color: 'var(--text-muted)', flex: 1 }}>{l.name}</span>
-            <span className="text-xs tabular-nums font-bold" style={{ color: '#60a5fa' }}>{l.price.toFixed(2)}</span>
+            <span className="text-xs tabular-nums font-bold" style={{ color: '#60a5fa' }}>{fmtPx(l.price)}</span>
           </div>
         ))}
 
@@ -197,7 +204,7 @@ function SymbolCard({ d, onOpenLevels }: { d: SymbolData; onOpenLevels: () => vo
         <div className="flex items-center gap-1 my-0.5">
           <div style={{ flex: 1, height: '1px', background: biasColor, opacity: 0.4 }} />
           <span className="text-xs font-bold tabular-nums" style={{ color: biasColor, fontSize: '10px' }}>
-            {d.price.toFixed(2)}
+            {fmtPx(d.price)}
           </span>
           <div style={{ flex: 1, height: '1px', background: biasColor, opacity: 0.4 }} />
         </div>
@@ -206,7 +213,7 @@ function SymbolCard({ d, onOpenLevels }: { d: SymbolData; onOpenLevels: () => vo
           <div key={i} className="flex items-center gap-1.5">
             <span className="text-xs" style={{ color: '#94a3b8', fontSize: '9px' }}>▼</span>
             <span className="text-xs font-medium" style={{ color: 'var(--text-muted)', flex: 1 }}>{l.name}</span>
-            <span className="text-xs tabular-nums font-bold" style={{ color: '#60a5fa' }}>{l.price.toFixed(2)}</span>
+            <span className="text-xs tabular-nums font-bold" style={{ color: '#60a5fa' }}>{fmtPx(l.price)}</span>
           </div>
         ))}
       </div>
@@ -326,7 +333,7 @@ function SRCard({ ticker, data }: { ticker: string; data: SRData }) {
           {ticker}
         </span>
         <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
-          @ {data.current_price.toFixed(2)}  ·  3-day S/R
+          @ {fmtPx(data.current_price)}  ·  3-day S/R
         </span>
       </div>
 
@@ -342,7 +349,7 @@ function SRCard({ ticker, data }: { ticker: string; data: SRData }) {
                 className="text-xs tabular-nums font-semibold"
                 style={{ color: r.zone_type === 'supply' ? '#f87171' : '#fca5a5' }}
               >
-                {r.price.toFixed(2)}
+                {fmtPx(r.price)}
               </span>
               <span className="text-xs" style={{ color: 'var(--text-dim)', fontSize: '9px' }}>
                 {r.touches}x {r.dist_pct > 0 ? `+${r.dist_pct.toFixed(1)}%` : `${r.dist_pct.toFixed(1)}%`}
@@ -362,7 +369,7 @@ function SRCard({ ticker, data }: { ticker: string; data: SRData }) {
                 className="text-xs tabular-nums font-semibold"
                 style={{ color: s.zone_type === 'demand' ? '#4ade80' : '#86efac' }}
               >
-                {s.price.toFixed(2)}
+                {fmtPx(s.price)}
               </span>
               <span className="text-xs" style={{ color: 'var(--text-dim)', fontSize: '9px' }}>
                 {s.touches}x {s.dist_pct > 0 ? `+${s.dist_pct.toFixed(1)}%` : `${s.dist_pct.toFixed(1)}%`}
