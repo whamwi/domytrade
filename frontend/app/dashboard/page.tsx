@@ -14,7 +14,7 @@ import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-const REFRESH_INTERVAL       = 60_000   // normal polling once data is live
+const REFRESH_INTERVAL       = 55_000   // normal polling once data is live (backend cycle ~55s)
 const WARMUP_RETRY_INTERVAL  = 10_000   // fast retry while backend is still computing
 const ERROR_REFRESH_INTERVAL =  5_000   // retry on network error
 
