@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# deploy.sh — deploys domytrade-backend via Railway API (no browser login needed)
+# deploy.sh — deploys domytrade (backend + frontend) with no browser login
 #
 # Requires RAILWAY_TOKEN in env or ~/.zshrc.
 # Token is a Railway personal API token from railway.com/account/tokens.
 #
 # Usage:
-#   ./deploy.sh               — redeploy latest commit to production
-#   ./deploy.sh logs          — tail logs via CLI (needs active CLI session)
-#   ./deploy.sh status        — show deployment status
+#   ./deploy.sh               — deploy backend (Railway) + frontend (Vercel)
+#   ./deploy.sh backend       — backend only
+#   ./deploy.sh frontend      — frontend only
+#   ./deploy.sh logs          — tail Railway logs
 
 set -e
 cd "$(dirname "$0")"
@@ -22,31 +23,45 @@ if [[ -z "$RAILWAY_TOKEN" ]]; then
   exit 1
 fi
 
-# Project identifiers (from ~/.railway/config.json)
+# Railway project identifiers
 SERVICE="a68e47f7-4c21-4e78-aecb-66901593cd86"
 ENVIRONMENT="6afc0c82-7226-4196-8f21-ed41a4ef5382"
 
-CMD="${1:-up}"
+deploy_backend() {
+  echo "Deploying domytrade-backend (Railway)..."
+  RESULT=$(curl -s -X POST https://backboard.railway.app/graphql/v2 \
+    -H "Authorization: Bearer $RAILWAY_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"query\": \"mutation { serviceInstanceRedeploy(serviceId: \\\"$SERVICE\\\", environmentId: \\\"$ENVIRONMENT\\\") }\"}")
+  if echo "$RESULT" | grep -q '"serviceInstanceRedeploy":true'; then
+    echo "  ✓ Backend deployment triggered."
+  else
+    echo "  ✗ Backend error: $RESULT"
+    exit 1
+  fi
+}
+
+deploy_frontend() {
+  echo "Deploying domytrade-frontend (Vercel)..."
+  vercel deploy --prod --cwd "$(dirname "$0")/../frontend" 2>&1 | tail -5
+  echo "  ✓ Frontend deployed."
+}
+
+CMD="${1:-all}"
 
 case "$CMD" in
-  up)
-    echo "Deploying domytrade-backend..."
-    RESULT=$(curl -s -X POST https://backboard.railway.app/graphql/v2 \
-      -H "Authorization: Bearer $RAILWAY_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "{\"query\": \"mutation { serviceInstanceRedeploy(serviceId: \\\"$SERVICE\\\", environmentId: \\\"$ENVIRONMENT\\\") }\"}")
-    if echo "$RESULT" | grep -q '"serviceInstanceRedeploy":true'; then
-      echo "Deployment triggered successfully."
-    else
-      echo "Error: $RESULT"
-      exit 1
-    fi
+  all|up)
+    deploy_backend
+    deploy_frontend
+    ;;
+  backend)
+    deploy_backend
+    ;;
+  frontend)
+    deploy_frontend
     ;;
   logs)
     railway logs --tail "${2:-100}"
-    ;;
-  status)
-    railway status
     ;;
   *)
     railway "$@"
