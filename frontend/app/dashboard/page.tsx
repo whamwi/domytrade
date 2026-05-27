@@ -108,6 +108,10 @@ export default function DashboardPage() {
   const [warmRetries, setWarmRetries] = useState(0)
   const warmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Refresh countdown: counts down from 60→0 after each successful data fetch
+  const [countdown, setCountdown] = useState<number>(60)
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
 
   // Play one beep when any signal transitions NEAR → ENTRY
@@ -135,6 +139,20 @@ export default function DashboardPage() {
       if (warmTimerRef.current) clearInterval(warmTimerRef.current)
     }
   }, [isWarmingUp])
+
+  // Reset countdown to 60 and tick down every second whenever the data timestamp changes
+  useEffect(() => {
+    if (!lastUpdated) return
+    setCountdown(REFRESH_INTERVAL / 1000)
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current)
+    countdownIntervalRef.current = setInterval(() => {
+      setCountdown(c => {
+        if (c <= 1) { clearInterval(countdownIntervalRef.current!); return 0 }
+        return c - 1
+      })
+    }, 1000)
+    return () => { if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current) }
+  }, [lastUpdated])
 
   const [sideFilter, setSideFilter]   = useState<SideFilter>('all')
   const [modelFilter, setModelFilter] = useState<ModelFilter>('CON')
@@ -319,12 +337,30 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Right: last updated + briefing + refresh */}
+          {/* Right: last updated + countdown arc + briefing + refresh */}
           <div className="flex items-center gap-3">
             {lastUpdated && (
-              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                {lastUpdated}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {lastUpdated}
+                </span>
+                {/* Countdown arc — fills from empty→full as next refresh approaches */}
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+                  <circle cx="7" cy="7" r="5" stroke="var(--border)" strokeWidth="1.5" />
+                  <circle
+                    cx="7" cy="7" r="5"
+                    stroke="var(--accent-blue)"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeDasharray={`${2 * Math.PI * 5}`}
+                    strokeDashoffset={`${2 * Math.PI * 5 * (countdown / (REFRESH_INTERVAL / 1000))}`}
+                    style={{ transform: 'rotate(-90deg)', transformOrigin: '7px 7px', transition: 'stroke-dashoffset 0.8s linear' }}
+                  />
+                </svg>
+                <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)', minWidth: '2ch' }}>
+                  {countdown}s
+                </span>
+              </div>
             )}
             <button
               onClick={() => setBriefingOpen(true)}
