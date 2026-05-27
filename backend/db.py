@@ -78,16 +78,22 @@ def upsert_1min(rows: list[dict]) -> None:
 
 
 def get_1min_range(symbol_id: int, days: int = 3) -> list[dict]:
-    """Return 1-min bars for the last N calendar days — for sparklines and analysis."""
+    """Return 1-min bars for the last N calendar days — for sparklines and analysis.
+
+    Fetches newest-first with a generous limit (5 000 rows covers 3+ days of
+    24-hour futures data at 1-min resolution), then re-sorts ascending so
+    callers always receive chronological order with up-to-date bars.
+    """
     from datetime import datetime, timezone, timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     res = (get_db().table('ohlc_1min')
            .select('bar_time,open,high,low,close,volume')
            .eq('symbol_id', symbol_id)
            .gte('bar_time', cutoff)
-           .order('bar_time')
+           .order('bar_time', desc=True)
+           .limit(5000)
            .execute())
-    return res.data
+    return list(reversed(res.data))
 
 
 def get_1min_today(symbol_id: int) -> list[dict]:
