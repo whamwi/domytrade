@@ -3431,6 +3431,12 @@ _STOP_WORDS = {
     'DAY', 'END', 'FED', 'FEW', 'FIB', 'FIX', 'GAP', 'HIT', 'HOD', 'LOD',
     'LOT', 'MID', 'MIN', 'MAX', 'OFF', 'OUT', 'PAY', 'POC', 'POP', 'PRE',
     'RAW', 'SAY', 'TAP', 'TRY', 'TWO', 'USE', 'VIX', 'VOL', 'WIN', 'YES',
+    # VBH / trading system terms — never stock tickers
+    'VBH', 'AGG', 'CON', 'WIDE', 'NEAR', 'MACD', 'MOMO', 'TICK', 'TRIN',
+    'RTH', 'ETH', 'IB', 'VAH', 'VAL', 'VWAP', 'MTF', 'ATH', 'POS', 'NEG',
+    'TF', 'SQ', 'SL', 'TP', 'RR', 'TA', 'PA', 'HH', 'LL', 'HL', 'LH',
+    'CONF', 'CAUT', 'NGTD', 'NEUT', 'ENTRY', 'FIRED', 'BULL', 'BEAR',
+    'SQUEEZE', 'SIGNAL', 'MODEL', 'BIAS', 'ZONE',
 }
 
 def _detect_tickers_in_message(msg: str) -> list[str]:
