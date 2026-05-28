@@ -2327,6 +2327,7 @@ async def get_levels(symbol: str):
             'daily_pivot':         daily_pivot,
             'prev_high':           prev_high,
             'prev_low':            prev_low,
+            'prev_close':          prev_close,
             'vwap':                vwap,
         }
     }

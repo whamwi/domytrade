@@ -37,6 +37,7 @@ interface Levels {
   daily_pivot:          number | null
   prev_high:            number | null
   prev_low:             number | null
+  prev_close:           number | null
   vwap:                 number | null
 }
 
@@ -59,6 +60,7 @@ interface FuturesPanelProps {
 
 const LEVEL_LABELS: Record<string, string> = {
   prev_high:            'Prior Day High',
+  prev_close:           'Prior Day Close',
   // Dalton TPO — primary display (volume profile hidden, kept in backend for agent)
   prior_rth_tpo_vah:    'Prior RTH  —  VAH',
   prior_rth_tpo_vpoc:   'Prior RTH  —  POC',
@@ -93,6 +95,7 @@ const LEVEL_HELP: Record<string, string> = {
   mcvpoc_3day:         'The single price with the most volume across the last 3 RTH sessions combined. A powerful multi-day magnet — harder to break than a single-session POC.',
   daily_pivot:         '(Yesterday\'s High + Low + Close) ÷ 3. A neutral reference: above it = bullish bias for the day, below = bearish.',
   prev_high:           'Yesterday\'s RTH session high (4:00 PM close included). Breaking above with volume confirms bullish continuation.',
+  prev_close:          'Yesterday\'s RTH closing price (4:00 PM ET). The baseline for today\'s gap calculation — compare to today\'s RTH open to determine gap up or gap down.',
   prev_low:            'Yesterday\'s RTH session low. Breaking below with volume confirms bearish continuation.',
   vwap:                'Volume Weighted Average Price — average price paid weighted by volume. Price above VWAP = institutions were net buyers. Below = net sellers. The market constantly gravitates back to this level.',
   ib_high:             'Initial Balance High — highest price of the first 60 minutes of RTH (9:30–10:30 ET). A break above IB High after 10:30 signals a trend day extending upward.',
@@ -116,6 +119,7 @@ const LEVEL_COLOR: Record<string, string> = {
   ib_high:              '#f97316',   // orange — initial balance
   ib_low:               '#f97316',   // orange
   daily_pivot:          '#60a5fa',   // blue — pivot
+  prev_close:           '#94a3b8',   // slate — prior close
   prev_low:             '#4ade80',   // green — floors
   vwap:                 '#f59e0b',   // amber — fair value
 }
@@ -139,6 +143,7 @@ function shortLabel(key: string): string {
     ib_low:              'IB.Lo',
     daily_pivot:         'Pivot',
     prev_high:           'Prev.Hi',
+    prev_close:          'Prev.Cls',
     prev_low:            'Prev.Lo',
     vwap:                'VWAP',
   }
