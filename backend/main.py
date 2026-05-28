@@ -795,10 +795,10 @@ async def refresh_signals():
             except Exception:
                 vp = {'vwap': None, 'poc': None}
 
-            # Initial Balance: high/low of first 60 min of RTH (9:30–10:30 ET)
+            # Initial Balance: high/low of first 30 min of RTH (9:30–10:00 ET)
             try:
                 ib_s = 9 * 60 + 30
-                ib_e = 10 * 60 + 30
+                ib_e = 10 * 60
                 ib_bars = []
                 for c in fresh:   # fresh = DB rows converted above
                     dt_c = datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET)
@@ -2289,11 +2289,11 @@ async def get_levels(symbol: str):
     if _rth_open_panel and _prev_settle_panel:
         gap = round(_rth_open_panel - _prev_settle_panel, 2)
 
-    # Initial Balance from 9:30–10:30 ET bars.
+    # Initial Balance from 9:30–10:00 ET bars (first 30 min of RTH).
     # Scope to today only; fall back to most recent prior day when pre-market.
     # (raw_1min spans 5 days so naively including all dates would mix multiple IB windows.)
     ib_s_levels = 9 * 60 + 30
-    ib_e_levels = 10 * 60 + 30
+    ib_e_levels = 10 * 60
     today_ib_bars: list[dict] = []
     prior_ib_by_date: dict = {}
     for c in raw_1min:
@@ -2921,7 +2921,7 @@ def _build_claude_prompt(symbols_data: list[dict],
     else:
         session_label = 'OVERNIGHT/AFTER-HOURS'
 
-    ib_complete = wday < 5 and t_min >= 10*60+30   # after 10:30 ET
+    ib_complete = wday < 5 and t_min >= 10*60   # after 10:00 ET (30-min IB)
 
     lines = [
         f'Market session: {session_label} — {now_et.strftime("%Y-%m-%d %H:%M ET")}',
