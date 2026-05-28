@@ -122,6 +122,156 @@ const LEVEL_COLOR: Record<string, string> = {
 
 const NVPOC_COLOR = '#22d3ee'  // cyan — naked/unfilled volume nodes
 
+// ── Abbreviated labels for chart view ────────────────────────────────────────
+function shortLabel(key: string): string {
+  const m: Record<string, string> = {
+    prior_rth_tpo_vah:   'p.VAH',
+    prior_rth_tpo_vpoc:  'p.POC',
+    prior_rth_tpo_val:   'p.VAL',
+    overnight_tpo_vah:   'o.VAH',
+    overnight_tpo_vpoc:  'o.POC',
+    overnight_tpo_val:   'o.VAL',
+    developing_tpo_vah:  'd.VAH',
+    developing_tpo_vpoc: 'd.POC',
+    developing_tpo_val:  'd.VAL',
+    mcvpoc_3day:         '3d.POC',
+    ib_high:             'IB.Hi',
+    ib_low:              'IB.Lo',
+    daily_pivot:         'Pivot',
+    prev_high:           'Prev.Hi',
+    prev_low:            'Prev.Lo',
+    vwap:                'VWAP',
+  }
+  if (key.startsWith('nvpoc_')) return 'nPOC'
+  return m[key] ?? key
+}
+
+// ── SVG price ladder chart ────────────────────────────────────────────────────
+function LevelsChart({
+  levelRows, last, priceColor,
+}: {
+  levelRows: { price: number; key: string; label: string; dist: number }[]
+  last: number
+  priceColor: string
+}) {
+  if (!levelRows.length) return null
+
+  const W = 440, H = 480
+  const LX1 = 10, LX2 = 168    // horizontal line X range
+  const LBL_X = 176             // label text start
+  const PRC_X = 440             // price right-aligned
+
+  const allP = levelRows.map(r => r.price)
+  if (last > 0) allP.push(last)
+  const minP = Math.min(...allP)
+  const maxP = Math.max(...allP)
+  const pad  = Math.max((maxP - minP) * 0.08, 5)
+  const lo   = minP - pad
+  const hi   = maxP + pad
+  const toY  = (p: number) => ((hi - p) / (hi - lo)) * H
+
+  // Anti-collision: sort by Y, push labels down when within 11px
+  const MIN_GAP = 11
+  const rawY = levelRows.map(r => toY(r.price))
+  const order = levelRows.map((_, i) => i).sort((a, b) => rawY[a] - rawY[b])
+  const adjY  = [...rawY]
+  let prev = -Infinity
+  for (const i of order) {
+    if (adjY[i] < prev + MIN_GAP) adjY[i] = prev + MIN_GAP
+    prev = adjY[i]
+  }
+
+  // Session value area shading
+  const getP = (k: string) => levelRows.find(r => r.key === k)?.price
+  const sessions = [
+    { prefix: 'prior_rth_tpo',  color: '#818cf8' },
+    { prefix: 'overnight_tpo',  color: '#22d3ee' },
+    { prefix: 'developing_tpo', color: '#34d399' },
+  ]
+  const isPOC = (k: string) =>
+    k.endsWith('_vpoc') || k.endsWith('_poc') || k === 'mcvpoc_3day' || k.startsWith('nvpoc_')
+
+  return (
+    <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
+      {/* Value area shading */}
+      {sessions.map(({ prefix, color }) => {
+        const vah = getP(`${prefix}_vah`)
+        const val = getP(`${prefix}_val`)
+        if (!vah || !val) return null
+        return (
+          <rect key={prefix}
+            x={LX1} y={toY(vah)}
+            width={LX2 - LX1} height={toY(val) - toY(vah)}
+            fill={color} fillOpacity={0.08}
+          />
+        )
+      })}
+
+      {/* Level lines + labels */}
+      {levelRows.map((row, i) => {
+        const ly     = toY(row.price)
+        const lblY   = adjY[i]
+        const color  = row.key.startsWith('nvpoc_') ? NVPOC_COLOR : (LEVEL_COLOR[row.key] ?? '#666')
+        const solid  = isPOC(row.key)
+
+        return (
+          <g key={row.key}>
+            {/* Horizontal line at true price */}
+            <line
+              x1={LX1} y1={ly} x2={LX2} y2={ly}
+              stroke={color}
+              strokeWidth={solid ? 1.5 : 1}
+              strokeDasharray={solid ? undefined : '5,3'}
+              strokeOpacity={0.85}
+            />
+            {/* Leader from line to label when collision-shifted */}
+            {Math.abs(lblY - ly) > 2 && (
+              <line
+                x1={LX2} y1={ly} x2={LBL_X - 4} y2={lblY}
+                stroke={color} strokeWidth={0.5} strokeOpacity={0.35}
+              />
+            )}
+            {/* Abbreviated key */}
+            <text x={LBL_X} y={lblY + 3.5}
+              fill={color} fontSize={8.5}
+              fontFamily="'SF Mono', ui-monospace, monospace"
+              fontWeight={solid ? '600' : '400'}>
+              {shortLabel(row.key)}
+            </text>
+            {/* Price right-aligned */}
+            <text x={PRC_X} y={lblY + 3.5}
+              fill={color} fontSize={8.5}
+              fontFamily="'SF Mono', ui-monospace, monospace"
+              textAnchor="end">
+              {row.price.toFixed(2)}
+            </text>
+          </g>
+        )
+      })}
+
+      {/* Current price marker */}
+      {last > 0 && (() => {
+        const cy  = toY(last)
+        const mid = (LX1 + LX2) / 2
+        return (
+          <g>
+            <line x1={LX1 - 5} y1={cy} x2={LX2 + 5} y2={cy}
+              stroke={priceColor} strokeWidth={2} />
+            <rect x={mid - 28} y={cy - 9} width={56} height={18}
+              fill="#0f172a" stroke={priceColor} strokeWidth={1.5} rx={3} />
+            <text x={mid} y={cy + 4}
+              fill={priceColor} fontSize={9}
+              fontFamily="'SF Mono', ui-monospace, monospace"
+              fontWeight="700" textAnchor="middle">
+              {last.toFixed(2)}
+            </text>
+          </g>
+        )
+      })()}
+    </svg>
+  )
+}
+
 // ── Individual level row with hover tooltip ───────────────────────────────────
 function LevelRow({
   row, isClose, aboveLine, helpText, last,
@@ -244,6 +394,7 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
   const [data, setData]             = useState<LevelsResponse | null>(null)
   const [loading, setLoading]       = useState(true)
   const [nakedVpocs, setNakedVpocs] = useState<NakedVpoc[]>([])
+  const [view, setView]             = useState<'list' | 'chart'>('list')
 
   // Fetch levels + naked VPOCs concurrently
   useEffect(() => {
@@ -316,10 +467,16 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
     levelRows.push({ price: data.ib_low, key: 'ib_low', label: `${LEVEL_LABELS['ib_low']}${ibSuffix}`, dist: last > 0 ? data.ib_low - last : 0 })
   }
 
-  // Merge naked VPOCs — skip any whose price is already shown as prior_rth_vpoc or mcvpoc_3day
+  // Merge naked VPOCs — only closest above current price and closest below
   const existingPrices = new Set(levelRows.map(r => r.price))
-  for (const nv of nakedVpocs) {
-    if (existingPrices.has(nv.vpoc)) continue   // avoid duplicate
+  const filteredNv = nakedVpocs.filter(nv => !existingPrices.has(nv.vpoc))
+  const nvAbove = last > 0
+    ? filteredNv.filter(nv => nv.vpoc > last).sort((a, b) => a.vpoc - b.vpoc)[0]
+    : filteredNv[0]
+  const nvBelow = last > 0
+    ? filteredNv.filter(nv => nv.vpoc < last).sort((a, b) => b.vpoc - a.vpoc)[0]
+    : undefined
+  for (const nv of [nvAbove, nvBelow].filter((x): x is NakedVpoc => !!x)) {
     const dateLabel = new Date(nv.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
     levelRows.push({
       price: nv.vpoc,
@@ -404,15 +561,31 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
             <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-dim)' }}>
               Key Levels
             </span>
-            {data?.computed_at && (
-              <span className="text-xs" style={{ color: 'var(--text-dim)', opacity: 0.6 }}>
-                {data.computed_at}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {/* View toggle */}
+              {['list', 'chart'].map(v => (
+                <button key={v} onClick={() => setView(v as 'list' | 'chart')}
+                  style={{
+                    fontSize: '10px', fontWeight: 600, padding: '2px 8px',
+                    borderRadius: '4px', cursor: 'pointer',
+                    background: view === v ? 'rgba(255,255,255,0.12)' : 'transparent',
+                    color: view === v ? 'var(--text-primary)' : 'var(--text-dim)',
+                    border: `1px solid ${view === v ? 'rgba(255,255,255,0.2)' : 'transparent'}`,
+                    transition: 'all 0.15s',
+                  }}>
+                  {v === 'list' ? '≡ List' : '⟋ Chart'}
+                </button>
+              ))}
+              {data?.computed_at && (
+                <span className="text-xs" style={{ color: 'var(--text-dim)', opacity: 0.6 }}>
+                  {data.computed_at}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Levels ladder */}
+        {/* Levels body */}
         <div style={{ overflowY: 'auto', padding: '0 20px 20px', flex: 1 }}>
           {loading && (
             <div className="py-8 text-center text-xs" style={{ color: 'var(--text-dim)' }}>
@@ -426,7 +599,13 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
             </div>
           )}
 
-          {!loading && levelRows.length > 0 && (
+          {/* ── Chart view ── */}
+          {!loading && levelRows.length > 0 && view === 'chart' && (
+            <LevelsChart levelRows={levelRows} last={last} priceColor={priceColor} />
+          )}
+
+          {/* ── List view ── */}
+          {!loading && levelRows.length > 0 && view === 'list' && (
             <div className="flex flex-col" style={{ gap: '2px' }}>
               {levelRows.map((row, i) => {
                 const showSep   = sepIdx !== -1 && i === sepIdx
@@ -451,8 +630,6 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
                         <div style={{ flex: 1, height: '1px', background: priceColor, opacity: 0.5 }} />
                       </div>
                     )}
-
-                    {/* Level row */}
                     <LevelRow
                       row={row}
                       isClose={isClose}
