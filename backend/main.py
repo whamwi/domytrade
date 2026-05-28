@@ -1969,14 +1969,22 @@ async def get_levels(symbol: str):
         session_vah  = session_va['vah']
         session_val  = session_va['val']
 
-    # Overnight VPOC — today's pre-market session (incl. Sunday night for Monday)
-    overnight_vpoc = _compute_vpoc(on_by_date.get(today, []), tick)
+    # Overnight VPOC / VAH / VAL — today's pre-market session (incl. Sunday night for Monday)
+    overnight_vpoc = overnight_vah = overnight_val = None
+    _on_bars = on_by_date.get(today, [])
+    if _on_bars:
+        _on_va = _compute_value_area(_on_bars, tick)
+        overnight_vpoc = _on_va['poc']
+        overnight_vah  = _on_va['vah']
+        overnight_val  = _on_va['val']
     if not overnight_vpoc:
         # Fallback: most recent overnight with data
         for d in sorted(on_by_date.keys(), reverse=True):
-            v = _compute_vpoc(on_by_date[d], tick)
-            if v:
-                overnight_vpoc = v
+            _fb_va = _compute_value_area(on_by_date[d], tick)
+            if _fb_va['poc']:
+                overnight_vpoc = _fb_va['poc']
+                overnight_vah  = _fb_va['vah']
+                overnight_val  = _fb_va['val']
                 break
 
     # MCVPOC 3-day — composite of the 3 most recent completed RTH sessions
@@ -2143,6 +2151,8 @@ async def get_levels(symbol: str):
             'session_vah':    session_vah,
             'session_val':    session_val,
             'overnight_vpoc': overnight_vpoc,
+            'overnight_vah':  overnight_vah,
+            'overnight_val':  overnight_val,
             'mcvpoc_3day':    mcvpoc_3day,
             'daily_pivot':    daily_pivot,
             'weekly_pivot':   weekly_pivot,
@@ -2496,7 +2506,13 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
             session_val       = _session_va['val']
         else:
             session_vpoc = session_vah = session_val = None
-        overnight_vpoc = _compute_vpoc(on_by_date.get(today, []), tick) if on_by_date.get(today) else None
+        overnight_vpoc = overnight_vah = overnight_val = None
+        _on_bars_agent = on_by_date.get(today, [])
+        if _on_bars_agent:
+            _on_va_agent   = _compute_value_area(_on_bars_agent, tick)
+            overnight_vpoc = _on_va_agent['poc']
+            overnight_vah  = _on_va_agent['vah']
+            overnight_val  = _on_va_agent['val']
 
         mc3 = []
         for d in [d for d in sorted_rth if d < today][:3]:
@@ -2555,7 +2571,7 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
 
         levels = {
             'session_vpoc': session_vpoc, 'session_vah': session_vah, 'session_val': session_val,
-            'overnight_vpoc': overnight_vpoc,
+            'overnight_vpoc': overnight_vpoc, 'overnight_vah': overnight_vah, 'overnight_val': overnight_val,
             'mcvpoc_3day': mcvpoc_3day, 'daily_pivot': daily_pivot,
             'weekly_pivot': weekly_pivot, 'weekly_open': weekly_open,
             'ath_intraday': ath, 'prev_high': prev_high, 'prev_low': prev_low,
