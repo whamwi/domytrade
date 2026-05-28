@@ -1416,9 +1416,10 @@ async def refresh_strip_opens():
     now_et     = datetime.now(ET)
     today_et   = now_et.date()
     et_min     = now_et.hour * 60 + now_et.minute
-    # After 9:30 AM ET on a trading day, refresh_signals() owns rth_open for STRIP_TICKERS
-    # via the live quote openPrice field — this function must NOT overwrite that value.
-    is_rth_or_after = now_et.weekday() < 5 and et_min >= (9 * 60 + 30)
+    # Guard: during live RTH, refresh_signals() owns rth_open for STRIP_TICKERS via the
+    # live quote openPrice field, which is more accurate than a daily candle's open.
+    # Do NOT skip after RTH closes — a post-close restart would leave rth_open=0 all night.
+    is_rth = now_et.weekday() < 5 and (9 * 60 + 30) <= et_min < 16 * 60
     refreshed  = 0
     session_found = False   # True once we confirm today has a real RTH candle
 
@@ -1443,10 +1444,16 @@ async def refresh_strip_opens():
             if chosen is None:
                 chosen = candles[-1]   # holiday / pre-market: use last session as placeholder
             if chosen['open']:
-                # During/after RTH, refresh_signals() sets rth_open from live quote openPrice.
-                # Skip writing here to avoid stomping the correct value every 5 minutes.
-                if tick not in STRIP_TICKERS or not is_rth_or_after:
+                # During live RTH skip: refresh_signals() will set the more accurate value.
+                # Pre-market AND post-close: always write so a server restart doesn't leave
+                # rth_open=0 and the entire industries strip blank.
+                if tick not in STRIP_TICKERS or not is_rth:
                     state['rth_open'][sid] = round(chosen['open'], 4)
+                # Outside RTH: seed last_price from the candle's close so the industries
+                # strip shows today's actual close (Schwab returns last=None for ETFs
+                # after hours, so refresh_signals() can't populate it from a live quote).
+                if not is_rth and chosen.get('close'):
+                    state['last_price'][sid] = round(chosen['close'], 4)
                 refreshed += 1
         except Exception as e:
             log.warning('refresh_strip_opens %s: %s', tick, e)
