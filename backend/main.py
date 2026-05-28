@@ -3965,7 +3965,7 @@ async def ask_ai(body: dict = Body(...)):
         user_content = f'{context_block}\n\nTrader question: {message}'
 
         resp = client.models.generate_content(
-            model    = 'gemini-2.0-flash-lite',   # fast, cheap, no thinking overhead, available in v1beta
+            model    = 'gemini-2.5-flash',
             contents = gem_history + [
                 _gtypes.Content(role='user', parts=[_gtypes.Part(text=user_content)])
             ],
@@ -3973,6 +3973,7 @@ async def ask_ai(body: dict = Body(...)):
                 system_instruction = _ASK_AI_SYSTEM,
                 max_output_tokens  = 600,
                 temperature        = 0.4,
+                thinking_config    = _gtypes.ThinkingConfig(thinking_budget=0),  # disable thinking → fast
             ),
         )
         reply = (resp.text or '').strip()
