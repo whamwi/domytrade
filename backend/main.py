@@ -2129,7 +2129,9 @@ async def get_levels(symbol: str):
         ).astimezone(ET).date()
 
     if daily:
-        # Previous completed session
+        # Previous completed session — daily candle gives extended-hours OHLC.
+        # We override prev_high/prev_low/prev_close/daily_pivot below with 1-min
+        # RTH bars so we always use true RTH values (9:30–4:00 PM), not 5 PM settle.
         prior_daily = [c for c in daily if _bar_date(c) < today]
         if prior_daily:
             prev        = prior_daily[-1]
@@ -2137,6 +2139,20 @@ async def get_levels(symbol: str):
             prev_low    = prev['low']
             prev_close  = prev['close']
             daily_pivot = round((prev['high'] + prev['low'] + prev['close']) / 3, 4)
+
+    # ── Override prev_high / prev_low / prev_close / daily_pivot from 1-min RTH ──
+    # Daily Schwab candles for futures include extended hours (close = ~5 PM settle).
+    # Use the last 1-min RTH bar for a true 4:00 PM close.
+    if prior_rth_dates_asc:
+        _prior_bars_1m = rth_by_date.get(prior_rth_dates_asc[0], [])
+        if _prior_bars_1m:
+            _sorted_1m  = sorted(_prior_bars_1m, key=lambda b: b['datetime'])
+            prev_high   = max(b['high'] for b in _prior_bars_1m)
+            prev_low    = min(b['low']  for b in _prior_bars_1m)
+            prev_close  = _sorted_1m[-1]['close']   # last bar = 4:00 PM bar close
+            daily_pivot = round((prev_high + prev_low + prev_close) / 3, 4)
+
+    if daily:
 
         # ATH intraday (rolling 30-day + today's session so far)
         ath_intraday = max(c['high'] for c in daily)
