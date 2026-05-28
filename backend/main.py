@@ -1892,14 +1892,13 @@ def get_industries():
         sym  = ticker_map.get(tick)
         if not sym:
             continue
-        sid      = sym['id']
-        rth_open = state['rth_open'].get(sid, 0)
-        # Always use last_price (live during RTH, today's close after 4 PM).
-        # Fall back to prev_close (yesterday's close) only when last_price is unavailable.
-        # Using prev_close exclusively after RTH was a bug: it computes
-        # (yesterday_close - today_open) / today_open, mixing two different sessions.
-        current  = state['last_price'].get(sid, 0) or state['prev_close'].get(sid, 0)
-        pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
+        sid        = sym['id']
+        prev_close = state['prev_close'].get(sid, 0)
+        # current price: live last during RTH, today's candle close after 4 PM.
+        current    = state['last_price'].get(sid, 0) or prev_close
+        # Standard daily % change: vs yesterday's close (includes the overnight gap).
+        # This matches TOS / Bloomberg convention and gives the full day's move.
+        pct        = round((current - prev_close) / prev_close * 100, 2) if (prev_close and current) else 0.0
         result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
 
     # MAG10 index — same formula as TOS ThinkScript:
