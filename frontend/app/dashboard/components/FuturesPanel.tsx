@@ -529,7 +529,7 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
         style={{
           position: 'fixed', top: '50%', left: '50%',
           transform: 'translate(-50%, -50%)',
-          width: '480px', maxHeight: '85vh',
+          width: '480px', maxHeight: '92vh',
           display: 'flex', flexDirection: 'column',
           background: 'var(--bg-panel)',
           border: '1px solid var(--border)',
