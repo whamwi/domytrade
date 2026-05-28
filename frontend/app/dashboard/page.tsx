@@ -109,53 +109,6 @@ export default function DashboardPage() {
   const [warmRetries, setWarmRetries] = useState(0)
   const warmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // ── Next-event bar ─────────────────────────────────────────────────────────
-  const [econEvents, setEconEvents] = useState<{ title: string; date: string; impact: string; country: string }[]>([])
-  const [eventTick, setEventTick]   = useState(0)   // incremented every second to force re-render
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/briefing`, { cache: 'no-store' })
-        if (res.ok) { const j = await res.json(); setEconEvents(j.events ?? []) }
-      } catch { /* silent */ }
-    }
-    load()
-    const iv = setInterval(load, 30 * 60 * 1000)   // refresh every 30 min
-    return () => clearInterval(iv)
-  }, [])
-
-  useEffect(() => {
-    const iv = setInterval(() => setEventTick(t => t + 1), 1000)
-    return () => clearInterval(iv)
-  }, [])
-
-  // Compute next group of high/medium USD events (events within 90s of each other = same release)
-  const _nowMs = Date.now() + eventTick * 0   // eventTick dependency forces re-eval each second
-  const _upcoming = econEvents
-    .filter(e => new Date(e.date).getTime() > _nowMs - 5 * 60_000 &&
-                 (e.impact === 'High' || e.impact === 'Medium') && e.country === 'USD')
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-  const _nextTime  = _upcoming[0] ? new Date(_upcoming[0].date).getTime() : null
-  const _nextGroup = _nextTime
-    ? _upcoming.filter(e => Math.abs(new Date(e.date).getTime() - _nextTime) < 90_000)
-    : []
-  const _msUntil  = _nextTime !== null ? _nextTime - Date.now() : null
-  const _secUntil = _msUntil !== null ? Math.floor(_msUntil / 1000) : null
-  const _isNow    = _secUntil !== null && _secUntil <= 0 && _secUntil > -5 * 60
-  const _isUrgent = _secUntil !== null && _secUntil > 0 && _secUntil <= 30 * 60
-  const _isSoon   = _secUntil !== null && _secUntil > 30 * 60 && _secUntil <= 2 * 3600
-  const _countdownStr = (() => {
-    if (_secUntil === null) return ''
-    if (_isNow) return 'NOW'
-    if (_secUntil < 3600) {
-      const m = Math.floor(_secUntil / 60), s = _secUntil % 60
-      return `${m}m ${s.toString().padStart(2,'0')}s`
-    }
-    const h = Math.floor(_secUntil / 3600), m = Math.floor((_secUntil % 3600) / 60)
-    return `${h}h ${m}m`
-  })()
-
   // Refresh countdown: counts down from 60→0 after each successful data fetch
   const [countdown, setCountdown] = useState<number>(60)
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -448,51 +401,6 @@ export default function DashboardPage() {
                   {countdown}s
                 </span>
               </div>
-            )}
-            {/* Next-event chip — always visible, live countdown */}
-            {_nextGroup.length > 0 && _msUntil !== null && (
-              <button
-                onClick={() => setBriefingOpen(true)}
-                title="Open economic calendar"
-                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all"
-                style={{
-                  background: _isNow    ? 'rgba(248,113,113,0.18)'
-                            : _isUrgent ? 'rgba(248,113,113,0.12)'
-                            : _isSoon   ? 'rgba(251,191,36,0.10)'
-                            :             'rgba(255,255,255,0.04)',
-                  border:     _isNow    ? '1px solid rgba(248,113,113,0.6)'
-                            : _isUrgent ? '1px solid rgba(248,113,113,0.35)'
-                            : _isSoon   ? '1px solid rgba(251,191,36,0.3)'
-                            :             '1px solid rgba(255,255,255,0.08)',
-                  color:      _isNow    ? '#f87171'
-                            : _isUrgent ? '#fca5a5'
-                            : _isSoon   ? '#fbbf24'
-                            :             'var(--text-muted)',
-                  animation:  _isNow ? 'pulse 1s ease-in-out infinite' : undefined,
-                }}
-              >
-                <span style={{ fontSize: '10px' }}>
-                  {_isNow ? '⚡' : _isUrgent ? '⚠' : '📅'}
-                </span>
-                <span style={{ maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {_nextGroup.map(e => e.title.replace(/ m\/m| y\/y| q\/q/g, '')).join(' · ')}
-                </span>
-                <span style={{ opacity: 0.7, fontSize: '10px' }}>
-                  {new Date(_nextGroup[0].date).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false })} ET
-                </span>
-                <span
-                  className="rounded px-1 py-0.5 tabular-nums"
-                  style={{
-                    background: _isNow    ? 'rgba(248,113,113,0.25)'
-                              : _isUrgent ? 'rgba(248,113,113,0.15)'
-                              : _isSoon   ? 'rgba(251,191,36,0.15)'
-                              :             'rgba(255,255,255,0.06)',
-                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.02em',
-                  }}
-                >
-                  {_countdownStr}
-                </span>
-              </button>
             )}
             <button
               onClick={() => setBriefingOpen(true)}

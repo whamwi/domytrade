@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef } from 'react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 
@@ -32,104 +32,84 @@ export function playAlertSound() {
       osc.start(start)
       osc.stop(start + 0.35)
     })
-    // Close context shortly after tones finish to free resources
     setTimeout(() => ctx.close(), 1000)
   } catch {
-    // AudioContext blocked (user hasn't interacted yet) — silent fail
+    // AudioContext blocked — silent fail
   }
 }
 
 interface Options {
-  onAlert: (ev: EconAlert) => void   // callback so page can show toast
+  onAlert: (ev: EconAlert) => void
 }
 
+/**
+ * Polls the economic calendar every 30 s and fires a beep + toast
+ * for every USD event that is 13–17 minutes away.
+ *
+ * Using a 30-second polling interval (instead of one-shot setTimeout) makes
+ * this robust against:
+ *   - page loads after the 15-min mark
+ *   - browser tab throttling of long timers
+ *   - calendar refreshes mid-session
+ */
 export function useEconomicAlerts({ onAlert }: Options) {
-  const timersRef    = useRef<ReturnType<typeof setTimeout>[]>([])
-  const scheduledRef = useRef<Set<string>>(new Set())
-  // Batch window: group events firing within the same minute into one alert
-  const batchRef     = useRef<{ timer: ReturnType<typeof setTimeout> | null; events: EconAlert[] }>({
-    timer: null, events: [],
-  })
+  const eventsRef  = useRef<EconAlert[]>([])
+  const alertedRef = useRef<Set<string>>(new Set())  // keyed by event.date — prevents duplicate alerts
+  const onAlertRef = useRef(onAlert)
+  onAlertRef.current = onAlert   // always call the latest version
 
-  const clearTimers = useCallback(() => {
-    timersRef.current.forEach(clearTimeout)
-    timersRef.current = []
-    if (batchRef.current.timer) {
-      clearTimeout(batchRef.current.timer)
-      batchRef.current = { timer: null, events: [] }
+  // Fetch calendar every 30 min to pick up updates
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/briefing`, { cache: 'no-store' })
+        if (!res.ok) return
+        const json = await res.json()
+        // All USD events — alert system handles filtering by impact at fire time
+        eventsRef.current = (json.events ?? []).filter((e: EconAlert) => e.country === 'USD')
+      } catch { /* network error — keep existing events */ }
     }
+    load()
+    const iv = setInterval(load, 30 * 60_000)
+    return () => clearInterval(iv)
   }, [])
 
-  /** Collect events that fire within 200ms of each other into one toast + one beep. */
-  const queueAlert = useCallback((ev: EconAlert) => {
-    batchRef.current.events.push(ev)
-    if (batchRef.current.timer) return   // already waiting to flush
-
-    batchRef.current.timer = setTimeout(() => {
-      const batch = batchRef.current.events
-      batchRef.current = { timer: null, events: [] }
-
-      // One beep regardless of how many events fired at once
-      playAlertSound()
-
-      // If multiple events share the same time, combine titles into one alert
-      if (batch.length === 1) {
-        onAlert(batch[0])
-      } else {
-        const combined: EconAlert = {
-          ...batch[0],
-          title: batch.map(e => e.title).join('  ·  '),
-        }
-        onAlert(combined)
-      }
-    }, 200)
-  }, [onAlert])
-
-  const scheduleAlerts = useCallback(async () => {
-    clearTimers()
-    scheduledRef.current.clear()
-
-    try {
-      const res  = await fetch(`${API_URL}/api/briefing`, { cache: 'no-store' })
-      if (!res.ok) return
-      const json = await res.json()
-      const events: EconAlert[] = (json.events ?? []).filter(
-        (e: EconAlert) => e.country === 'USD'
-      )
-
-      const now = Date.now()
-      let scheduled = 0
-
-      for (const ev of events) {
-        const fireAt = new Date(ev.date).getTime()
-        const alertAt = fireAt - 15 * 60 * 1000   // 15 min before event
-        const delay   = alertAt - now
-
-        // Only schedule future events (skip if already past or >7 days out)
-        if (delay <= 0 || delay > 7 * 24 * 60 * 60 * 1000) continue
-        if (scheduledRef.current.has(ev.date)) continue
-        scheduledRef.current.add(ev.date)
-
-        const t = setTimeout(() => queueAlert(ev), delay)
-        timersRef.current.push(t)
-        scheduled++
-      }
-
-      if (scheduled > 0) {
-        console.info(`[EconAlerts] ${scheduled} USD events scheduled`)
-      }
-    } catch {
-      // Network error — will retry on next refresh cycle
-    }
-  }, [clearTimers, queueAlert])
-
+  // Check every 30 s: fire alert for any USD event that is 13–17 min away
   useEffect(() => {
-    scheduleAlerts()
-    // Re-schedule every 6 hours to pick up any calendar updates
-    const interval = setInterval(scheduleAlerts, 6 * 60 * 60 * 1000)
-    return () => {
-      clearTimers()
-      clearInterval(interval)
+    const check = () => {
+      const now    = Date.now()
+      const toFire: EconAlert[] = []
+
+      for (const ev of eventsRef.current) {
+        // Only alert on High and Medium impact events
+        if (ev.impact !== 'High' && ev.impact !== 'Medium') continue
+        if (alertedRef.current.has(ev.date)) continue
+
+        const minUntil = (new Date(ev.date).getTime() - now) / 60_000
+
+        // Alert window: 13 → 17 minutes before the event (wide window catches a 30-s check interval)
+        if (minUntil >= 13 && minUntil <= 17) {
+          alertedRef.current.add(ev.date)
+          toFire.push(ev)
+        }
+      }
+
+      if (toFire.length === 0) return
+
+      // Group same-time events into one beep + one toast
+      playAlertSound()
+      if (toFire.length === 1) {
+        onAlertRef.current(toFire[0])
+      } else {
+        onAlertRef.current({
+          ...toFire[0],
+          title: toFire.map(e => e.title).join('  ·  '),
+        })
+      }
     }
-  }, [scheduleAlerts, clearTimers])
+
+    check()                                    // run immediately on mount
+    const iv = setInterval(check, 30_000)      // then every 30 s
+    return () => clearInterval(iv)
+  }, [])
 }
