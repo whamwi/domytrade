@@ -59,26 +59,16 @@ interface FuturesPanelProps {
 
 const LEVEL_LABELS: Record<string, string> = {
   prev_high:            'Prior Day High',
-  // Volume profile
-  prior_rth_vah:        'Prior RTH  —  VAH',
-  prior_rth_vpoc:       'Prior RTH  —  POC',
-  prior_rth_val:        'Prior RTH  —  VAL',
-  overnight_vah:        'Overnight  —  VAH',
-  overnight_vpoc:       'Overnight  —  POC',
-  overnight_val:        'Overnight  —  VAL',
-  developing_vah:       'Developing  —  VAH',
-  developing_vpoc:      'Developing  —  POC',
-  developing_val:       'Developing  —  VAL',
-  // Dalton TPO
-  prior_rth_tpo_vah:    'TPO Prior RTH  —  VAH',
-  prior_rth_tpo_vpoc:   'TPO Prior RTH  —  POC',
-  prior_rth_tpo_val:    'TPO Prior RTH  —  VAL',
-  overnight_tpo_vah:    'TPO Overnight  —  VAH',
-  overnight_tpo_vpoc:   'TPO Overnight  —  POC',
-  overnight_tpo_val:    'TPO Overnight  —  VAL',
-  developing_tpo_vah:   'TPO Developing  —  VAH',
-  developing_tpo_vpoc:  'TPO Developing  —  POC',
-  developing_tpo_val:   'TPO Developing  —  VAL',
+  // Dalton TPO — primary display (volume profile hidden, kept in backend for agent)
+  prior_rth_tpo_vah:    'Prior RTH  —  VAH',
+  prior_rth_tpo_vpoc:   'Prior RTH  —  POC',
+  prior_rth_tpo_val:    'Prior RTH  —  VAL',
+  overnight_tpo_vah:    'Overnight  —  VAH',
+  overnight_tpo_vpoc:   'Overnight  —  POC',
+  overnight_tpo_val:    'Overnight  —  VAL',
+  developing_tpo_vah:   'Developing  —  VAH',
+  developing_tpo_vpoc:  'Developing  —  POC',
+  developing_tpo_val:   'Developing  —  VAL',
   // Other
   mcvpoc_3day:          '3-Day Composite POC',
   vwap:                 'VWAP  —  Fair Value',
@@ -89,26 +79,16 @@ const LEVEL_LABELS: Record<string, string> = {
 }
 
 const LEVEL_HELP: Record<string, string> = {
-  // Volume profile
-  prior_rth_vah:       'Prior RTH Value Area High — upper boundary of the 70% volume zone from yesterday\'s cash session (9:30–4:00 ET). Price opening above VAH and accepting there signals bullish continuation. Failure to hold = likely rejection back inside the value area.',
-  prior_rth_vpoc:      'Prior RTH Point of Control — price where the most volume traded in yesterday\'s cash session. The strongest single-session magnet. Price naturally gravitates back to this level.',
-  prior_rth_val:       'Prior RTH Value Area Low — lower boundary of the 70% volume zone from yesterday\'s cash session. Price below VAL means sellers dominate. A reclaim of VAL with volume triggers the gap-fill trade toward POC.',
-  overnight_vah:       'Overnight Value Area High — upper boundary of the 70% volume zone from tonight\'s pre-market session (6 PM–9:30 AM). Shows where overnight institutions found the upper edge of fair value.',
-  overnight_vpoc:      'Overnight Point of Control — highest-volume price from the overnight session. Where institutions were most active before the open. A gap between this and Prior RTH POC signals directional intent.',
-  overnight_val:       'Overnight Value Area Low — lower boundary of overnight fair value. Price opening between overnight VAL and VAH = inside overnight value; expect rotation. Opening outside = directional move likely.',
-  developing_vah:      'Developing Value Area High — the upper edge of today\'s live RTH value area, updating tick by tick. Shows where the market is currently accepting value during this session.',
-  developing_vpoc:     'Developing Point of Control — the highest-volume price of today\'s RTH session so far. This is the current session magnet. As the day builds, watch for price to test and either accept or reject this level.',
-  developing_val:      'Developing Value Area Low — the lower edge of today\'s live RTH value area. Price holding above it = buyers in control for the session. Breaking below = value migrating lower.',
-  // Dalton TPO
-  prior_rth_tpo_vah:   'Dalton TPO — Prior RTH VAH. Computed using Dalton\'s original Time Price Opportunity method: each 30-min period gets 1 TPO per tick touched. Value Area = 70% of total TPOs. Exact from 1-min bars — no volume assumptions.',
-  prior_rth_tpo_vpoc:  'Dalton TPO — Prior RTH POC. The price touched by the most 30-min periods in yesterday\'s RTH session. This is Dalton\'s original Point of Control — time-based, not volume-weighted.',
-  prior_rth_tpo_val:   'Dalton TPO — Prior RTH VAL. Lower boundary of the 70% TPO zone from yesterday\'s session. Dalton\'s original method — each 30-min period counts equally regardless of volume.',
-  overnight_tpo_vah:   'Dalton TPO — Overnight VAH. Upper boundary of the 70% TPO zone from the overnight session. Each 30-min overnight period contributes equally — shows time-based overnight acceptance.',
-  overnight_tpo_vpoc:  'Dalton TPO — Overnight POC. The price where overnight market spent the most 30-min periods. Dalton\'s pure time measure of overnight control.',
-  overnight_tpo_val:   'Dalton TPO — Overnight VAL. Lower boundary of overnight TPO value. Below this = market spent minimal overnight time; directional move likely on open.',
-  developing_tpo_vah:  'Dalton TPO — Developing VAH. Live upper boundary of today\'s TPO value area, updating every 30 minutes as new periods complete.',
-  developing_tpo_vpoc: 'Dalton TPO — Developing POC. Today\'s current TPO point of control — the price being most frequently revisited across 30-min periods so far. The day\'s current fulcrum.',
-  developing_tpo_val:  'Dalton TPO — Developing VAL. Live lower boundary of today\'s TPO value. Holding above = buyers rotating within value. Breakdown = migration of value lower.',
+  // Dalton TPO — time-based, exact from 1-min bars (30-min periods)
+  prior_rth_tpo_vah:   'Prior RTH Value Area High — upper boundary of the 70% TPO zone from yesterday\'s cash session (9:30–4:00 ET). Dalton\'s original method: each 30-min period marks every price it touched (1 TPO per tick). Price opening above VAH and accepting = bullish continuation. Failure to hold = rejection back into value.',
+  prior_rth_tpo_vpoc:  'Prior RTH Point of Control — price touched by the most 30-min periods in yesterday\'s session. Dalton\'s time-based POC: exact from 1-min bars, no intrabar volume guessing. The strongest single-session magnet.',
+  prior_rth_tpo_val:   'Prior RTH Value Area Low — lower boundary of the 70% TPO zone from yesterday\'s session. Price below VAL = market rejecting prior value. Reclaim of VAL triggers the rotation trade back toward POC.',
+  overnight_tpo_vah:   'Overnight Value Area High — upper boundary of the 70% TPO zone from the overnight session (6 PM–9:30 AM ET). Shows where overnight participants accepted the upper edge of fair value.',
+  overnight_tpo_vpoc:  'Overnight Point of Control — price where the overnight market spent the most 30-min periods. The overnight fulcrum. Gap between this and Prior RTH POC signals directional intent for the open.',
+  overnight_tpo_val:   'Overnight Value Area Low — lower boundary of overnight TPO value. Opening inside (VAL–VAH) = rotational day likely. Opening outside = directional move expected.',
+  developing_tpo_vah:  'Developing Value Area High — live upper boundary of today\'s TPO value area. Updates every 30 minutes as new periods complete. Shows where today\'s session is currently accepting the upper edge of value.',
+  developing_tpo_vpoc: 'Developing Point of Control — today\'s current TPO POC, the price revisited by the most 30-min periods so far. The session\'s live fulcrum — watch for price to accept or reject it as the day builds.',
+  developing_tpo_val:  'Developing Value Area Low — live lower boundary of today\'s TPO value. Holding above = buyers in control of value migration. Breaking below = value shifting lower.',
   // Other
   mcvpoc_3day:         'The single price with the most volume across the last 3 RTH sessions combined. A powerful multi-day magnet — harder to break than a single-session POC.',
   daily_pivot:         '(Yesterday\'s High + Low + Close) ÷ 3. A neutral reference: above it = bullish bias for the day, below = bearish.',
@@ -121,33 +101,23 @@ const LEVEL_HELP: Record<string, string> = {
 
 const LEVEL_COLOR: Record<string, string> = {
   prev_high:            '#fbbf24',   // amber — prior day reference
-  // Volume profile (cool palette)
-  prior_rth_vah:        '#818cf8',   // indigo — prior RTH value area
-  prior_rth_vpoc:       '#a78bfa',   // purple — prior RTH POC
-  prior_rth_val:        '#818cf8',   // indigo
-  overnight_vah:        '#22d3ee',   // cyan — overnight session
-  overnight_vpoc:       '#06b6d4',   // cyan darker
-  overnight_val:        '#22d3ee',   // cyan
-  developing_vah:       '#34d399',   // emerald — live developing session
-  developing_vpoc:      '#10b981',   // emerald darker
-  developing_val:       '#34d399',   // emerald
-  // Dalton TPO (warm palette — gold/amber to distinguish from volume)
-  prior_rth_tpo_vah:    '#fcd34d',   // amber — TPO prior RTH
-  prior_rth_tpo_vpoc:   '#f59e0b',   // amber darker — TPO POC
-  prior_rth_tpo_val:    '#fcd34d',   // amber
-  overnight_tpo_vah:    '#fdba74',   // orange-amber — TPO overnight
-  overnight_tpo_vpoc:   '#fb923c',   // orange — TPO overnight POC
-  overnight_tpo_val:    '#fdba74',   // orange-amber
-  developing_tpo_vah:   '#86efac',   // light green — TPO developing
-  developing_tpo_vpoc:  '#4ade80',   // green — TPO developing POC
-  developing_tpo_val:   '#86efac',   // light green
+  // Dalton TPO — primary display (original session palette)
+  prior_rth_tpo_vah:    '#818cf8',   // indigo — prior RTH value area
+  prior_rth_tpo_vpoc:   '#a78bfa',   // purple — prior RTH POC
+  prior_rth_tpo_val:    '#818cf8',   // indigo
+  overnight_tpo_vah:    '#22d3ee',   // cyan — overnight session
+  overnight_tpo_vpoc:   '#06b6d4',   // cyan darker
+  overnight_tpo_val:    '#22d3ee',   // cyan
+  developing_tpo_vah:   '#34d399',   // emerald — live developing session
+  developing_tpo_vpoc:  '#10b981',   // emerald darker
+  developing_tpo_val:   '#34d399',   // emerald
   // Other
   mcvpoc_3day:          '#c084fc',   // soft purple — composite
   ib_high:              '#f97316',   // orange — initial balance
   ib_low:               '#f97316',   // orange
   daily_pivot:          '#60a5fa',   // blue — pivot
   prev_low:             '#4ade80',   // green — floors
-  vwap:            '#f59e0b',   // amber — fair value
+  vwap:                 '#f59e0b',   // amber — fair value
 }
 
 const NVPOC_COLOR = '#22d3ee'  // cyan — naked/unfilled volume nodes
