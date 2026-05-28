@@ -1,6 +1,8 @@
 'use client'
 
 import { useState } from 'react'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 import SwingBar from './SwingBar'
 import { ETF_META } from './etfMeta'
 import ETFPanel, { EtfPanelInfo } from './ETFPanel'
@@ -112,7 +114,7 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
   const fetchAdvisory = async () => {
     setAi(prev => ({ ...prev, loading: true, open: true }))
     try {
-      const res  = await fetch('/api/ai/signal-advisory', {
+      const res  = await fetch(`${API_URL}/api/ai/signal-advisory`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ symbol, model, side }),
@@ -177,15 +179,17 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
           <div
             className="absolute bottom-full left-1/2 z-50 mb-2 rounded-lg p-3 shadow-xl"
             style={{
-              transform:  'translateX(-50%)',
-              background: 'var(--bg-card)',
-              border:     '1px solid var(--border)',
-              minWidth:   '220px',
-              maxWidth:   '280px',
+              transform:       'translateX(-50%)',
+              background:      '#16131f',
+              backgroundImage: 'none',
+              border:          '1px solid rgba(168,85,247,0.35)',
+              boxShadow:       '0 0 0 1px rgba(0,0,0,0.8), 0 16px 40px rgba(0,0,0,0.85)',
+              minWidth:        '220px',
+              maxWidth:        '280px',
             }}
           >
             {ai.loading ? (
-              <div style={{ color: 'var(--text-dim)', fontSize: '12px', textAlign: 'center' }}>
+              <div style={{ color: '#64748b', fontSize: '12px', textAlign: 'center' }}>
                 Analyzing…
               </div>
             ) : (
@@ -199,26 +203,26 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
                     >
                       {AI_VERDICT_STYLE[ai.verdict].dot} {ai.verdict}
                     </span>
-                    <span style={{ color: 'var(--text-dim)', fontSize: '10px' }}>
+                    <span style={{ color: '#64748b', fontSize: '10px' }}>
                       {symbol} · {side}
                     </span>
                   </div>
                 )}
                 {/* Reason */}
-                <div style={{ color: 'var(--text-primary)', fontSize: '12px', lineHeight: '1.5' }}>
+                <div style={{ color: '#e2e8f0', fontSize: '12px', lineHeight: '1.5' }}>
                   {ai.reason}
                 </div>
                 {/* Actions */}
-                <div className="flex items-center justify-between mt-2.5" style={{ borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
+                <div className="flex items-center justify-between mt-2.5" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px' }}>
                   <button
                     onClick={(e) => { e.stopPropagation(); fetchAdvisory() }}
-                    style={{ color: 'var(--text-dim)', fontSize: '11px', background: 'none', border: 'none', cursor: 'pointer' }}
+                    style={{ color: '#64748b', fontSize: '11px', background: 'none', border: 'none', cursor: 'pointer' }}
                   >
                     ↺ refresh
                   </button>
                   <button
                     onClick={handleClose}
-                    style={{ color: 'var(--text-dim)', fontSize: '11px', background: 'none', border: 'none', cursor: 'pointer' }}
+                    style={{ color: '#64748b', fontSize: '11px', background: 'none', border: 'none', cursor: 'pointer' }}
                   >
                     close
                   </button>
