@@ -48,6 +48,7 @@ interface LevelsResponse {
   ib_high:     number | null
   ib_low:      number | null
   ib_complete: boolean
+  ib_source:   'today' | 'prior' | null
   levels:      Levels
 }
 
@@ -327,17 +328,22 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
   }
 
   // Merge IB levels from top-level response (not inside data.levels)
+  // ib_source: 'today' = current session, 'prior' = showing yesterday's completed IB
   if (data?.ib_high != null) {
-    const ibLabel = data.ib_complete
-      ? LEVEL_LABELS['ib_high']
-      : `${LEVEL_LABELS['ib_high']}  (developing)`
-    levelRows.push({ price: data.ib_high, key: 'ib_high', label: ibLabel, dist: last > 0 ? data.ib_high - last : 0 })
+    const ibSuffix = data.ib_complete
+      ? ''
+      : data.ib_source === 'prior'
+        ? '  (prior)'
+        : '  (developing)'
+    levelRows.push({ price: data.ib_high, key: 'ib_high', label: `${LEVEL_LABELS['ib_high']}${ibSuffix}`, dist: last > 0 ? data.ib_high - last : 0 })
   }
   if (data?.ib_low != null) {
-    const ibLabel = data.ib_complete
-      ? LEVEL_LABELS['ib_low']
-      : `${LEVEL_LABELS['ib_low']}  (developing)`
-    levelRows.push({ price: data.ib_low, key: 'ib_low', label: ibLabel, dist: last > 0 ? data.ib_low - last : 0 })
+    const ibSuffix = data.ib_complete
+      ? ''
+      : data.ib_source === 'prior'
+        ? '  (prior)'
+        : '  (developing)'
+    levelRows.push({ price: data.ib_low, key: 'ib_low', label: `${LEVEL_LABELS['ib_low']}${ibSuffix}`, dist: last > 0 ? data.ib_low - last : 0 })
   }
 
   // Merge naked VPOCs — skip any whose price is already shown as prior_rth_vpoc or mcvpoc_3day

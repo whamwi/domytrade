@@ -2250,18 +2250,43 @@ async def get_levels(symbol: str):
     if _rth_open_panel and _prev_settle_panel:
         gap = round(_rth_open_panel - _prev_settle_panel, 2)
 
-    # Initial Balance from today's raw_1min bars (9:30–10:30 ET)
+    # Initial Balance from 9:30–10:30 ET bars.
+    # Scope to today only; fall back to most recent prior day when pre-market.
+    # (raw_1min spans 5 days so naively including all dates would mix multiple IB windows.)
     ib_s_levels = 9 * 60 + 30
     ib_e_levels = 10 * 60 + 30
-    ib_bars_levels = []
+    today_ib_bars: list[dict] = []
+    prior_ib_by_date: dict = {}
     for c in raw_1min:
-        dt_c   = datetime.fromtimestamp(c['datetime']/1000, tz=timezone.utc).astimezone(ET)
+        dt_c    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
         t_min_c = dt_c.hour * 60 + dt_c.minute
+        c_date  = dt_c.date()
         if ib_s_levels <= t_min_c < ib_e_levels:
-            ib_bars_levels.append(c)
-    ib_high = max(c['high'] for c in ib_bars_levels) if ib_bars_levels else None
-    ib_low  = min(c['low']  for c in ib_bars_levels) if ib_bars_levels else None
-    ib_complete = (now_et.weekday() < 5 and now_et.hour * 60 + now_et.minute >= ib_e_levels)
+            if c_date == today:
+                today_ib_bars.append(c)
+            elif c_date < today:
+                prior_ib_by_date.setdefault(c_date, []).append(c)
+
+    if today_ib_bars:
+        ib_high    = max(c['high'] for c in today_ib_bars)
+        ib_low     = min(c['low']  for c in today_ib_bars)
+        ib_source  = 'today'
+    elif prior_ib_by_date:
+        _ib_prior_date = max(prior_ib_by_date.keys())   # most recent prior day with IB bars
+        _ib_prior_bars = prior_ib_by_date[_ib_prior_date]
+        ib_high   = max(c['high'] for c in _ib_prior_bars)
+        ib_low    = min(c['low']  for c in _ib_prior_bars)
+        ib_source = 'prior'
+    else:
+        ib_high = ib_low = None
+        ib_source = None
+
+    # ib_complete = today's IB window has fully closed (after 10:30 on a weekday)
+    ib_complete = (
+        ib_source == 'today'
+        and now_et.weekday() < 5
+        and now_et.hour * 60 + now_et.minute >= ib_e_levels
+    )
 
     _result = {
         'symbol':      symbol,
@@ -2271,6 +2296,7 @@ async def get_levels(symbol: str):
         'ib_high':     ib_high,
         'ib_low':      ib_low,
         'ib_complete': ib_complete,
+        'ib_source':   ib_source,    # 'today' | 'prior' | null
         'levels': {
             # ── Prior RTH (volume profile) ───────────────────────────────────
             'prior_rth_vah':       prior_rth_vah,
