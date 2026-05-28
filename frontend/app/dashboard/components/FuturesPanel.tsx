@@ -68,9 +68,9 @@ const LEVEL_LABELS: Record<string, string> = {
   overnight_tpo_vah:    'Overnight  —  VAH',
   overnight_tpo_vpoc:   'Overnight  —  POC',
   overnight_tpo_val:    'Overnight  —  VAL',
-  developing_tpo_vah:   'Developing  —  VAH',
-  developing_tpo_vpoc:  'Developing  —  POC',
-  developing_tpo_val:   'Developing  —  VAL',
+  developing_tpo_vah:   'This Session  —  VAH',
+  developing_tpo_vpoc:  'This Session  —  POC',
+  developing_tpo_val:   'This Session  —  VAL',
   // Other
   mcvpoc_3day:          '3-Day Composite POC',
   vwap:                 'VWAP  —  Fair Value',
@@ -88,9 +88,9 @@ const LEVEL_HELP: Record<string, string> = {
   overnight_tpo_vah:   'Overnight Value Area High — upper boundary of the 70% TPO zone from the overnight session (6 PM–9:30 AM ET). Shows where overnight participants accepted the upper edge of fair value.',
   overnight_tpo_vpoc:  'Overnight Point of Control — price where the overnight market spent the most 30-min periods. The overnight fulcrum. Gap between this and Prior RTH POC signals directional intent for the open.',
   overnight_tpo_val:   'Overnight Value Area Low — lower boundary of overnight TPO value. Opening inside (VAL–VAH) = rotational day likely. Opening outside = directional move expected.',
-  developing_tpo_vah:  'Developing Value Area High — live upper boundary of today\'s TPO value area. Updates every 30 minutes as new periods complete. Shows where today\'s session is currently accepting the upper edge of value.',
-  developing_tpo_vpoc: 'Developing Point of Control — today\'s current TPO POC, the price revisited by the most 30-min periods so far. The session\'s live fulcrum — watch for price to accept or reject it as the day builds.',
-  developing_tpo_val:  'Developing Value Area Low — live lower boundary of today\'s TPO value. Holding above = buyers in control of value migration. Breaking below = value shifting lower.',
+  developing_tpo_vah:  'This Session Value Area High — live upper boundary of today\'s TPO value area. Updates every 30 minutes as new periods complete. Shows where today\'s session is currently accepting the upper edge of value.',
+  developing_tpo_vpoc: 'This Session Point of Control — today\'s current TPO POC, the price revisited by the most 30-min periods so far. The session\'s live fulcrum — watch for price to accept or reject it as the day builds.',
+  developing_tpo_val:  'This Session Value Area Low — live lower boundary of today\'s TPO value. Holding above = buyers in control of value migration. Breaking below = value shifting lower.',
   // Other
   mcvpoc_3day:         'The single price with the most volume across the last 3 RTH sessions combined. A powerful multi-day magnet — harder to break than a single-session POC.',
   daily_pivot:         '(Yesterday\'s High + Low + Close) ÷ 3. A neutral reference: above it = bullish bias for the day, below = bearish.',
@@ -419,7 +419,7 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
   const [data, setData]             = useState<LevelsResponse | null>(null)
   const [loading, setLoading]       = useState(true)
   const [nakedVpocs, setNakedVpocs] = useState<NakedVpoc[]>([])
-  const [view, setView]             = useState<'list' | 'chart'>('list')
+  const [view, setView]             = useState<'list' | 'chart'>('chart')
 
   // Fetch levels + naked VPOCs concurrently
   useEffect(() => {
@@ -588,7 +588,7 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
             </span>
             <div className="flex items-center gap-2">
               {/* View toggle */}
-              {['list', 'chart'].map(v => (
+              {['chart', 'list'].map(v => (
                 <button key={v} onClick={() => setView(v as 'list' | 'chart')}
                   style={{
                     fontSize: '10px', fontWeight: 600, padding: '2px 8px',
