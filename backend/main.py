@@ -3965,17 +3965,20 @@ async def ask_ai(body: dict = Body(...)):
         user_content = f'{context_block}\n\nTrader question: {message}'
 
         resp = client.models.generate_content(
-            model    = 'gemini-2.5-flash',
+            model    = 'gemini-2.0-flash',   # 2.5-flash has thinking overhead → Railway timeout
             contents = gem_history + [
                 _gtypes.Content(role='user', parts=[_gtypes.Part(text=user_content)])
             ],
             config   = _gtypes.GenerateContentConfig(
                 system_instruction = _ASK_AI_SYSTEM,
-                max_output_tokens  = 400,
+                max_output_tokens  = 600,
                 temperature        = 0.4,
             ),
         )
-        return {'reply': resp.text.strip()}
+        reply = (resp.text or '').strip()
+        if not reply:
+            return {'reply': 'No response from AI — please try again.'}
+        return {'reply': reply}
 
     except Exception as exc:
         log.warning('ask_ai Gemini error: %s', exc)

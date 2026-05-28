@@ -41,11 +41,20 @@ export default function AskAI() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ message: msg, history }),
+        signal:  AbortSignal.timeout(45_000),   // 45s — Gemini can be slow under load
       })
+      if (!res.ok) {
+        setHistory([...next, { role: 'model', content: `Server error ${res.status} — try again.` }])
+        return
+      }
       const data = await res.json()
       setHistory([...next, { role: 'model', content: data.reply || '—' }])
-    } catch {
-      setHistory([...next, { role: 'model', content: 'Network error — try again.' }])
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const friendly = msg.includes('abort') || msg.includes('timeout')
+        ? 'Request timed out — the AI is slow right now. Try again.'
+        : `Connection error: ${msg}`
+      setHistory([...next, { role: 'model', content: friendly }])
     } finally {
       setLoading(false)
     }
@@ -83,12 +92,15 @@ export default function AskAI() {
       {/* Chat panel */}
       {open && (
         <div
-          className="fixed bottom-20 right-6 z-50 flex flex-col rounded-xl shadow-2xl"
+          className="fixed bottom-20 right-6 flex flex-col rounded-xl"
           style={{
-            width:      '340px',
-            height:     '460px',
-            background: '#111318',
-            border:     '1px solid rgba(255,255,255,0.08)',
+            width:           '340px',
+            height:          '460px',
+            zIndex:          1100,
+            backgroundColor: '#16131f',   // explicit solid dark-purple bg
+            backgroundImage: 'none',
+            border:          '1px solid rgba(168,85,247,0.35)',
+            boxShadow:       '0 0 0 1px rgba(0,0,0,0.8), 0 24px 60px rgba(0,0,0,0.85)',
           }}
         >
           {/* Header */}
@@ -105,7 +117,7 @@ export default function AskAI() {
                 className="rounded px-1.5 py-0.5 text-xs font-semibold"
                 style={{ background: 'rgba(168,85,247,0.12)', color: '#a855f7' }}
               >
-                Gemini 2.5 Flash
+                Gemini 2.0 Flash
               </span>
             </div>
             <div className="flex items-center gap-3">
