@@ -737,12 +737,20 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
     )
   }
 
-  // Build ordered rows: active signals first (sectors sorted by YTD, non-sectors by swing_pct),
-  // then silent symbols — sectors sorted by YTD% desc, non-sectors after.
+  // Build ordered rows:
+  //   1st tier — ENTRY  (most urgent)
+  //   2nd tier — NEAR
+  //   3rd tier — everything else (NEUTRAL / no state)
+  // Within each tier: sectors sorted by YTD% desc; non-sectors keep backend swing_pct order.
+  const STATE_RANK: Record<string, number> = { ENTRY: 0, NEAR: 1 }
   const sortedSignals = [...signals].sort((a, b) => {
+    const aRank = STATE_RANK[a.signal_state ?? ''] ?? 2
+    const bRank = STATE_RANK[b.signal_state ?? ''] ?? 2
+    if (aRank !== bRank) return aRank - bRank
+
+    // Same state tier — sectors sorted by YTD desc
     const aIsSector = SECTOR_TICKERS.has(a.symbol)
     const bIsSector = SECTOR_TICKERS.has(b.symbol)
-    // Both sectors → sort by YTD desc (non-sectors keep backend swing_pct order via stable sort)
     if (aIsSector && bIsSector) {
       const aYtd = ytdMap?.[a.symbol] ?? -Infinity
       const bYtd = ytdMap?.[b.symbol] ?? -Infinity
