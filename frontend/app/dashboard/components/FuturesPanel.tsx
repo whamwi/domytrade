@@ -126,29 +126,10 @@ const LEVEL_COLOR: Record<string, string> = {
 
 const NVPOC_COLOR = '#22d3ee'  // cyan — naked/unfilled volume nodes
 
-// ── Abbreviated labels for chart view ────────────────────────────────────────
-function shortLabel(key: string): string {
-  const m: Record<string, string> = {
-    prior_rth_tpo_vah:   'p.VAH',
-    prior_rth_tpo_vpoc:  'p.POC',
-    prior_rth_tpo_val:   'p.VAL',
-    overnight_tpo_vah:   'o.VAH',
-    overnight_tpo_vpoc:  'o.POC',
-    overnight_tpo_val:   'o.VAL',
-    developing_tpo_vah:  'd.VAH',
-    developing_tpo_vpoc: 'd.POC',
-    developing_tpo_val:  'd.VAL',
-    mcvpoc_3day:         '3d.POC',
-    ib_high:             'IB.Hi',
-    ib_low:              'IB.Lo',
-    daily_pivot:         'Pivot',
-    prev_high:           'Prev.Hi',
-    prev_close:          'p.Cls',
-    prev_low:            'Prev.Lo',
-    vwap:                'VWAP',
-  }
-  if (key.startsWith('nvpoc_')) return 'nPOC'
-  return m[key] ?? key
+// ── Full readable label for chart view ───────────────────────────────────────
+// Uses the same label as the list view; collapses multiple spaces for clarity.
+function chartLabel(key: string, label: string): string {
+  return label.replace(/\s{2,}/g, ' ').trim()
 }
 
 // ── SVG price ladder chart ────────────────────────────────────────────────────
@@ -161,12 +142,13 @@ function LevelsChart({
 }) {
   if (!levelRows.length) return null
 
-  // Layout: [label RIGHT-ALIGNED] | gap | [===line===] | gap | [price LEFT-ALIGNED]
+  // Layout: [full label RIGHT-ALIGNED] | gap | [===line===] | gap | [price LEFT-ALIGNED]
+  // Longest label ~20 chars × 5px/char (monospace 8.5px) ≈ 100px → give 155px
   const W = 440, H = 480
-  const LBL_END = 74    // labels right-align to this X
-  const LX1 = 82        // line left edge
-  const LX2 = 264       // line right edge
-  const PRC_X = 272     // prices left-align from this X
+  const LBL_END = 155   // labels right-align to this X
+  const LX1 = 163       // line left edge
+  const LX2 = 253       // line right edge (90px wide lines)
+  const PRC_X = 261     // prices left-align from this X
 
   // Collect all prices (include current for scale)
   const allP = levelRows.map(r => r.price)
@@ -279,7 +261,7 @@ function LevelsChart({
               fontFamily="'SF Mono', ui-monospace, monospace"
               fontWeight={solid ? '600' : '400'}
               textAnchor="end">
-              {shortLabel(row.key)}
+              {chartLabel(row.key, row.label)}
             </text>
             {/* Price — left-aligned on RIGHT side of line */}
             <text
