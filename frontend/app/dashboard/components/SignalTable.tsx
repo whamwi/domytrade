@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 import SwingBar from './SwingBar'
@@ -109,9 +109,23 @@ const AI_VERDICT_STYLE: Record<AiVerdict, { bg: string; color: string; dot: stri
 }
 
 function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: string; side: string }) {
-  const [ai, setAi] = useState<AiState>({ verdict: null, reason: '', loading: false, open: false })
+  const [ai, setAi]       = useState<AiState>({ verdict: null, reason: '', loading: false, open: false })
+  const [popPos, setPopPos] = useState<{ top: number; left: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
 
   const fetchAdvisory = async () => {
+    // Capture button position before opening so we can place the fixed popup
+    if (btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      const popW = 280
+      let left = r.left + r.width / 2 - popW / 2
+      // Keep within viewport horizontally
+      left = Math.max(8, Math.min(left, window.innerWidth - popW - 8))
+      // Open below by default; if too close to bottom, open above
+      const spaceBelow = window.innerHeight - r.bottom
+      const top = spaceBelow > 220 ? r.bottom + 6 : r.top - 6   // 6px gap
+      setPopPos({ top, left })
+    }
     setAi(prev => ({ ...prev, loading: true, open: true }))
     try {
       const res  = await fetch(`${API_URL}/api/ai/signal-advisory`, {
@@ -128,7 +142,16 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
 
   const handleClick = () => {
     if (ai.verdict && !ai.loading) {
-      // Already have a verdict — just show pop-up again
+      // Re-capture position and show again
+      if (btnRef.current) {
+        const r = btnRef.current.getBoundingClientRect()
+        const popW = 280
+        let left = r.left + r.width / 2 - popW / 2
+        left = Math.max(8, Math.min(left, window.innerWidth - popW - 8))
+        const spaceBelow = window.innerHeight - r.bottom
+        const top = spaceBelow > 220 ? r.bottom + 6 : r.top - 6
+        setPopPos({ top, left })
+      }
       setAi(prev => ({ ...prev, open: true }))
     } else if (!ai.loading) {
       fetchAdvisory()
@@ -139,10 +162,16 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
 
   const vStyle = ai.verdict ? AI_VERDICT_STYLE[ai.verdict] : null
 
+  // Determine if popup opens upward (when near bottom of screen)
+  const opensUp = popPos && btnRef.current
+    ? (window.innerHeight - btnRef.current.getBoundingClientRect().bottom) <= 220
+    : false
+
   return (
-    <div className="relative inline-flex items-center justify-center">
+    <div className="inline-flex items-center justify-center">
       {/* The button */}
       <button
+        ref={btnRef}
         onClick={handleClick}
         disabled={ai.loading}
         className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold transition-opacity"
@@ -167,25 +196,25 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
         )}
       </button>
 
-      {/* Pop-up overlay */}
-      {ai.open && (
+      {/* Pop-up — fixed position to escape table overflow clipping */}
+      {ai.open && popPos && (
         <>
           {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-40"
-            onClick={handleClose}
-          />
+          <div className="fixed inset-0 z-[1090]" onClick={handleClose} />
           {/* Card */}
           <div
-            className="absolute top-full left-1/2 z-50 mt-2 rounded-lg p-3 shadow-xl"
+            className="rounded-lg p-3 shadow-xl"
             style={{
-              transform:       'translateX(-50%)',
+              position:        'fixed',
+              top:             opensUp ? undefined : popPos.top,
+              bottom:          opensUp ? window.innerHeight - popPos.top : undefined,
+              left:            popPos.left,
+              width:           '280px',
+              zIndex:          1100,
               background:      '#16131f',
               backgroundImage: 'none',
               border:          '1px solid rgba(168,85,247,0.35)',
               boxShadow:       '0 0 0 1px rgba(0,0,0,0.8), 0 16px 40px rgba(0,0,0,0.85)',
-              minWidth:        '220px',
-              maxWidth:        '280px',
             }}
           >
             {ai.loading ? (
