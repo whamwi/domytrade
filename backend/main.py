@@ -116,6 +116,12 @@ FX_PAIRS = [
 _GLOBAL_MARKETS_CACHE: dict = {}
 _GLOBAL_MARKETS_TTL = 900   # 15 minutes (FX refreshes on this cadence)
 
+_LEVELS_CACHE: dict = {}    # {symbol: {'data': dict, 'ts': datetime}}
+_LEVELS_CACHE_TTL = 30      # seconds — levels stable enough to cache
+
+_VPOCS_CACHE: dict = {}     # {symbol: {'data': dict, 'ts': datetime}}
+_VPOCS_CACHE_TTL = 120      # seconds — naked VPOCs change slowly
+
 
 # ── In-memory cache (rebuilt from DB on startup) ───────────────────────────────
 state = {
@@ -1922,6 +1928,12 @@ async def get_levels(symbol: str):
       prev_high/low/close — prior session OHLC reference
     """
     symbol = symbol.upper()
+
+    # Serve from cache if fresh
+    _cached = _LEVELS_CACHE.get(symbol)
+    if _cached and (datetime.now(ET) - _cached['ts']).total_seconds() < _LEVELS_CACHE_TTL:
+        return _cached['data']
+
     tick   = _tick_for(symbol)
     now_et = datetime.now(ET)
     today  = now_et.date()
@@ -2148,7 +2160,7 @@ async def get_levels(symbol: str):
     ib_low  = min(c['low']  for c in ib_bars_levels) if ib_bars_levels else None
     ib_complete = (now_et.weekday() < 5 and now_et.hour * 60 + now_et.minute >= ib_e_levels)
 
-    return {
+    _result = {
         'symbol':      symbol,
         'tick':        tick,
         'computed_at': now_et.strftime('%Y-%m-%d %H:%M ET'),
@@ -2173,6 +2185,8 @@ async def get_levels(symbol: str):
             'vwap':            vwap,
         }
     }
+    _LEVELS_CACHE[symbol] = {'data': _result, 'ts': now_et}
+    return _result
 
 
 @app.get('/api/ytd')
@@ -4534,6 +4548,12 @@ async def get_session_vpocs(symbol: str):
     Useful for building an NVPOC tracker and validating historical key levels.
     """
     symbol = symbol.upper()
+
+    # Serve from cache if fresh
+    _vc = _VPOCS_CACHE.get(symbol)
+    if _vc and (datetime.now(ET) - _vc['ts']).total_seconds() < _VPOCS_CACHE_TTL:
+        return _vc['data']
+
     tick   = _tick_for(symbol)
 
     # Try to get as much history as Schwab will give us (request 30 days, get what we can)
@@ -4604,7 +4624,7 @@ async def get_session_vpocs(symbol: str):
 
     naked_vpocs  = [s for s in sessions if s['naked']]
 
-    return {
+    _vpoc_result = {
         'symbol'       : symbol,
         'tick'         : tick,
         'bars_fetched' : len(raw_1min),
@@ -4614,3 +4634,5 @@ async def get_session_vpocs(symbol: str):
         'naked_count'  : len(naked_vpocs),
         'naked_vpocs'  : [{'date': s['date'], 'vpoc': s['vpoc']} for s in naked_vpocs],
     }
+    _VPOCS_CACHE[symbol] = {'data': _vpoc_result, 'ts': datetime.now(ET)}
+    return _vpoc_result
