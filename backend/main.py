@@ -167,7 +167,7 @@ def _prev_rth_close(candles: list[dict]) -> float:
         if (lambda dt: (
             dt.date() < today and                          # prior session only
             dt.weekday() < 5 and
-            9 * 60 + 30 <= dt.hour * 60 + dt.minute < 16 * 60
+            9 * 60 + 30 <= dt.hour * 60 + dt.minute <= 16 * 60
         ))(datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET))
     ]
     return float(sorted(rth)[-1][1]) if rth else 0.0
@@ -192,7 +192,7 @@ def _rth_bias(candles: list[dict]) -> dict:
             continue
         t   = dt.hour * 60 + dt.minute
         day = dt.date()
-        if 9 * 60 + 30 <= t < 16 * 60:
+        if 9 * 60 + 30 <= t <= 16 * 60:
             if day not in sessions:
                 sessions[day] = {'open': c['open'], 'close': c['close']}
             else:
@@ -1944,30 +1944,31 @@ async def get_levels(symbol: str):
         t_min = dt.hour * 60 + dt.minute
         wday  = dt.weekday()   # 0=Mon … 6=Sun
 
-        is_rth      = wday < 5 and (9 * 60 + 30) <= t_min < 16 * 60
+        is_rth      = wday < 5 and (9 * 60 + 30) <= t_min <= 16 * 60
         is_on_wkday = wday < 5 and t_min < (9 * 60 + 30)
-        is_sunday   = wday == 6   # CME reopens Sun 6 PM ET → belongs to Monday overnight
+        is_evening  = wday < 4 and t_min >= 18 * 60   # Mon–Thu 6 PM+ → next day's overnight
+        is_sunday   = wday == 6                         # CME reopens Sun 6 PM ET → Monday overnight
 
         if is_rth:
             rth_by_date.setdefault(d, []).append(c)
         elif is_on_wkday:
             on_by_date.setdefault(d, []).append(c)
-        elif is_sunday:
+        elif is_evening or is_sunday:
             on_by_date.setdefault(d + timedelta(days=1), []).append(c)
 
     sorted_rth_dates = sorted(rth_by_date.keys(), reverse=True)
 
-    # Session VPOC / VAH / VAL — most recent completed RTH session
-    session_vpoc = None
-    session_vah  = None
-    session_val  = None
+    # Prior RTH VPOC / VAH / VAL — last completed RTH session (9:30–16:00)
+    prior_rth_vpoc = None
+    prior_rth_vah  = None
+    prior_rth_val  = None
     prior_rth_dates_asc = [d for d in sorted_rth_dates if d < today]
     if prior_rth_dates_asc:
         prior_rth_bars = rth_by_date.get(prior_rth_dates_asc[0], [])
-        session_va   = _compute_value_area(prior_rth_bars, tick)
-        session_vpoc = session_va['poc']
-        session_vah  = session_va['vah']
-        session_val  = session_va['val']
+        _prior_va      = _compute_value_area(prior_rth_bars, tick)
+        prior_rth_vpoc = _prior_va['poc']
+        prior_rth_vah  = _prior_va['vah']
+        prior_rth_val  = _prior_va['val']
 
     # Overnight VPOC / VAH / VAL — today's pre-market session (incl. Sunday night for Monday)
     overnight_vpoc = overnight_vah = overnight_val = None
@@ -1986,6 +1987,15 @@ async def get_levels(symbol: str):
                 overnight_vah  = _fb_va['vah']
                 overnight_val  = _fb_va['val']
                 break
+
+    # Developing RTH — today's live RTH session (null before 9:30 or on weekends)
+    developing_vpoc = developing_vah = developing_val = None
+    _dev_bars = rth_by_date.get(today, [])
+    if _dev_bars:
+        _dev_va         = _compute_value_area(_dev_bars, tick)
+        developing_vpoc = _dev_va['poc']
+        developing_vah  = _dev_va['vah']
+        developing_val  = _dev_va['val']
 
     # MCVPOC 3-day — composite of the 3 most recent completed RTH sessions
     mc3: list[dict] = []
@@ -2147,23 +2157,20 @@ async def get_levels(symbol: str):
         'ib_low':      ib_low,
         'ib_complete': ib_complete,
         'levels': {
-            'session_vpoc':   session_vpoc,
-            'session_vah':    session_vah,
-            'session_val':    session_val,
-            'overnight_vpoc': overnight_vpoc,
-            'overnight_vah':  overnight_vah,
-            'overnight_val':  overnight_val,
-            'mcvpoc_3day':    mcvpoc_3day,
-            'daily_pivot':    daily_pivot,
-            'weekly_pivot':   weekly_pivot,
-            'weekly_open':    weekly_open,
-            'ath_intraday':   ath_intraday,
-            'swing_high':     swing_high,
-            'swing_low':      swing_low,
-            'prev_high':      prev_high,
-            'prev_low':       prev_low,
-            'prev_close':     prev_close,
-            'vwap':           vwap,
+            'prior_rth_vah':   prior_rth_vah,
+            'prior_rth_vpoc':  prior_rth_vpoc,
+            'prior_rth_val':   prior_rth_val,
+            'overnight_vah':   overnight_vah,
+            'overnight_vpoc':  overnight_vpoc,
+            'overnight_val':   overnight_val,
+            'developing_vah':  developing_vah,
+            'developing_vpoc': developing_vpoc,
+            'developing_val':  developing_val,
+            'mcvpoc_3day':     mcvpoc_3day,
+            'daily_pivot':     daily_pivot,
+            'prev_high':       prev_high,
+            'prev_low':        prev_low,
+            'vwap':            vwap,
         }
     }
 
@@ -2311,10 +2318,9 @@ def _agent_bias(price: float, levels: dict) -> dict:
             score -= 1
             reasons.append(f'below {name} ({val:.2f})')
 
-    _check(levels.get('weekly_open'),  'Weekly Open')
-    _check(levels.get('daily_pivot'),  'Daily Pivot')
-    _check(levels.get('vwap'),         'VWAP')
-    _check(levels.get('session_vpoc'), 'Session POC')
+    _check(levels.get('daily_pivot'),    'Daily Pivot')
+    _check(levels.get('vwap'),           'VWAP')
+    _check(levels.get('prior_rth_vpoc'), 'Prior RTH POC')
 
     direction = 'BULL' if score > 0 else ('BEAR' if score < 0 else 'NEUTRAL')
     return {'score': score, 'direction': direction, 'reasons': reasons}
@@ -2323,19 +2329,20 @@ def _agent_bias(price: float, levels: dict) -> dict:
 def _agent_nearest_levels(price: float, levels: dict, naked_vpocs: list) -> dict:
     """Find 2 nearest levels above and 2 below current price."""
     label_map = {
-        'session_vpoc'  : 'Session POC',
-        'overnight_vpoc': 'Night POC',
-        'mcvpoc_3day'   : '3-Day MCVPOC',
-        'daily_pivot'   : 'Daily Pivot',
-        'weekly_pivot'  : 'Weekly Pivot',
-        'weekly_open'   : 'Weekly Open',
-        'ath_intraday'  : 'ATH',
-        'swing_high'    : 'Swing High',
-        'swing_low'     : 'Swing Low',
-        'prev_high'     : 'Prior High',
-        'prev_low'      : 'Prior Low',
-        'prev_close'    : 'Prior Close',
-        'vwap'          : 'VWAP',
+        'prior_rth_vah'  : 'Prior RTH VAH',
+        'prior_rth_vpoc' : 'Prior RTH POC',
+        'prior_rth_val'  : 'Prior RTH VAL',
+        'overnight_vah'  : 'Overnight VAH',
+        'overnight_vpoc' : 'Overnight POC',
+        'overnight_val'  : 'Overnight VAL',
+        'developing_vah' : 'Developing VAH',
+        'developing_vpoc': 'Developing POC',
+        'developing_val' : 'Developing VAL',
+        'mcvpoc_3day'    : '3-Day MCVPOC',
+        'daily_pivot'    : 'Daily Pivot',
+        'prev_high'      : 'Prior High',
+        'prev_low'       : 'Prior Low',
+        'vwap'           : 'VWAP',
     }
     all_levels = []
     for key, val in levels.items():
@@ -2485,27 +2492,36 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
             d     = dt.date()
             t_min = dt.hour * 60 + dt.minute
             wday  = dt.weekday()
-            is_rth      = wday < 5 and (9*60+30) <= t_min < 16*60
+            is_rth      = wday < 5 and (9*60+30) <= t_min <= 16*60
             is_on_wkday = wday < 5 and t_min < (9*60+30)
+            is_evening  = wday < 4 and t_min >= 18*60
             is_sunday   = wday == 6
             if is_rth:
                 rth_by_date.setdefault(d, []).append(c)
             elif is_on_wkday:
                 on_by_date.setdefault(d, []).append(c)
-            elif is_sunday:
+            elif is_evening or is_sunday:
                 on_by_date.setdefault(d + timedelta(days=1), []).append(c)
 
         sorted_rth = sorted(rth_by_date.keys(), reverse=True)
 
         prior_rth_dates_agent = [d for d in sorted_rth if d < today]
         if prior_rth_dates_agent:
-            _prior_agent_bars = rth_by_date.get(prior_rth_dates_agent[0], [])
-            _session_va       = _compute_value_area(_prior_agent_bars, tick)
-            session_vpoc      = _session_va['poc']
-            session_vah       = _session_va['vah']
-            session_val       = _session_va['val']
+            _prior_agent_bars  = rth_by_date.get(prior_rth_dates_agent[0], [])
+            _prior_agent_va    = _compute_value_area(_prior_agent_bars, tick)
+            prior_rth_vpoc     = _prior_agent_va['poc']
+            prior_rth_vah      = _prior_agent_va['vah']
+            prior_rth_val      = _prior_agent_va['val']
         else:
-            session_vpoc = session_vah = session_val = None
+            prior_rth_vpoc = prior_rth_vah = prior_rth_val = None
+
+        developing_vpoc = developing_vah = developing_val = None
+        _dev_bars_agent = rth_by_date.get(today, [])
+        if _dev_bars_agent:
+            _dev_va_agent   = _compute_value_area(_dev_bars_agent, tick)
+            developing_vpoc = _dev_va_agent['poc']
+            developing_vah  = _dev_va_agent['vah']
+            developing_val  = _dev_va_agent['val']
         overnight_vpoc = overnight_vah = overnight_val = None
         _on_bars_agent = on_by_date.get(today, [])
         if _on_bars_agent:
@@ -2570,8 +2586,9 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
                     gap_agent = round(rth_open_bar['open'] - _settle, 2)
 
         levels = {
-            'session_vpoc': session_vpoc, 'session_vah': session_vah, 'session_val': session_val,
-            'overnight_vpoc': overnight_vpoc, 'overnight_vah': overnight_vah, 'overnight_val': overnight_val,
+            'prior_rth_vah': prior_rth_vah, 'prior_rth_vpoc': prior_rth_vpoc, 'prior_rth_val': prior_rth_val,
+            'overnight_vah': overnight_vah, 'overnight_vpoc': overnight_vpoc, 'overnight_val': overnight_val,
+            'developing_vah': developing_vah, 'developing_vpoc': developing_vpoc, 'developing_val': developing_val,
             'mcvpoc_3day': mcvpoc_3day, 'daily_pivot': daily_pivot,
             'weekly_pivot': weekly_pivot, 'weekly_open': weekly_open,
             'ath_intraday': ath, 'prev_high': prev_high, 'prev_low': prev_low,

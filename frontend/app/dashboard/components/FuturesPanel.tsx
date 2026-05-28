@@ -12,21 +12,20 @@ export interface FuturesPanelInfo {
 }
 
 interface Levels {
-  session_vpoc:   number | null
-  session_vah:    number | null
-  session_val:    number | null
-  overnight_vpoc: number | null
-  mcvpoc_3day:    number | null
-  daily_pivot:    number | null
-  weekly_pivot:   number | null
-  weekly_open:    number | null
-  ath_intraday:   number | null
-  swing_high:     number | null
-  swing_low:      number | null
-  prev_high:      number | null
-  prev_low:       number | null
-  prev_close:     number | null
-  vwap:           number | null
+  prior_rth_vah:   number | null
+  prior_rth_vpoc:  number | null
+  prior_rth_val:   number | null
+  overnight_vah:   number | null
+  overnight_vpoc:  number | null
+  overnight_val:   number | null
+  developing_vah:  number | null
+  developing_vpoc: number | null
+  developing_val:  number | null
+  mcvpoc_3day:     number | null
+  daily_pivot:     number | null
+  prev_high:       number | null
+  prev_low:        number | null
+  vwap:            number | null
 }
 
 interface LevelsResponse {
@@ -46,63 +45,60 @@ interface FuturesPanelProps {
 }
 
 const LEVEL_LABELS: Record<string, string> = {
-  ath_intraday:   'All-Time High',
-  swing_high:     'Swing High',
-  prev_high:      'Prior High',
-  session_vah:    'Value Area High',
-  session_vpoc:   'Point of Control',
-  session_val:    'Value Area Low',
-  overnight_vpoc: 'Night Point of Control',
-  mcvpoc_3day:    '3-Day Composite POC',
-  vwap:           'VWAP  —  Fair Value',
-  ib_high:        'Initial Balance High',
-  ib_low:         'Initial Balance Low',
-  daily_pivot:    'Daily Pivot',
-  weekly_pivot:   'Weekly Pivot',
-  weekly_open:    'Weekly Open',
-  prev_close:     'Prior Close',
-  prev_low:       'Prior Low',
-  swing_low:      'Swing Low',
+  prev_high:       'Prior Day High',
+  prior_rth_vah:   'Prior RTH  —  VAH',
+  prior_rth_vpoc:  'Prior RTH  —  POC',
+  prior_rth_val:   'Prior RTH  —  VAL',
+  overnight_vah:   'Overnight  —  VAH',
+  overnight_vpoc:  'Overnight  —  POC',
+  overnight_val:   'Overnight  —  VAL',
+  developing_vah:  'Developing  —  VAH',
+  developing_vpoc: 'Developing  —  POC',
+  developing_val:  'Developing  —  VAL',
+  mcvpoc_3day:     '3-Day Composite POC',
+  vwap:            'VWAP  —  Fair Value',
+  ib_high:         'Initial Balance High',
+  ib_low:          'Initial Balance Low',
+  daily_pivot:     'Daily Pivot',
+  prev_low:        'Prior Day Low',
 }
 
 const LEVEL_HELP: Record<string, string> = {
-  session_vpoc:   'The price where the most volume traded during the session. Price is naturally drawn back to this level — acts as a magnet.',
-  session_vah:    'Value Area High — the upper boundary of the price range containing 70% of the prior session\'s volume. Price above VAH means the market is seeking acceptance at higher prices. If it fails to hold above, expect rejection back inside the Value Area.',
-  session_val:    'Value Area Low — the lower boundary of the 70% volume zone. Price below VAL means sellers are in control. If buyers step in and push price back above VAL, the gap fill trade toward POC becomes likely.',
-  overnight_vpoc: 'The highest-volume price from the overnight (pre-market) session. Shows where institutions were most active before the regular open.',
-  mcvpoc_3day:    'The single price with the most volume across the last 3 sessions combined. A powerful multi-day magnet — harder to break than a single-session POC.',
-  daily_pivot:    'Calculated as (Yesterday\'s High + Low + Close) ÷ 3. A neutral reference: above it = bullish bias for the day, below = bearish.',
-  weekly_pivot:   'Same calculation using last week\'s range. Defines the broader weekly structure and is watched by institutional traders.',
-  weekly_open:    'The price where the current week\'s session started. Closing above it confirms a bullish week; below confirms bearish.',
-  ath_intraday:   'The highest intraday price ever recorded for this contract. No overhead resistance above it — price is in open air.',
-  swing_high:     'The highest price reached over the last 10 sessions. Acts as resistance; a close above it signals a breakout.',
-  swing_low:      'The lowest price reached over the last 10 sessions. Acts as support; a close below it signals a breakdown.',
-  prev_high:      'Yesterday\'s session high. Breaking above it with volume confirms bullish momentum continuation.',
-  prev_low:       'Yesterday\'s session low. Breaking below it with volume confirms bearish momentum continuation.',
-  prev_close:     'Where yesterday\'s session ended. The starting reference for today\'s price action and performance.',
-  vwap:           'Volume Weighted Average Price — the average price paid weighted by volume. During the session this updates live. Outside market hours it shows the prior session\'s closing VWAP. Price above VWAP = institutions were net buyers. Price below = net sellers. The market constantly gravitates back to this level — it is the true fair value.',
-  ib_high:        'Initial Balance High — the highest price of the first 60 minutes of RTH (9:30–10:30 ET). A break above IB High after 10:30 signals a trend day extending upward. Price staying inside IB suggests a rotational/balanced day.',
-  ib_low:         'Initial Balance Low — the lowest price of the first 60 minutes of RTH. A break below IB Low after 10:30 signals a trend day extending downward. Narrow IB range = coiled market, explosive move likely.',
+  prior_rth_vah:   'Prior RTH Value Area High — upper boundary of the 70% volume zone from yesterday\'s cash session (9:30–4:00 ET). Price opening above VAH and accepting there signals bullish continuation. Failure to hold = likely rejection back inside the value area.',
+  prior_rth_vpoc:  'Prior RTH Point of Control — price where the most volume traded in yesterday\'s cash session. The strongest single-session magnet. Price naturally gravitates back to this level.',
+  prior_rth_val:   'Prior RTH Value Area Low — lower boundary of the 70% volume zone from yesterday\'s cash session. Price below VAL means sellers dominate. A reclaim of VAL with volume triggers the gap-fill trade toward POC.',
+  overnight_vah:   'Overnight Value Area High — upper boundary of the 70% volume zone from tonight\'s pre-market session (6 PM–9:30 AM). Shows where overnight institutions found the upper edge of fair value.',
+  overnight_vpoc:  'Overnight Point of Control — highest-volume price from the overnight session. Where institutions were most active before the open. A gap between this and Prior RTH POC signals directional intent.',
+  overnight_val:   'Overnight Value Area Low — lower boundary of overnight fair value. Price opening between overnight VAL and VAH = inside overnight value; expect rotation. Opening outside = directional move likely.',
+  developing_vah:  'Developing Value Area High — the upper edge of today\'s live RTH value area, updating tick by tick. Shows where the market is currently accepting value during this session.',
+  developing_vpoc: 'Developing Point of Control — the highest-volume price of today\'s RTH session so far. This is the current session magnet. As the day builds, watch for price to test and either accept or reject this level.',
+  developing_val:  'Developing Value Area Low — the lower edge of today\'s live RTH value area. Price holding above it = buyers in control for the session. Breaking below = value migrating lower.',
+  mcvpoc_3day:     'The single price with the most volume across the last 3 RTH sessions combined. A powerful multi-day magnet — harder to break than a single-session POC.',
+  daily_pivot:     '(Yesterday\'s High + Low + Close) ÷ 3. A neutral reference: above it = bullish bias for the day, below = bearish.',
+  prev_high:       'Yesterday\'s RTH session high (4:00 PM close included). Breaking above with volume confirms bullish continuation.',
+  prev_low:        'Yesterday\'s RTH session low. Breaking below with volume confirms bearish continuation.',
+  vwap:            'Volume Weighted Average Price — average price paid weighted by volume. Price above VWAP = institutions were net buyers. Below = net sellers. The market constantly gravitates back to this level.',
+  ib_high:         'Initial Balance High — highest price of the first 60 minutes of RTH (9:30–10:30 ET). A break above IB High after 10:30 signals a trend day extending upward.',
+  ib_low:          'Initial Balance Low — lowest price of the first 60 minutes of RTH. A break below after 10:30 signals a trend day extending downward. Narrow IB = coiled market.',
 }
 
 const LEVEL_COLOR: Record<string, string> = {
-  ath_intraday:   '#f87171',   // red — ceiling
-  swing_high:     '#fb923c',
-  prev_high:      '#fbbf24',
-  session_vah:    '#818cf8',   // indigo — value area boundary (upper)
-  session_vpoc:   '#a78bfa',   // purple — volume nodes
-  session_val:    '#818cf8',   // indigo — value area boundary (lower)
-  overnight_vpoc: '#a78bfa',
-  mcvpoc_3day:    '#c084fc',
-  ib_high:        '#34d399',   // emerald — initial balance
-  ib_low:         '#34d399',
-  daily_pivot:    '#60a5fa',   // blue — pivots
-  weekly_pivot:   '#60a5fa',
-  weekly_open:    '#38bdf8',
-  prev_close:     '#94a3b8',   // gray
-  prev_low:       '#4ade80',   // green — floors
-  swing_low:      '#4ade80',
-  vwap:           '#f59e0b',   // amber — fair value
+  prev_high:       '#fbbf24',   // amber — prior day reference
+  prior_rth_vah:   '#818cf8',   // indigo — prior RTH value area
+  prior_rth_vpoc:  '#a78bfa',   // purple — prior RTH POC
+  prior_rth_val:   '#818cf8',   // indigo
+  overnight_vah:   '#22d3ee',   // cyan — overnight session
+  overnight_vpoc:  '#06b6d4',   // cyan darker
+  overnight_val:   '#22d3ee',   // cyan
+  developing_vah:  '#34d399',   // emerald — live developing session
+  developing_vpoc: '#10b981',   // emerald darker
+  developing_val:  '#34d399',   // emerald
+  mcvpoc_3day:     '#c084fc',   // soft purple — composite
+  ib_high:         '#f97316',   // orange — initial balance
+  ib_low:          '#f97316',   // orange
+  daily_pivot:     '#60a5fa',   // blue — pivot
+  prev_low:        '#4ade80',   // green — floors
+  vwap:            '#f59e0b',   // amber — fair value
 }
 
 const NVPOC_COLOR = '#22d3ee'  // cyan — naked/unfilled volume nodes
@@ -296,7 +292,7 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
     levelRows.push({ price: data.ib_low, key: 'ib_low', label: ibLabel, dist: last > 0 ? data.ib_low - last : 0 })
   }
 
-  // Merge naked VPOCs — skip any whose price is already shown as session_vpoc or mcvpoc_3day
+  // Merge naked VPOCs — skip any whose price is already shown as prior_rth_vpoc or mcvpoc_3day
   const existingPrices = new Set(levelRows.map(r => r.price))
   for (const nv of nakedVpocs) {
     if (existingPrices.has(nv.vpoc)) continue   // avoid duplicate
