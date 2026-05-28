@@ -1877,14 +1877,7 @@ def get_industries():
 
     current price:
       - During RTH (9:30–16:00 ET weekdays): live last_price from Schwab quote (60s refresh)
-      - Outside RTH: prev_close — frozen at 4:00 PM close, ignores extended hours"""
-    _now_et = datetime.now(ET)
-    _et_min = _now_et.hour * 60 + _now_et.minute
-    # Simple weekday + time check — no strip_session_date dependency.
-    # Schwab never returns in-progress daily candles so session_found was always False
-    # which kept _is_rth=False all day, serving prev_close instead of live prices.
-    _is_rth = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
-
+      - Outside RTH: last_price (today's close or AH) with prev_close fallback"""
     ticker_map = {s['ticker']: s for s in state['symbols']}
     result = []
     for etf in STRIP_ETFS:
@@ -1894,8 +1887,11 @@ def get_industries():
             continue
         sid      = sym['id']
         rth_open = state['rth_open'].get(sid, 0)
-        # Live price during RTH; RTH close (ignoring extended hours) outside RTH
-        current  = state['last_price'].get(sid, 0) if _is_rth else state['prev_close'].get(sid, 0)
+        # Always use last_price (live during RTH, today's close after 4 PM).
+        # Fall back to prev_close (yesterday's close) only when last_price is unavailable.
+        # Using prev_close exclusively after RTH was a bug: it computes
+        # (yesterday_close - today_open) / today_open, mixing two different sessions.
+        current  = state['last_price'].get(sid, 0) or state['prev_close'].get(sid, 0)
         pct      = round((current - rth_open) / rth_open * 100, 2) if (rth_open and current) else 0.0
         result.append({'symbol': tick, 'name': etf['name'], 'weight': etf.get('weight'), 'pct': pct})
 
