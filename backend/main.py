@@ -3965,7 +3965,7 @@ async def ask_ai(body: dict = Body(...)):
         user_content = f'{context_block}\n\nTrader question: {message}'
 
         resp = client.models.generate_content(
-            model    = 'gemini-2.0-flash',   # 2.5-flash has thinking overhead → Railway timeout
+            model    = 'gemini-1.5-flash',   # 2.0-flash deprecated; 2.5-flash has thinking overhead → Railway timeout
             contents = gem_history + [
                 _gtypes.Content(role='user', parts=[_gtypes.Part(text=user_content)])
             ],
