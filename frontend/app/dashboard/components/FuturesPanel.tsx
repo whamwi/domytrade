@@ -143,7 +143,7 @@ function shortLabel(key: string): string {
     ib_low:              'IB.Lo',
     daily_pivot:         'Pivot',
     prev_high:           'Prev.Hi',
-    prev_close:          'Prev.Cls',
+    prev_close:          'p.Cls',
     prev_low:            'Prev.Lo',
     vwap:                'VWAP',
   }
@@ -161,32 +161,65 @@ function LevelsChart({
 }) {
   if (!levelRows.length) return null
 
+  // Layout: [label RIGHT-ALIGNED] | gap | [===line===] | gap | [price LEFT-ALIGNED]
   const W = 440, H = 480
-  const LX1 = 10, LX2 = 168    // horizontal line X range
-  const LBL_X = 176             // label text start
-  const PRC_X = 440             // price right-aligned
+  const LBL_END = 74    // labels right-align to this X
+  const LX1 = 82        // line left edge
+  const LX2 = 264       // line right edge
+  const PRC_X = 272     // prices left-align from this X
 
+  // Collect all prices (include current for scale)
   const allP = levelRows.map(r => r.price)
   if (last > 0) allP.push(last)
   const minP = Math.min(...allP)
   const maxP = Math.max(...allP)
-  const pad  = Math.max((maxP - minP) * 0.08, 5)
-  const lo   = minP - pad
-  const hi   = maxP + pad
-  const toY  = (p: number) => ((hi - p) / (hi - lo)) * H
 
-  // Anti-collision: sort by Y, push labels down when within 11px
-  const MIN_GAP = 11
-  const rawY = levelRows.map(r => toY(r.price))
-  const order = levelRows.map((_, i) => i).sort((a, b) => rawY[a] - rawY[b])
-  const adjY  = [...rawY]
-  let prev = -Infinity
-  for (const i of order) {
-    if (adjY[i] < prev + MIN_GAP) adjY[i] = prev + MIN_GAP
-    prev = adjY[i]
+  // ── Non-linear scale: outliers (top & bottom ~12%) get compressed zones ──
+  // Core range = p12 → p88 of all prices, mapped to the middle of the chart.
+  // Levels outside the core are squeezed into fixed top/bottom bands.
+  const sortedP = [...allP].sort((a, b) => a - b)
+  const n = sortedP.length
+  const p12 = sortedP[Math.max(0, Math.floor(n * 0.12))]
+  const p88 = sortedP[Math.min(n - 1, Math.floor(n * 0.88))]
+  const corePad  = Math.max((p88 - p12) * 0.08, 3)
+  const coreMin  = p12 - corePad
+  const coreMax  = p88 + corePad
+  const coreRange = coreMax - coreMin || 1
+
+  const OZ = 50                       // px reserved at each edge for outlier zone
+  const CORE_TOP = OZ                 // y where core starts (high prices)
+  const CORE_BOT = H - OZ            // y where core ends (low prices)
+  const CORE_H   = CORE_BOT - CORE_TOP
+
+  const toY = (p: number): number => {
+    if (p >= coreMin && p <= coreMax) {
+      // Linear inside core
+      return CORE_TOP + ((coreMax - p) / coreRange) * CORE_H
+    }
+    if (p > coreMax) {
+      // Above core → compress into top OZ px (high price = small Y)
+      const range = maxP - coreMax || 1
+      const frac  = (p - coreMax) / range       // 0 at core edge, 1 at max
+      return CORE_TOP - frac * (CORE_TOP - 6)   // from CORE_TOP down to y=6
+    }
+    // Below core → compress into bottom OZ px
+    const range = coreMin - minP || 1
+    const frac  = (coreMin - p) / range
+    return CORE_BOT + frac * (H - 6 - CORE_BOT)
   }
 
-  // Session value area shading
+  // Anti-collision: push labels down when stacked within MIN_GAP px
+  const MIN_GAP = 11
+  const rawY  = levelRows.map(r => toY(r.price))
+  const order = levelRows.map((_, i) => i).sort((a, b) => rawY[a] - rawY[b])
+  const adjY  = [...rawY]
+  let prevY = -Infinity
+  for (const i of order) {
+    if (adjY[i] < prevY + MIN_GAP) adjY[i] = prevY + MIN_GAP
+    prevY = adjY[i]
+  }
+
+  // Session value area shading (uses true price Y, not collision-adjusted)
   const getP = (k: string) => levelRows.find(r => r.key === k)?.price
   const sessions = [
     { prefix: 'prior_rth_tpo',  color: '#818cf8' },
@@ -196,32 +229,35 @@ function LevelsChart({
   const isPOC = (k: string) =>
     k.endsWith('_vpoc') || k.endsWith('_poc') || k === 'mcvpoc_3day' || k.startsWith('nvpoc_')
 
+  const mid = (LX1 + LX2) / 2
+
   return (
     <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
+
       {/* Value area shading */}
       {sessions.map(({ prefix, color }) => {
         const vah = getP(`${prefix}_vah`)
         const val = getP(`${prefix}_val`)
         if (!vah || !val) return null
+        const y1 = toY(vah), y2 = toY(val)
         return (
           <rect key={prefix}
-            x={LX1} y={toY(vah)}
-            width={LX2 - LX1} height={toY(val) - toY(vah)}
-            fill={color} fillOpacity={0.08}
+            x={LX1} y={y1} width={LX2 - LX1} height={y2 - y1}
+            fill={color} fillOpacity={0.09}
           />
         )
       })}
 
-      {/* Level lines + labels */}
+      {/* Level lines + labels + prices */}
       {levelRows.map((row, i) => {
-        const ly     = toY(row.price)
-        const lblY   = adjY[i]
-        const color  = row.key.startsWith('nvpoc_') ? NVPOC_COLOR : (LEVEL_COLOR[row.key] ?? '#666')
-        const solid  = isPOC(row.key)
+        const ly    = toY(row.price)        // true price Y (for the line)
+        const lblY  = adjY[i]              // collision-adjusted Y (for text)
+        const color = row.key.startsWith('nvpoc_') ? NVPOC_COLOR : (LEVEL_COLOR[row.key] ?? '#666')
+        const solid = isPOC(row.key)
 
         return (
           <g key={row.key}>
-            {/* Horizontal line at true price */}
+            {/* Horizontal level line at true price position */}
             <line
               x1={LX1} y1={ly} x2={LX2} y2={ly}
               stroke={color}
@@ -229,40 +265,42 @@ function LevelsChart({
               strokeDasharray={solid ? undefined : '5,3'}
               strokeOpacity={0.85}
             />
-            {/* Leader from line to label when collision-shifted */}
+            {/* Thin vertical leader on left edge when label is shifted */}
             {Math.abs(lblY - ly) > 2 && (
               <line
-                x1={LX2} y1={ly} x2={LBL_X - 4} y2={lblY}
-                stroke={color} strokeWidth={0.5} strokeOpacity={0.35}
+                x1={LX1} y1={ly} x2={LX1} y2={lblY}
+                stroke={color} strokeWidth={0.5} strokeOpacity={0.3}
               />
             )}
-            {/* Abbreviated key */}
-            <text x={LBL_X} y={lblY + 3.5}
+            {/* Label — right-aligned on LEFT side of line */}
+            <text
+              x={LBL_END} y={lblY + 3.5}
               fill={color} fontSize={8.5}
               fontFamily="'SF Mono', ui-monospace, monospace"
-              fontWeight={solid ? '600' : '400'}>
+              fontWeight={solid ? '600' : '400'}
+              textAnchor="end">
               {shortLabel(row.key)}
             </text>
-            {/* Price right-aligned */}
-            <text x={PRC_X} y={lblY + 3.5}
+            {/* Price — left-aligned on RIGHT side of line */}
+            <text
+              x={PRC_X} y={lblY + 3.5}
               fill={color} fontSize={8.5}
               fontFamily="'SF Mono', ui-monospace, monospace"
-              textAnchor="end">
+              textAnchor="start">
               {row.price.toFixed(2)}
             </text>
           </g>
         )
       })}
 
-      {/* Current price marker */}
+      {/* Current price badge — spans full line width */}
       {last > 0 && (() => {
-        const cy  = toY(last)
-        const mid = (LX1 + LX2) / 2
+        const cy = toY(last)
         return (
           <g>
-            <line x1={LX1 - 5} y1={cy} x2={LX2 + 5} y2={cy}
+            <line x1={LX1 - 6} y1={cy} x2={LX2 + 6} y2={cy}
               stroke={priceColor} strokeWidth={2} />
-            <rect x={mid - 28} y={cy - 9} width={56} height={18}
+            <rect x={mid - 30} y={cy - 9} width={60} height={18}
               fill="#0f172a" stroke={priceColor} strokeWidth={1.5} rx={3} />
             <text x={mid} y={cy + 4}
               fill={priceColor} fontSize={9}
