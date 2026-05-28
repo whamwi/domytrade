@@ -219,13 +219,23 @@ def set_token_refresh_callback(fn) -> None:
 
 def _refresh_access_token() -> str:
     """Use refresh token to get a new access token (must be called under _token_lock)."""
+    import logging as _log
     creds = base64.b64encode(f'{API_KEY}:{API_SECRET}'.encode()).decode()
+    rt = _token_cache['refresh_token']
+    _log.getLogger(__name__).info(
+        'Refreshing Schwab token — rt_preview=%s...%s (len=%d)',
+        rt[:8], rt[-6:], len(rt)
+    )
     r = requests.post(TOKEN_URL,
         headers={'Authorization': f'Basic {creds}',
                  'Content-Type': 'application/x-www-form-urlencoded'},
         data={'grant_type'   : 'refresh_token',
-              'refresh_token': _token_cache['refresh_token']},
+              'refresh_token': rt},
         timeout=15)
+    if not r.ok:
+        _log.getLogger(__name__).error(
+            'Schwab token refresh FAILED %s: %s', r.status_code, r.text[:300]
+        )
     r.raise_for_status()
     data = r.json()
     _token_cache['access_token'] = data['access_token']

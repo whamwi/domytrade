@@ -27,7 +27,7 @@ export interface Signal {
   symbol: string
   api_symbol: string
   side: 'LONG' | 'SHORT'
-  model: 'AGG' | 'CON'
+  model: 'AGG' | 'CON' | 'WIDE'
   entry: number
   stop: number
   target: number
@@ -49,6 +49,11 @@ export interface Signal {
   l2: number
   l3: number
   l4: number
+  // 5-min SqueezePRO — only present for /ES /NQ /YM /RTY
+  sq_state?:   string | null
+  mo_state?:   string | null
+  sq_confirm?: 'CONFIRMED' | 'CAUTION' | 'NEGATED' | 'NEUTRAL' | null
+  sq_reason?:  string | null
 }
 
 export interface SymbolInfo {
@@ -77,19 +82,155 @@ function fmt(price: number): string {
 }
 
 const COLS = [
-  { label: '#',           align: 'left'  },
-  { label: 'SYMBOL',      align: 'left'  },
-  { label: 'LAST',        align: 'right' },
-  { label: 'CHG',         align: 'right' },
-  { label: 'MODEL',       align: 'left'  },  // AGG or CON
-  { label: 'SIDE',        align: 'left'  },
-  { label: 'ALERT',       align: 'left'  },  // near gray trigger
-  { label: 'ENTRY',       align: 'right' },
-  { label: 'STOP',        align: 'right' },
-  { label: 'TARGET',      align: 'right' },
-  { label: 'DAILY SWING', align: 'left'  },
-  { label: 'STAGE',       align: 'left'  },  // Phase 2
+  { label: '#',           align: 'left'   },
+  { label: 'SYMBOL',      align: 'left'   },
+  { label: 'LAST',        align: 'right'  },
+  { label: 'CHG',         align: 'right'  },
+  { label: 'MODEL',       align: 'left'   },  // AGG or CON
+  { label: 'AI',           align: 'center' },  // on-demand AI advisory
+  { label: 'SIDE',        align: 'left'   },
+  { label: 'ALERT',       align: 'left'   },  // near gray trigger
+  { label: 'ENTRY',       align: 'right'  },
+  { label: 'STOP',        align: 'right'  },
+  { label: 'TARGET',      align: 'right'  },
+  { label: 'DAILY SWING', align: 'left'   },
 ]
+
+// ── On-demand AI Advisory button ──────────────────────────────────────────────
+type AiVerdict = 'ENTER' | 'WAIT' | 'SKIP'
+interface AiState { verdict: AiVerdict | null; reason: string; loading: boolean; open: boolean }
+
+const AI_VERDICT_STYLE: Record<AiVerdict, { bg: string; color: string; dot: string }> = {
+  ENTER: { bg: 'rgba(74,222,128,0.15)',  color: '#4ade80', dot: '●' },
+  WAIT:  { bg: 'rgba(251,191,36,0.15)',  color: '#fbbf24', dot: '◑' },
+  SKIP:  { bg: 'rgba(248,113,113,0.15)', color: '#f87171', dot: '●' },
+}
+
+function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: string; side: string }) {
+  const [ai, setAi] = useState<AiState>({ verdict: null, reason: '', loading: false, open: false })
+
+  const fetchAdvisory = async () => {
+    setAi(prev => ({ ...prev, loading: true, open: true }))
+    try {
+      const res  = await fetch('/api/ai/signal-advisory', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ symbol, model, side }),
+      })
+      const data = await res.json()
+      setAi({ verdict: data.verdict as AiVerdict, reason: data.reason, loading: false, open: true })
+    } catch {
+      setAi({ verdict: 'WAIT', reason: 'Network error — try again.', loading: false, open: true })
+    }
+  }
+
+  const handleClick = () => {
+    if (ai.verdict && !ai.loading) {
+      // Already have a verdict — just show pop-up again
+      setAi(prev => ({ ...prev, open: true }))
+    } else if (!ai.loading) {
+      fetchAdvisory()
+    }
+  }
+
+  const handleClose = () => setAi(prev => ({ ...prev, open: false }))
+
+  const vStyle = ai.verdict ? AI_VERDICT_STYLE[ai.verdict] : null
+
+  return (
+    <div className="relative inline-flex items-center justify-center">
+      {/* The button */}
+      <button
+        onClick={handleClick}
+        disabled={ai.loading}
+        className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold transition-opacity"
+        style={vStyle
+          ? { background: vStyle.bg, color: vStyle.color, minWidth: '3.2rem', justifyContent: 'center' }
+          : { background: 'rgba(168,85,247,0.12)', color: '#a855f7', minWidth: '3.2rem', justifyContent: 'center' }
+        }
+        title="Get AI advisory for this signal"
+      >
+        {ai.loading ? (
+          <span style={{ fontSize: '11px' }}>…</span>
+        ) : vStyle ? (
+          <>
+            <span style={{ fontSize: 7 }}>{vStyle.dot}</span>
+            {ai.verdict}
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: '11px' }}>✦</span>
+            AI
+          </>
+        )}
+      </button>
+
+      {/* Pop-up overlay */}
+      {ai.open && (
+        <>
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={handleClose}
+          />
+          {/* Card */}
+          <div
+            className="absolute bottom-full left-1/2 z-50 mb-2 rounded-lg p-3 shadow-xl"
+            style={{
+              transform:  'translateX(-50%)',
+              background: 'var(--bg-card)',
+              border:     '1px solid var(--border)',
+              minWidth:   '220px',
+              maxWidth:   '280px',
+            }}
+          >
+            {ai.loading ? (
+              <div style={{ color: 'var(--text-dim)', fontSize: '12px', textAlign: 'center' }}>
+                Analyzing…
+              </div>
+            ) : (
+              <>
+                {/* Verdict header */}
+                {ai.verdict && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <span
+                      className="rounded px-2 py-0.5 text-xs font-bold"
+                      style={{ background: AI_VERDICT_STYLE[ai.verdict].bg, color: AI_VERDICT_STYLE[ai.verdict].color }}
+                    >
+                      {AI_VERDICT_STYLE[ai.verdict].dot} {ai.verdict}
+                    </span>
+                    <span style={{ color: 'var(--text-dim)', fontSize: '10px' }}>
+                      {symbol} · {side}
+                    </span>
+                  </div>
+                )}
+                {/* Reason */}
+                <div style={{ color: 'var(--text-primary)', fontSize: '12px', lineHeight: '1.5' }}>
+                  {ai.reason}
+                </div>
+                {/* Actions */}
+                <div className="flex items-center justify-between mt-2.5" style={{ borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); fetchAdvisory() }}
+                    style={{ color: 'var(--text-dim)', fontSize: '11px', background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    ↺ refresh
+                  </button>
+                  <button
+                    onClick={handleClose}
+                    style={{ color: 'var(--text-dim)', fontSize: '11px', background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    close
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 function HeaderRow() {
   return (
@@ -359,16 +500,31 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
         ) : <Dash />}
       </td>
 
-      {/* MODEL (AGG / CON) */}
+      {/* MODEL (AGG / CON / WIDE) */}
       <td className="px-3 py-2.5">
         <span
           className="inline-block rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
-          style={sig.model === 'AGG'
-            ? { background: 'var(--amber-bg)', color: '#fbbf24' }
-            : { background: 'var(--indigo-bg)', color: '#a5b4fc' }}
+          style={
+            sig.model === 'AGG'  ? { background: 'var(--amber-bg)',  color: '#fbbf24' } :
+            sig.model === 'CON'  ? { background: 'var(--indigo-bg)', color: '#a5b4fc' } :
+                                   { background: 'rgba(20,184,166,0.12)', color: '#2dd4bf' }  // WIDE = teal
+          }
         >
           {sig.model}
         </span>
+      </td>
+
+      {/* AI — on-demand advisory (major market futures only) */}
+      <td className="px-3 py-2.5 text-center">
+        {majorColor ? (
+          <AiAdvisoryButton
+            symbol={sig.symbol.split(':')[0]}
+            model={sig.model}
+            side={sig.side}
+          />
+        ) : (
+          <Dash />
+        )}
       </td>
 
       {/* SIDE */}
@@ -439,8 +595,6 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
         />
       </td>
 
-      {/* STAGE — Phase 2 */}
-      <td className="px-3 py-2.5 text-center"><Dash /></td>
     </tr>
   )
 }
@@ -509,7 +663,7 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, ytdMap }: NoSignal
           </>
         ) : <Dash />}
       </td>
-      {/* Fill remaining 8 columns with dashes (MODEL, SIDE, ALERT, ENTRY, STOP, TARGET, DAILY SWING, STAGE) */}
+      {/* Fill remaining 8 columns with dashes (MODEL, SQ 5m, SIDE, ALERT, ENTRY, STOP, TARGET, DAILY SWING) */}
       {Array.from({ length: 8 }).map((_, i) => (
         <td key={i} className="px-3 py-2 text-center">
           <Dash />

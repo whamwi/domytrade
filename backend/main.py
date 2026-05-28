@@ -3603,6 +3603,597 @@ async def ai_chat(body: dict = Body(...)):
         return {'reply': f'Error: {e}', 'sr_data': {}}
 
 
+# ── Gemini Ask AI (corner chat) ───────────────────────────────────────────────
+
+_ASK_AI_SYSTEM = """\
+You are an experienced futures trading assistant. You have access to live market data \
+including VBH mean-reversion signals, market internals, and sector ETF performance.
+
+HOW TO ANALYZE — follow this order:
+1. INTERNALS FIRST: $TICK extremes (>+800 = strong bull, <-800 = strong bear) override everything. \
+$TRIN <0.8 = buying volume dominant, >1.5 = selling volume dominant. A/D ratio shows breadth.
+2. SECTOR LEADERSHIP: XLK leads /NQ (Nasdaq). XLV + XLF lead /YM (Dow). \
+XLK + XLF + XLV drive /ES (S&P). XLF + XLI lead /RTY (Russell). \
+If the leading sector is weak, the futures will be weak — that is the CAUSE.
+3. SIGNALS LAST: VBH signals show WHERE price is relative to supply/demand zones, \
+not WHY price is moving. A SHORT signal means price is at a supply zone, not that price is weak.
+
+ANSWERING "WHY is X weak/strong?":
+- Look at its leading sectors first (e.g. XLK for NQ) — are they down? That's why.
+- Check $TICK and $TRIN — is the broader market selling?
+- Check A/D ratio — is weakness broad or narrow?
+- THEN mention the signal as confirmation, not as the cause.
+
+STYLE: Conversational, 2-4 sentences. No bullet lists unless listing multiple items. \
+No tables. Speak like a trading desk colleague, not a report. \
+Reference actual numbers (e.g. "XLK is down 0.8% today, dragging NQ with it"). \
+Flag conflicts clearly (e.g. "internals are bullish but price is at a short zone — wait for clarity").\
+"""
+
+def _build_ask_ai_context() -> str:
+    """Snapshot of current signals, sectors, and prices for Gemini context."""
+    lines: list[str] = ['=== LIVE DASHBOARD SNAPSHOT ===']
+
+    # Sector ETFs with attribution to which futures they lead
+    sec = _sector_pcts()
+    if sec:
+        lines.append('\nSECTOR ETFs today (% from RTH open):')
+        SECTOR_LEADS = {
+            'XLK': 'leads /NQ & /ES (Tech)',
+            'XLC': 'leads /NQ (Comms)',
+            'XLY': 'leads /NQ & /YM (Consumer Disc)',
+            'XLV': 'leads /YM & /ES & /RTY (Healthcare)',
+            'XLF': 'leads /YM & /ES & /RTY (Financials)',
+            'XLI': 'leads /YM & /RTY (Industrials)',
+            'XLP': 'defensive (Staples)',
+            'XLE': 'energy sector',
+            'XLB': 'materials sector',
+            'XLU': 'defensive (Utilities)',
+            'XLRE': 'rate-sensitive (Real Estate)',
+            'SMH': 'semiconductors (NQ proxy)',
+        }
+        for ticker, pct in sec.items():
+            arrow = '▲' if pct > 0 else ('▼' if pct < 0 else '—')
+            label = SECTOR_LEADS.get(ticker, ticker)
+            lines.append(f'  {ticker} {arrow}{abs(pct):.2f}%  [{label}]')
+
+    # Active VBH signals (ENTRY and NEAR only)
+    sigs = state.get('signals', [])
+    active = [s for s in sigs if s.get('signal_state') in ('ENTRY', 'NEAR')]
+    if active:
+        lines.append(f'\nACTIVE VBH SIGNALS ({len(active)} at zone):')
+        for s in active:
+            sym  = s.get('symbol', '').split(':')[0]
+            mo   = s.get('mo_state', '')
+            mo_plain = {
+                'POS_UP': 'momentum rising',
+                'POS_DN': 'momentum fading ← best reversal setup',
+                'NEG_UP': 'momentum recovering',
+                'NEG_DN': 'momentum falling hard',
+            }.get(mo, '')
+            lines.append(
+                f"  {sym} {s.get('side')} [{s.get('signal_state')}] "
+                f"zone:{s.get('entry')}  stop:{s.get('stop')}  target:{s.get('l1')}"
+                + (f'  ({mo_plain})' if mo_plain else '')
+            )
+    else:
+        lines.append('\nNo signals currently at entry/near zones.')
+
+    # All signals summary
+    if sigs:
+        shorts = sum(1 for s in sigs if s.get('side') == 'SHORT')
+        longs  = sum(1 for s in sigs if s.get('side') == 'LONG')
+        lines.append(f'\nTotal signals on board: {len(sigs)} ({longs} long, {shorts} short)')
+
+    return '\n'.join(lines)
+
+
+@app.post('/api/ai/ask')
+async def ask_ai(body: dict = Body(...)):
+    """Gemini-powered conversational assistant with live dashboard context."""
+    message = body.get('message', '').strip()
+    history = body.get('history', [])   # [{role: 'user'|'model', content: str}]
+
+    if not message:
+        return {'reply': ''}
+
+    api_key = os.environ.get('GEMINI_API_KEY', '')
+    if not api_key:
+        return {'reply': 'GEMINI_API_KEY not configured.'}
+
+    # Gather internals concurrently with context build
+    internals, ctx = await asyncio.gather(
+        _internals_snapshot(),
+        asyncio.to_thread(_build_ask_ai_context),
+    )
+
+    # Append internals to context with plain interpretation
+    ctx_lines = [ctx]
+    if internals and any(internals.values()):
+        tick = internals.get('tick', 0)
+        trin = internals.get('trin', 0)
+        advn = internals.get('advn', 0)
+        decn = internals.get('decn', 0)
+        vix  = internals.get('vix', 0)
+        vxn  = internals.get('vxn', 0)
+
+        tick_read = ('strongly bullish — avoid new shorts' if tick > 800 else
+                     'strongly bearish — avoid new longs'  if tick < -800 else
+                     'mildly bullish' if tick > 200 else
+                     'mildly bearish' if tick < -200 else 'neutral')
+        trin_read = ('buying volume dominant' if trin < 0.8 else
+                     'selling volume dominant' if trin > 1.5 else 'neutral volume')
+        ad_ratio  = f'{advn/decn:.1f}:1 advancing' if decn > 0 else 'n/a'
+
+        ctx_lines.append(
+            f'\nMARKET INTERNALS (NYSE):\n'
+            f'  $TICK: {tick:+.0f} → {tick_read}\n'
+            f'  $TRIN: {trin:.2f} → {trin_read}\n'
+            f'  A/D ratio: {ad_ratio}  ({advn:,} advancing / {decn:,} declining)\n'
+            f'  VIX: {vix:.1f}   NASDAQ VIX: {vxn:.1f}'
+        )
+    else:
+        ctx_lines.append('\nMARKET INTERNALS: not available (market closed or pre-RTH)')
+    context_block = '\n'.join(ctx_lines)
+
+    try:
+        from google import genai as _genai
+        from google.genai import types as _gtypes
+
+        client = _genai.Client(api_key=api_key)
+
+        # Build conversation history for Gemini
+        gem_history = []
+        for msg in history:
+            role    = 'user' if msg.get('role') == 'user' else 'model'
+            content = msg.get('content', '')
+            gem_history.append(_gtypes.Content(
+                role=role,
+                parts=[_gtypes.Part(text=content)],
+            ))
+
+        # Inject live context into the user message
+        user_content = f'{context_block}\n\nTrader question: {message}'
+
+        resp = client.models.generate_content(
+            model    = 'gemini-2.5-flash',
+            contents = gem_history + [
+                _gtypes.Content(role='user', parts=[_gtypes.Part(text=user_content)])
+            ],
+            config   = _gtypes.GenerateContentConfig(
+                system_instruction = _ASK_AI_SYSTEM,
+                max_output_tokens  = 400,
+                temperature        = 0.4,
+            ),
+        )
+        return {'reply': resp.text.strip()}
+
+    except Exception as exc:
+        log.warning('ask_ai Gemini error: %s', exc)
+        return {'reply': f'Error: {exc}'}
+
+
+# ── On-demand Signal Advisory ─────────────────────────────────────────────────
+
+try:
+    import talib as _talib
+    _HAS_TALIB = True
+    log.info('TA-Lib loaded — using C-backed MACD')
+except ImportError:
+    _HAS_TALIB = False
+    log.info('TA-Lib not available — falling back to pandas EWM for MACD')
+
+
+# Candlestick patterns to scan — (talib_func_name, readable_name, direction)
+# direction: 'bear'=bearish reversal, 'bull'=bullish reversal, 'both'=either
+_CANDLE_PATTERNS: list[tuple[str, str, str]] = [
+    ('CDLSHOOTINGSTAR',   'Shooting Star',    'bear'),
+    ('CDLHANGINGMAN',     'Hanging Man',      'bear'),
+    ('CDLEVENINGSTAR',    'Evening Star',     'bear'),
+    ('CDLDARKCLOUDCOVER', 'Dark Cloud Cover', 'bear'),
+    ('CDLHAMMER',         'Hammer',           'bull'),
+    ('CDLINVERTEDHAMMER', 'Inverted Hammer',  'bull'),
+    ('CDLMORNINGSTAR',    'Morning Star',     'bull'),
+    ('CDLPIERCING',       'Piercing Line',    'bull'),
+    ('CDLDRAGONFLYDOJI',  'Dragonfly Doji',   'bull'),
+    ('CDLENGULFING',      'Engulfing',        'both'),  # +100=bull, -100=bear
+    ('CDLDOJI',           'Doji',             'both'),
+    ('CDLHARAMI',         'Harami',           'both'),
+]
+
+
+def _technical_context(candles: list[dict],
+                       fast: int = 8, slow: int = 17, sig_period: int = 9,
+                       rsi_period: int = 14, atr_period: int = 14) -> dict:
+    """
+    Compute MACD(8,17,9), RSI(14), ATR(14), and candlestick patterns on 5-min bars.
+    Uses TA-Lib when available; falls back to pandas EWM (identical math, adjust=False).
+    Returns a plain-English dict for the AI advisory prompt.
+    """
+    min_bars = max(slow + sig_period, rsi_period, atr_period) + 10
+    if not candles or len(candles) < min_bars:
+        return {}
+    try:
+        closes = np.array([float(c['close']) for c in candles])
+        highs  = np.array([float(c['high'])  for c in candles])
+        lows   = np.array([float(c['low'])   for c in candles])
+        opens  = np.array([float(c['open'])  for c in candles])
+
+        result: dict = {}
+
+        # ── MACD ──────────────────────────────────────────────────────────────
+        if _HAS_TALIB:
+            macd_arr, sig_arr, hist_arr = _talib.MACD(
+                closes, fastperiod=fast, slowperiod=slow, signalperiod=sig_period
+            )
+            valid = ~np.isnan(hist_arr)
+            if valid.sum() >= 2:
+                h  = hist_arr[valid]; m  = macd_arr[valid]; s = sig_arr[valid]
+                h_now, h_prev = h[-1], h[-2]
+                m_now, m_prev = m[-1], m[-2]
+                s_now, s_prev = s[-1], s[-2]
+            else:
+                h_now = h_prev = m_now = m_prev = s_now = s_prev = None
+        else:
+            cs = pd.Series(closes)
+            macd_line   = cs.ewm(span=fast, adjust=False).mean() - cs.ewm(span=slow, adjust=False).mean()
+            signal_line = macd_line.ewm(span=sig_period, adjust=False).mean()
+            histogram   = macd_line - signal_line
+            h_now,  h_prev  = histogram.iloc[-1],   histogram.iloc[-2]
+            m_now,  m_prev  = macd_line.iloc[-1],   macd_line.iloc[-2]
+            s_now,  s_prev  = signal_line.iloc[-1], signal_line.iloc[-2]
+
+        if h_now is not None:
+            crossed_bull = m_prev < s_prev and m_now > s_now
+            crossed_bear = m_prev > s_prev and m_now < s_now
+            if crossed_bull:
+                hist_state = 'fresh bullish crossover — MACD just crossed above signal line'
+            elif crossed_bear:
+                hist_state = 'fresh bearish crossover — MACD just crossed below signal line'
+            elif h_now > 0 and h_now < h_prev:
+                hist_state = 'histogram positive but shrinking — upward momentum fading (prime reversal-short setup)'
+            elif h_now > 0:
+                hist_state = 'histogram positive and still growing — upward momentum intact, wait before shorting'
+            elif h_now < 0 and abs(h_now) < abs(h_prev):
+                hist_state = 'histogram negative but shrinking — downward momentum fading (prime reversal-long setup)'
+            elif h_now < 0:
+                hist_state = 'histogram negative and growing — downward momentum accelerating, avoid longs'
+            else:
+                hist_state = 'histogram near zero — momentum directionless'
+            result['macd'] = {
+                'hist_state': hist_state,
+                'zero_pos'  : 'MACD line above zero (broader uptrend)' if m_now > 0 else 'MACD line below zero (broader downtrend)',
+            }
+
+        # ── RSI ───────────────────────────────────────────────────────────────
+        if _HAS_TALIB:
+            rsi_arr = _talib.RSI(closes, timeperiod=rsi_period)
+            rsi_val = float(rsi_arr[~np.isnan(rsi_arr)][-1]) if (~np.isnan(rsi_arr)).any() else None
+        else:
+            delta    = pd.Series(closes).diff()
+            avg_gain = delta.clip(lower=0).ewm(alpha=1/rsi_period, adjust=False).mean()
+            avg_loss = (-delta.clip(upper=0)).ewm(alpha=1/rsi_period, adjust=False).mean()
+            rs       = avg_gain / avg_loss.replace(0, np.nan)
+            rsi_val  = float((100 - 100 / (1 + rs)).iloc[-1])
+
+        if rsi_val is not None and not np.isnan(rsi_val):
+            if rsi_val >= 80:
+                rsi_label = f'{rsi_val:.1f} — strongly overbought, high reversal-short probability'
+            elif rsi_val >= 70:
+                rsi_label = f'{rsi_val:.1f} — overbought, supports reversal short'
+            elif rsi_val <= 20:
+                rsi_label = f'{rsi_val:.1f} — strongly oversold, high reversal-long probability'
+            elif rsi_val <= 30:
+                rsi_label = f'{rsi_val:.1f} — oversold, supports reversal long'
+            elif 45 <= rsi_val <= 55:
+                rsi_label = f'{rsi_val:.1f} — neutral, no overbought/oversold edge'
+            else:
+                rsi_label = f'{rsi_val:.1f} — neutral range'
+            result['rsi'] = rsi_label
+
+        # ── ATR ───────────────────────────────────────────────────────────────
+        if _HAS_TALIB:
+            atr_arr = _talib.ATR(highs, lows, closes, timeperiod=atr_period)
+            atr_val = float(atr_arr[~np.isnan(atr_arr)][-1]) if (~np.isnan(atr_arr)).any() else None
+        else:
+            hs = pd.Series(highs); ls = pd.Series(lows); cs2 = pd.Series(closes)
+            tr = pd.concat([hs - ls, (hs - cs2.shift()).abs(), (ls - cs2.shift()).abs()], axis=1).max(axis=1)
+            atr_val = float(tr.ewm(alpha=1/atr_period, adjust=False).mean().iloc[-1])
+
+        if atr_val is not None and not np.isnan(atr_val):
+            result['atr'] = round(atr_val, 2)
+
+        # ── Candlestick patterns ───────────────────────────────────────────────
+        fired: list[str] = []
+        if _HAS_TALIB:
+            for func_name, label, direction in _CANDLE_PATTERNS:
+                fn  = getattr(_talib, func_name, None)
+                if fn is None:
+                    continue
+                arr = fn(opens, highs, lows, closes)
+                val = int(arr[-1])
+                if val != 0:
+                    qualifier = ''
+                    if direction == 'both':
+                        qualifier = ' (bullish)' if val > 0 else ' (bearish)'
+                    fired.append(f'{label}{qualifier}')
+        else:
+            # Pure numpy/pandas fallback — key reversal patterns only
+            o, h, l, c = opens[-3:], highs[-3:], lows[-3:], closes[-3:]
+            body   = abs(c - o)
+            rng    = h - l
+            rng    = np.where(rng == 0, 1e-9, rng)   # avoid div/0
+
+            # Last bar (index -1)
+            upper_shadow = h[-1] - max(o[-1], c[-1])
+            lower_shadow = min(o[-1], c[-1]) - l[-1]
+            body_last    = body[-1]
+            rng_last     = rng[-1]
+            bull_bar     = c[-1] > o[-1]
+
+            # Doji: body < 10% of range
+            if body_last < 0.10 * rng_last:
+                fired.append('Doji')
+
+            # Shooting Star (bearish): upper shadow ≥ 2× body, lower shadow ≤ 15% range, bearish close
+            elif (upper_shadow >= 2 * body_last
+                  and lower_shadow <= 0.15 * rng_last
+                  and not bull_bar):
+                fired.append('Shooting Star')
+
+            # Hammer (bullish): lower shadow ≥ 2× body, upper shadow ≤ 15% range, bullish close
+            elif (lower_shadow >= 2 * body_last
+                  and upper_shadow <= 0.15 * rng_last
+                  and bull_bar):
+                fired.append('Hammer')
+
+            # Engulfing (need 2 bars): current body fully contains previous body
+            if len(c) >= 2:
+                prev_bull = c[-2] > o[-2]
+                curr_bull = c[-1] > o[-1]
+                if (not curr_bull and prev_bull              # bearish engulfing
+                        and o[-1] >= c[-2] and c[-1] <= o[-2]):
+                    fired.append('Engulfing (bearish)')
+                elif (curr_bull and not prev_bull            # bullish engulfing
+                        and o[-1] <= c[-2] and c[-1] >= o[-2]):
+                    fired.append('Engulfing (bullish)')
+
+        result['patterns'] = fired
+
+        return result
+    except Exception as exc:
+        log.debug('_technical_context error: %s', exc)
+        return {}
+
+
+_SIGNAL_ADVISORY_SYSTEM = (
+    'You are a futures trading assistant giving real-time advice. '
+    'You receive a signal context in plain terms and must return a simple verdict. '
+    'NEVER use technical jargon such as: POS_DN, POS_UP, NEG_UP, NEG_DN, L1, L2, L3, L4, '
+    'MACD, squeeze, mo_state, VAH, VAL, POC, VBH, sq_confirm, IB, VWAP, ATR, CON, AGG, WIDE. '
+    'Translate everything into plain English that a beginner trader can understand. '
+    'Respond ONLY with valid JSON (no markdown fences): '
+    '{"verdict": "ENTER" | "WAIT" | "SKIP", "reason": "one plain sentence under 15 words"}'
+)
+
+
+@app.post('/api/ai/signal-advisory')
+async def signal_advisory(body: dict = Body(...)):
+    """Return a plain-English ENTER / WAIT / SKIP verdict for a single signal row."""
+    symbol = body.get('symbol', '').split(':')[0]
+    model  = body.get('model', '')
+    side   = body.get('side', '')
+
+    # Find the matching signal in live state
+    sig = next(
+        (s for s in state.get('signals', [])
+         if s.get('symbol', '').split(':')[0] == symbol
+         and s.get('model') == model
+         and s.get('side') == side),
+        None,
+    )
+
+    # Gather internals, sector pcts, MP levels, and 5-min candles concurrently
+    internals, sec_pcts, agent_data, candles_5m = await asyncio.gather(
+        _internals_snapshot(),
+        asyncio.to_thread(_sector_pcts),
+        _fetch_agent_symbol_data(symbol),
+        asyncio.to_thread(get_candles, symbol, 3, 5),   # 3 days of 5-min bars for MACD
+    )
+    ta = _technical_context(candles_5m)
+
+    # --- Build the plain-English context prompt ---
+    lines: list[str] = [
+        f'Instrument: {symbol}  Direction: {side}  Model: {model}',
+    ]
+
+    # Market Profile levels (from agent data)
+    if agent_data:
+        lv    = agent_data.get('levels', {})
+        price = agent_data.get('price', 0)
+
+        # Last session close — key battle level
+        prev_close = lv.get('prev_close') or lv.get('prev_rth_close')
+        if prev_close and price:
+            rel = 'above' if price > prev_close else 'below'
+            lines.append(
+                f'Price vs last session close ({prev_close}): currently {rel} — '
+                f'{"bulls in control above this level" if rel == "above" else "bears in control below this level"}'
+            )
+
+        # Value Area position
+        vah  = lv.get('session_vah')
+        val  = lv.get('session_val')
+        vpoc = lv.get('session_vpoc')
+        if vah and val and price:
+            if price > vah:
+                va_pos = f'Price is ABOVE the prior session value area (top: {vah}) — extended, reversal risk high'
+            elif price < val:
+                va_pos = f'Price is BELOW the prior session value area (bottom: {val}) — extended, reversal risk high'
+            else:
+                va_pos = f'Price is INSIDE the prior session value area ({val}–{vah}) — two-sided, no directional edge'
+            if vpoc:
+                va_pos += f'  |  Session fair value (most-traded price): {vpoc}'
+            lines.append(va_pos)
+
+        # Gap
+        gap = lv.get('gap')
+        if gap is not None and abs(gap) >= 0.25:
+            prev_rth = lv.get('prev_close') or prev_close
+            direction = 'opened higher' if gap > 0 else 'opened lower'
+            filled = (price <= prev_rth) if gap > 0 else (price >= prev_rth)
+            lines.append(
+                f'Today {direction} by {abs(gap):.1f} pts from yesterday close ({prev_rth}) — '
+                f'gap is {"already filled" if filled else f"still open, gap-fill target {prev_rth}"}'
+            )
+
+        # Initial Balance
+        ib_high = lv.get('ib_high')
+        ib_low  = lv.get('ib_low')
+        if ib_high and ib_low:
+            ib_range = round(ib_high - ib_low, 2)
+            if price > ib_high:
+                ib_pos = f'Price broke above opening range high ({ib_high}), range was {ib_range} pts — bullish extension'
+            elif price < ib_low:
+                ib_pos = f'Price broke below opening range low ({ib_low}), range was {ib_range} pts — bearish extension'
+            else:
+                ib_pos = f'Price inside opening range ({ib_low}–{ib_high}, {ib_range} pts) — no breakout yet'
+            lines.append(ib_pos)
+
+    if sig:
+        state_label = sig.get('signal_state', 'UNKNOWN')
+        lines.append(f'Signal state: {state_label}  (ENTRY = price is at the zone right now; NEAR = approaching)')
+        entry = sig.get('entry', 0)
+        stop  = sig.get('stop',  0)
+        l1    = sig.get('l1',    0)
+        lines.append(f'Entry zone: {entry}   Stop loss: {stop}   First target: {l1}')
+
+        mo = sig.get('mo_state', '')
+        mo_plain = {
+            'POS_UP': 'momentum is rising — price still pushing in trend direction',
+            'POS_DN': 'momentum is decelerating — trend is fading, good reversal setup',
+            'NEG_UP': 'momentum was negative but recovering — trend may be reversing back',
+            'NEG_DN': 'momentum strongly negative — price falling fast',
+        }.get(mo, 'momentum data unavailable')
+        lines.append(f'Momentum: {mo_plain}')
+
+        sq = sig.get('sq_confirm', '')
+        sq_plain = {
+            'CONFIRMED': 'volatility compression confirmed — breakout energy building',
+            'CAUTION':   'mild volatility compression — uncertain setup',
+            'NEGATED':   'no volatility compression — setup is weaker',
+            'NEUTRAL':   'squeeze neutral — no strong signal from volatility',
+        }.get(sq, 'squeeze data unavailable')
+        lines.append(f'Volatility setup: {sq_plain}')
+
+        sq_reason = sig.get('sq_reason', '')
+        if sq_reason:
+            lines.append(f'Detail: {sq_reason}')
+
+    # ── Technical indicators (5-min bars) ────────────────────────────────────
+    if ta:
+        macd = ta.get('macd', {})
+        if macd:
+            lines.append(f'MACD 5-min (8/17/9): {macd["hist_state"]}  |  {macd["zero_pos"]}')
+
+        rsi = ta.get('rsi')
+        if rsi:
+            lines.append(f'RSI(14): {rsi}')
+
+        atr = ta.get('atr')
+        if atr and sig:
+            entry_p = sig.get('entry', 0)
+            stop_p  = sig.get('stop',  0)
+            if entry_p and stop_p:
+                stop_dist = abs(entry_p - stop_p)
+                ratio     = stop_dist / atr if atr else 0
+                if ratio < 0.5:
+                    atr_label = f'{atr} pts — stop is very tight ({ratio:.1f}× ATR), high risk of getting stopped out prematurely'
+                elif ratio <= 1.5:
+                    atr_label = f'{atr} pts — stop distance is {ratio:.1f}× ATR (healthy range)'
+                else:
+                    atr_label = f'{atr} pts — stop is wide ({ratio:.1f}× ATR), risk-reward may be poor'
+                lines.append(f'ATR(14): {atr_label}')
+            else:
+                lines.append(f'ATR(14): {atr} pts per 5-min bar (current volatility)')
+
+        patterns = ta.get('patterns', [])
+        if patterns:
+            lines.append(f'Last candle pattern(s): {", ".join(patterns)} — reversal signal at this level')
+        else:
+            lines.append('Last candle pattern: none detected on most recent 5-min bar')
+
+    # Sector alignment
+    sym_sectors = SECTORS_FOR.get(symbol, [])
+    sec_parts   = []
+    for ticker, name in sym_sectors:
+        pct   = sec_pcts.get(ticker, 0.0)
+        arrow = '▲' if pct > 0 else ('▼' if pct < 0 else '—')
+        sec_parts.append(f'{name}({ticker}) {arrow}{abs(pct):.2f}%')
+    if sec_parts:
+        lines.append('Related sectors today: ' + '  '.join(sec_parts))
+
+    # Market internals
+    if internals:
+        tick  = internals.get('tick', 0)
+        trin  = internals.get('trin', 0)
+        advn  = internals.get('advn', 0)
+        decn  = internals.get('decn', 0)
+        vix   = internals.get('vix', 0)
+        vxn   = internals.get('vxn', 0)
+
+        tick_plain = (
+            'NYSE tick strongly bullish — avoid new shorts' if tick > 800 else
+            'NYSE tick strongly bearish — avoid new longs' if tick < -800 else
+            'NYSE tick mildly bullish' if tick > 200 else
+            'NYSE tick mildly bearish' if tick < -200 else
+            'NYSE tick neutral'
+        )
+        trin_plain = (
+            'buying volume dominant (bull money flow)' if trin < 0.8 else
+            'selling volume dominant (bear money flow)' if trin > 1.5 else
+            'volume flow neutral'
+        )
+        ad_plain = (
+            f'{advn:,} stocks rising vs {decn:,} falling'
+            if advn or decn else 'breadth data unavailable'
+        )
+        lines += [
+            f'Market breadth: {tick_plain}  |  {trin_plain}',
+            f'Advancing/declining: {ad_plain}',
+            f'Volatility index: VIX {vix:.1f}  NASDAQ VIX {vxn:.1f}',
+        ]
+
+    prompt = '\n'.join(lines)
+    log.debug('signal_advisory prompt:\n%s', prompt)
+
+    try:
+        import anthropic
+        api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+        if not api_key:
+            return {'verdict': 'WAIT', 'reason': 'AI not configured.'}
+
+        client = anthropic.Anthropic(api_key=api_key)
+        resp   = client.messages.create(
+            model      = 'claude-haiku-4-5',
+            max_tokens = 120,
+            system     = _SIGNAL_ADVISORY_SYSTEM,
+            messages   = [{'role': 'user', 'content': prompt}],
+        )
+        import json as _json
+        raw = resp.content[0].text.strip()
+        # Strip markdown fences if model adds them
+        raw = raw.removeprefix('```json').removeprefix('```').removesuffix('```').strip()
+        data = _json.loads(raw)
+        verdict = data.get('verdict', 'WAIT').upper()
+        if verdict not in ('ENTER', 'WAIT', 'SKIP'):
+            verdict = 'WAIT'
+        return {'verdict': verdict, 'reason': data.get('reason', '—')}
+    except Exception as exc:
+        log.warning('signal_advisory error: %s', exc)
+        return {'verdict': 'WAIT', 'reason': 'Could not fetch advisory right now.'}
+
+
 # ── Economic Calendar (Briefing) ───────────────────────────────────────────────
 
 _briefing_cache: dict = {'data': None, 'fetched_at': 0.0}

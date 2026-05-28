@@ -12,6 +12,7 @@ import AlertToast from './components/AlertToast'
 import FuturesBrief from './components/FuturesBrief'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
+import AskAI from './components/AskAI'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL       = 55_000   // normal polling once data is live (backend cycle ~55s)
@@ -28,7 +29,7 @@ interface ApiResponse {
 }
 
 type SideFilter  = 'all' | 'longs' | 'shorts'
-type ModelFilter = 'all' | 'AGG' | 'CON'
+type ModelFilter = 'all' | 'AGG' | 'CON' | 'WIDE'
 type AssetFilter = 'all' | 'equities' | 'futures' | 'sectors'
 
 const SECTOR_TICKERS = new Set([
@@ -159,6 +160,41 @@ export default function DashboardPage() {
   const [assetFilter, setAssetFilter] = useState<AssetFilter>('all')
   const [showAsiaFX, setShowAsiaFX]   = useState(false)
 
+  // ── Watchlist (persistent symbol picker) ──────────────────────────────────
+  const [watchlist, setWatchlist]     = useState<string[]>([])
+  const [pickerOpen, setPickerOpen]   = useState(false)
+  const pickerRef = useRef<HTMLDivElement>(null)
+
+  // Load from localStorage once on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('domytrade_watchlist')
+      if (saved) setWatchlist(JSON.parse(saved))
+    } catch {}
+  }, [])
+
+  // Persist whenever it changes
+  useEffect(() => {
+    localStorage.setItem('domytrade_watchlist', JSON.stringify(watchlist))
+  }, [watchlist])
+
+  // Close picker on outside click
+  useEffect(() => {
+    if (!pickerOpen) return
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node))
+        setPickerOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [pickerOpen])
+
+  function toggleWatchlist(ticker: string) {
+    setWatchlist(prev =>
+      prev.includes(ticker) ? prev.filter(t => t !== ticker) : [...prev, ticker]
+    )
+  }
+
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auth check
@@ -248,29 +284,33 @@ export default function DashboardPage() {
     fetchSignals()
   }
 
-  // Filter signals
+  // Filter signals — watchlist narrows first, then side/model/asset apply on top
   const filteredSignals = (data?.signals ?? []).filter((sig) => {
     const isFuture  = sig.symbol.startsWith('/')
     const isSector  = SECTOR_TICKERS.has(sig.symbol)
-    const sideOk =
+    const watchOk   = watchlist.length === 0 || watchlist.includes(sig.symbol)
+    const sideOk    =
       sideFilter === 'all' ||
-      (sideFilter === 'longs' && sig.side === 'LONG') ||
+      (sideFilter === 'longs'  && sig.side === 'LONG') ||
       (sideFilter === 'shorts' && sig.side === 'SHORT')
-    const modelOk =
-      modelFilter === 'all' || sig.model === modelFilter
-    const assetOk =
+    const modelOk   = modelFilter === 'all' || sig.model === modelFilter
+    const assetOk   =
       assetFilter === 'all' ||
       (assetFilter === 'futures'  && isFuture) ||
       (assetFilter === 'equities' && !isFuture && !isSector) ||
       (assetFilter === 'sectors'  && isSector)
-    return sideOk && modelOk && assetOk
+    return watchOk && sideOk && modelOk && assetOk
   })
 
-  // Also filter the silent symbols list by asset type
-  const filteredSymbols = assetFilter === 'all'      ? allSymbols
-    : assetFilter === 'futures'  ? allSymbols.filter(s => s.ticker.startsWith('/'))
-    : assetFilter === 'sectors'  ? allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker))
-    : allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker))
+  // Silent symbols list — filtered by asset type AND watchlist
+  const filteredSymbols = allSymbols
+    .filter(s =>
+      assetFilter === 'all'      ? true :
+      assetFilter === 'futures'  ? s.ticker.startsWith('/') :
+      assetFilter === 'sectors'  ? SECTOR_TICKERS.has(s.ticker) :
+      !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker)
+    )
+    .filter(s => watchlist.length === 0 || watchlist.includes(s.ticker))
 
   const session = getSessionLabel()
 
@@ -425,18 +465,20 @@ export default function DashboardPage() {
             className="flex items-center rounded-lg p-0.5 gap-0.5"
             style={{ background: 'var(--bg-panel)' }}
           >
-            {(['all', 'AGG', 'CON'] as ModelFilter[]).map((f) => (
+            {(['all', 'AGG', 'CON', 'WIDE'] as ModelFilter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setModelFilter(f)}
                 className="rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
                 style={
                   modelFilter === f
-                    ? { background: 'var(--accent-blue)', color: '#fff' }
+                    ? f === 'WIDE'
+                      ? { background: 'rgba(20,184,166,0.25)', color: '#2dd4bf' }
+                      : { background: 'var(--accent-blue)', color: '#fff' }
                     : { background: 'transparent', color: 'var(--text-muted)' }
                 }
               >
-                {f === 'all' ? 'All Models' : f === 'AGG' ? 'Aggressive' : 'Conservative'}
+                {f === 'all' ? 'All Models' : f === 'AGG' ? 'AGGRO' : f === 'CON' ? 'CONSERV' : 'WIDE'}
               </button>
             ))}
           </div>
@@ -462,6 +504,103 @@ export default function DashboardPage() {
             ))}
           </div>
 
+          {/* Watchlist picker button */}
+          <div className="relative" ref={pickerRef}>
+            <button
+              onClick={() => setPickerOpen(v => !v)}
+              title="Add symbols to your watchlist"
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
+              style={
+                pickerOpen || watchlist.length > 0
+                  ? { background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.3)' }
+                  : { background: 'var(--bg-panel)', color: 'var(--text-muted)', border: '1px solid transparent' }
+              }
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+              Watch{watchlist.length > 0 ? ` (${watchlist.length})` : ''}
+            </button>
+
+            {pickerOpen && (
+              <div
+                className="absolute top-full left-0 z-50 mt-1 rounded-xl overflow-hidden shadow-2xl"
+                style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', width: '200px', maxHeight: '320px', overflowY: 'auto' }}
+              >
+                {/* Futures group */}
+                {allSymbols.filter(s => s.ticker.startsWith('/')).length > 0 && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-dim)', background: 'var(--bg-base)' }}>
+                      Futures
+                    </div>
+                    {allSymbols.filter(s => s.ticker.startsWith('/')).map(s => (
+                      <button
+                        key={s.ticker}
+                        onClick={() => toggleWatchlist(s.ticker)}
+                        className="w-full flex items-center justify-between px-3 py-2 text-xs text-left transition-colors"
+                        style={{
+                          color: watchlist.includes(s.ticker) ? '#fbbf24' : 'var(--text-primary)',
+                          background: watchlist.includes(s.ticker) ? 'rgba(251,191,36,0.08)' : 'transparent',
+                        }}
+                        onMouseEnter={e => { if (!watchlist.includes(s.ticker)) e.currentTarget.style.background = 'var(--bg-row)' }}
+                        onMouseLeave={e => { if (!watchlist.includes(s.ticker)) e.currentTarget.style.background = 'transparent' }}
+                      >
+                        <span className="font-semibold">{s.ticker}</span>
+                        {watchlist.includes(s.ticker) && <span style={{ color: '#fbbf24' }}>✓</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
+                {/* Sectors group */}
+                {allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker)).length > 0 && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-dim)', background: 'var(--bg-base)' }}>
+                      Sectors / ETFs
+                    </div>
+                    {allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker)).map(s => (
+                      <button
+                        key={s.ticker}
+                        onClick={() => toggleWatchlist(s.ticker)}
+                        className="w-full flex items-center justify-between px-3 py-2 text-xs text-left transition-colors"
+                        style={{
+                          color: watchlist.includes(s.ticker) ? '#fbbf24' : 'var(--text-primary)',
+                          background: watchlist.includes(s.ticker) ? 'rgba(251,191,36,0.08)' : 'transparent',
+                        }}
+                        onMouseEnter={e => { if (!watchlist.includes(s.ticker)) e.currentTarget.style.background = 'var(--bg-row)' }}
+                        onMouseLeave={e => { if (!watchlist.includes(s.ticker)) e.currentTarget.style.background = 'transparent' }}
+                      >
+                        <span className="font-semibold">{s.ticker}</span>
+                        {watchlist.includes(s.ticker) && <span style={{ color: '#fbbf24' }}>✓</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
+                {/* Equities group */}
+                {allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker)).length > 0 && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-dim)', background: 'var(--bg-base)' }}>
+                      Equities
+                    </div>
+                    {allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker)).map(s => (
+                      <button
+                        key={s.ticker}
+                        onClick={() => toggleWatchlist(s.ticker)}
+                        className="w-full flex items-center justify-between px-3 py-2 text-xs text-left transition-colors"
+                        style={{
+                          color: watchlist.includes(s.ticker) ? '#fbbf24' : 'var(--text-primary)',
+                          background: watchlist.includes(s.ticker) ? 'rgba(251,191,36,0.08)' : 'transparent',
+                        }}
+                        onMouseEnter={e => { if (!watchlist.includes(s.ticker)) e.currentTarget.style.background = 'var(--bg-row)' }}
+                        onMouseLeave={e => { if (!watchlist.includes(s.ticker)) e.currentTarget.style.background = 'transparent' }}
+                      >
+                        <span className="font-semibold">{s.ticker}</span>
+                        {watchlist.includes(s.ticker) && <span style={{ color: '#fbbf24' }}>✓</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Asia / FX toggle */}
           <button
             onClick={() => setShowAsiaFX(v => !v)}
@@ -476,6 +615,42 @@ export default function DashboardPage() {
             🌏 Asia &amp; FX
           </button>
         </div>
+
+        {/* Watchlist chips row — visible only when symbols are selected */}
+        {watchlist.length > 0 && (
+          <div
+            className="flex items-center gap-2 px-5 py-2 shrink-0 flex-wrap"
+            style={{ borderBottom: '1px solid var(--border)', background: 'rgba(251,191,36,0.04)' }}
+          >
+            <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-dim)' }}>
+              Watching
+            </span>
+            {watchlist.map(ticker => (
+              <span
+                key={ticker}
+                className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-semibold"
+                style={{ background: 'rgba(251,191,36,0.12)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.25)' }}
+              >
+                {ticker}
+                <button
+                  onClick={() => toggleWatchlist(ticker)}
+                  className="ml-0.5 leading-none opacity-60 hover:opacity-100 transition-opacity"
+                  style={{ fontSize: '10px' }}
+                  title={`Remove ${ticker}`}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={() => setWatchlist([])}
+              className="text-[10px] uppercase tracking-wider transition-opacity opacity-40 hover:opacity-80"
+              style={{ color: 'var(--text-muted)', marginLeft: '4px' }}
+            >
+              Clear all
+            </button>
+          </div>
+        )}
 
         {/* Market bias strip */}
         <MarketBias markets={marketBias} />
@@ -513,6 +688,9 @@ export default function DashboardPage() {
       {activeAlert && (
         <AlertToast alert={activeAlert} onDismiss={() => setActiveAlert(null)} />
       )}
+
+      {/* Gemini Ask AI — floating corner chat */}
+      <AskAI />
 
     </div>
   )

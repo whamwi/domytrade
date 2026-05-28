@@ -359,18 +359,18 @@ def aggregate_1min_to_15min(cutoff_days: int = 2) -> dict:
          .execute())
 
     # ── Step 4: delete aggregated 1-min rows ──────────────────────────────────
-    # Delete in pages; Supabase bulk-delete has the same row-cap as select.
+    # Supabase Python client doesn't support .limit() on delete queries.
+    # Delete per symbol_id — this is safe because we only delete rows
+    # within the same cutoff window we used to fetch rows_1min.
+    symbol_ids = list({r['symbol_id'] for r in rows_1min})
     deleted = 0
-    while True:
+    for sid in symbol_ids:
         res = (get_db().table('ohlc_1min')
                .delete()
+               .eq('symbol_id', sid)
                .lt('bar_time', cutoff)
-               .limit(CHUNK)
                .execute())
-        batch = len(res.data) if res.data else 0
-        deleted += batch
-        if batch < CHUNK:
-            break
+        deleted += len(res.data) if res.data else 0
 
     return {'aggregated': len(rows_15min), 'deleted': deleted}
 
@@ -472,8 +472,9 @@ def load_vbh_stats_from_db() -> dict[str, dict[str, list[tuple]]]:
         model = row['model']
         if ticker not in result:
             result[ticker] = {
-                'AGG': [(0.0, 0.0, 0.0, 0.0)] * 24,
-                'CON': [(0.0, 0.0, 0.0, 0.0)] * 24,
+                'AGG' : [(0.0, 0.0, 0.0, 0.0)] * 24,
+                'CON' : [(0.0, 0.0, 0.0, 0.0)] * 24,
+                'WIDE': [(0.0, 0.0, 0.0, 0.0)] * 24,
             }
         h = row['hour_et']
         result[ticker][model][h] = (

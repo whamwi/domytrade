@@ -39,7 +39,8 @@ ET            = ZoneInfo('America/New_York')
 #   CON is a 1σ-wide band identical to AGG but shifted up by 2.4σ — representing
 #   a more volatile expected range. Both studies share the same σ.
 #   L4 (T2 target) ≈ L1 in both studies (confirmed from 2022 data; exact formula unknown).
-CON_SHIFT = 2.4   # CON centre = μ + CON_SHIFT × σ
+CON_SHIFT  = 2.4   # CON  centre = μ + CON_SHIFT  × σ
+WIDE_SHIFT = 4.0   # WIDE centre = μ + WIDE_SHIFT × σ  (extra conservative)
 
 PRICE_HISTORY_URL = 'https://api.schwabapi.com/marketdata/v1/pricehistory'
 
@@ -188,12 +189,20 @@ def _compute_vbh_rows(symbol_id: int, ohlc_rows: list[dict]) -> list[dict]:
             c_l3 = c_l2 + sigma_eff              # = μ + 3.4σ_eff
             c_l4 = max(c_l1 - sigma_eff * 0.385, 0.0)  # T2: 0.385·σ_eff outside entry
 
+            # WIDE — same ±σ_eff band shifted up by 4.0 × σ_eff (extra conservative)
+            w_l2 = mu + WIDE_SHIFT * sigma_eff
+            w_l1 = w_l2 - sigma_eff              # = μ + 3.0σ_eff
+            w_l3 = w_l2 + sigma_eff              # = μ + 5.0σ_eff
+            w_l4 = max(w_l1 - sigma_eff * 0.385, 0.0)
+
             r5 = lambda v: round(v, 5)
-            l1, l2, l3, l4    = r5(a_l1), r5(a_l2), r5(a_l3), r5(a_l4)
-            cl1, cl2, cl3, cl4 = r5(c_l1), r5(c_l2), r5(c_l3), r5(c_l4)
+            l1,  l2,  l3,  l4  = r5(a_l1),  r5(a_l2),  r5(a_l3),  r5(a_l4)
+            cl1, cl2, cl3, cl4 = r5(c_l1),  r5(c_l2),  r5(c_l3),  r5(c_l4)
+            wl1, wl2, wl3, wl4 = r5(w_l1),  r5(w_l2),  r5(w_l3),  r5(w_l4)
         else:
-            l1 = l2 = l3 = l4 = 0.0
+            l1  = l2  = l3  = l4  = 0.0
             cl1 = cl2 = cl3 = cl4 = 0.0
+            wl1 = wl2 = wl3 = wl4 = 0.0
 
         rows.append({'symbol_id': symbol_id, 'model': 'AGG', 'hour_et': h,
                      'l1': l1, 'l2': l2, 'l3': l3, 'l4': l4,
@@ -202,6 +211,11 @@ def _compute_vbh_rows(symbol_id: int, ohlc_rows: list[dict]) -> list[dict]:
 
         rows.append({'symbol_id': symbol_id, 'model': 'CON', 'hour_et': h,
                      'l1': cl1, 'l2': cl2, 'l3': cl3, 'l4': cl4,
+                     'sample_count': obs, 'lookback_days': LOOKBACK_DAYS,
+                     'computed_at': now_iso})
+
+        rows.append({'symbol_id': symbol_id, 'model': 'WIDE', 'hour_et': h,
+                     'l1': wl1, 'l2': wl2, 'l3': wl3, 'l4': wl4,
                      'sample_count': obs, 'lookback_days': LOOKBACK_DAYS,
                      'computed_at': now_iso})
 
