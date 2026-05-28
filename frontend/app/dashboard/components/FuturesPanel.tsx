@@ -144,7 +144,7 @@ function LevelsChart({
 
   // Layout: [full label RIGHT-ALIGNED] | gap | [===line===] | gap | [price LEFT-ALIGNED]
   // Longest label ~20 chars × 5px/char (monospace 8.5px) ≈ 100px → give 155px
-  const W = 440, H = 480
+  const W = 440, H = 460
   const LBL_END = 155   // labels right-align to this X
   const LX1 = 163       // line left edge
   const LX2 = 253       // line right edge (90px wide lines)
@@ -168,7 +168,7 @@ function LevelsChart({
   const coreMax  = p88 + corePad
   const coreRange = coreMax - coreMin || 1
 
-  const OZ = 50                       // px reserved at each edge for outlier zone
+  const OZ = 22                       // px reserved at each edge for outlier zone (small = tight)
   const CORE_TOP = OZ                 // y where core starts (high prices)
   const CORE_BOT = H - OZ            // y where core ends (low prices)
   const CORE_H   = CORE_BOT - CORE_TOP
@@ -191,7 +191,7 @@ function LevelsChart({
   }
 
   // Anti-collision: push labels down when stacked within MIN_GAP px
-  const MIN_GAP = 11
+  const MIN_GAP = 13
   const rawY  = levelRows.map(r => toY(r.price))
   const order = levelRows.map((_, i) => i).sort((a, b) => rawY[a] - rawY[b])
   const adjY  = [...rawY]
@@ -256,8 +256,8 @@ function LevelsChart({
             )}
             {/* Label — right-aligned on LEFT side of line */}
             <text
-              x={LBL_END} y={lblY + 3.5}
-              fill={color} fontSize={8.5}
+              x={LBL_END} y={lblY + 4}
+              fill={color} fontSize={10.5}
               fontFamily="'SF Mono', ui-monospace, monospace"
               fontWeight={solid ? '600' : '400'}
               textAnchor="end">
@@ -265,8 +265,8 @@ function LevelsChart({
             </text>
             {/* Price — left-aligned on RIGHT side of line */}
             <text
-              x={PRC_X} y={lblY + 3.5}
-              fill={color} fontSize={8.5}
+              x={PRC_X} y={lblY + 4}
+              fill={color} fontSize={10.5}
               fontFamily="'SF Mono', ui-monospace, monospace"
               textAnchor="start">
               {row.price.toFixed(2)}
@@ -282,10 +282,10 @@ function LevelsChart({
           <g>
             <line x1={LX1 - 6} y1={cy} x2={LX2 + 6} y2={cy}
               stroke={priceColor} strokeWidth={2} />
-            <rect x={mid - 30} y={cy - 9} width={60} height={18}
+            <rect x={mid - 34} y={cy - 10} width={68} height={20}
               fill="#0f172a" stroke={priceColor} strokeWidth={1.5} rx={3} />
-            <text x={mid} y={cy + 4}
-              fill={priceColor} fontSize={9}
+            <text x={mid} y={cy + 5}
+              fill={priceColor} fontSize={11}
               fontFamily="'SF Mono', ui-monospace, monospace"
               fontWeight="700" textAnchor="middle">
               {last.toFixed(2)}
