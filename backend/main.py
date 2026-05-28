@@ -4179,13 +4179,15 @@ def _technical_context(candles: list[dict],
 
 
 _SIGNAL_ADVISORY_SYSTEM = (
-    'You are a futures trading assistant giving real-time advice. '
-    'You receive a signal context in plain terms and must return a simple verdict. '
-    'NEVER use technical jargon such as: POS_DN, POS_UP, NEG_UP, NEG_DN, L1, L2, L3, L4, '
-    'MACD, squeeze, mo_state, VAH, VAL, POC, VBH, sq_confirm, IB, VWAP, ATR, CON, AGG, WIDE. '
-    'Translate everything into plain English that a beginner trader can understand. '
-    'Respond ONLY with valid JSON (no markdown fences): '
-    '{"verdict": "ENTER" | "WAIT" | "SKIP", "reason": "one plain sentence under 15 words"}'
+    'You are a senior futures trader giving a quick pre-trade check. '
+    'You receive full context: price vs key levels, momentum, volatility setup, market internals, and sectors. '
+    'SYNTHESIZE ALL of it — never focus on a single indicator. '
+    'Your reason must mention AT LEAST: (1) where price is relative to a key level, '
+    '(2) what momentum/internals say, (3) the verdict rationale. '
+    'Use plain English only. NEVER use these words: squeeze, MACD, VAH, VAL, POC, VWAP, IB, ATR, '
+    'POS_UP, POS_DN, NEG_UP, NEG_DN, sq_confirm, mo_state, VBH, CON, AGG. '
+    'Respond ONLY with valid JSON (no markdown): '
+    '{"verdict": "ENTER" | "WAIT" | "SKIP", "reason": "2-3 plain sentences, max 40 words"}'
 )
 
 
@@ -4388,7 +4390,7 @@ async def signal_advisory(body: dict = Body(...)):
         client = anthropic.Anthropic(api_key=api_key)
         resp   = client.messages.create(
             model      = 'claude-haiku-4-5',
-            max_tokens = 120,
+            max_tokens = 200,
             system     = _SIGNAL_ADVISORY_SYSTEM,
             messages   = [{'role': 'user', 'content': prompt}],
         )
