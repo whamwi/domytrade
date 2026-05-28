@@ -2682,29 +2682,44 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
         sorted_rth = sorted(rth_by_date.keys(), reverse=True)
 
         prior_rth_dates_agent = [d for d in sorted_rth if d < today]
+        prior_rth_tpo_vpoc = prior_rth_tpo_vah = prior_rth_tpo_val = None
         if prior_rth_dates_agent:
             _prior_agent_bars  = rth_by_date.get(prior_rth_dates_agent[0], [])
             _prior_agent_va    = _compute_value_area(_prior_agent_bars, tick)
             prior_rth_vpoc     = _prior_agent_va['poc']
             prior_rth_vah      = _prior_agent_va['vah']
             prior_rth_val      = _prior_agent_va['val']
+            _prior_agent_tpo   = _compute_tpo_value_area(_prior_agent_bars, tick)
+            prior_rth_tpo_vpoc = _prior_agent_tpo['poc']
+            prior_rth_tpo_vah  = _prior_agent_tpo['vah']
+            prior_rth_tpo_val  = _prior_agent_tpo['val']
         else:
             prior_rth_vpoc = prior_rth_vah = prior_rth_val = None
 
         developing_vpoc = developing_vah = developing_val = None
+        developing_tpo_vpoc = developing_tpo_vah = developing_tpo_val = None
         _dev_bars_agent = rth_by_date.get(today, [])
         if _dev_bars_agent:
-            _dev_va_agent   = _compute_value_area(_dev_bars_agent, tick)
-            developing_vpoc = _dev_va_agent['poc']
-            developing_vah  = _dev_va_agent['vah']
-            developing_val  = _dev_va_agent['val']
+            _dev_va_agent       = _compute_value_area(_dev_bars_agent, tick)
+            developing_vpoc     = _dev_va_agent['poc']
+            developing_vah      = _dev_va_agent['vah']
+            developing_val      = _dev_va_agent['val']
+            _dev_tpo_agent      = _compute_tpo_value_area(_dev_bars_agent, tick)
+            developing_tpo_vpoc = _dev_tpo_agent['poc']
+            developing_tpo_vah  = _dev_tpo_agent['vah']
+            developing_tpo_val  = _dev_tpo_agent['val']
         overnight_vpoc = overnight_vah = overnight_val = None
+        overnight_tpo_vpoc = overnight_tpo_vah = overnight_tpo_val = None
         _on_bars_agent = on_by_date.get(today, [])
         if _on_bars_agent:
-            _on_va_agent   = _compute_value_area(_on_bars_agent, tick)
-            overnight_vpoc = _on_va_agent['poc']
-            overnight_vah  = _on_va_agent['vah']
-            overnight_val  = _on_va_agent['val']
+            _on_va_agent       = _compute_value_area(_on_bars_agent, tick)
+            overnight_vpoc     = _on_va_agent['poc']
+            overnight_vah      = _on_va_agent['vah']
+            overnight_val      = _on_va_agent['val']
+            _on_tpo_agent      = _compute_tpo_value_area(_on_bars_agent, tick)
+            overnight_tpo_vpoc = _on_tpo_agent['poc']
+            overnight_tpo_vah  = _on_tpo_agent['vah']
+            overnight_tpo_val  = _on_tpo_agent['val']
 
         mc3 = []
         for d in [d for d in sorted_rth if d < today][:3]:
@@ -2763,8 +2778,11 @@ async def _fetch_agent_symbol_data(symbol: str) -> dict | None:
 
         levels = {
             'prior_rth_vah': prior_rth_vah, 'prior_rth_vpoc': prior_rth_vpoc, 'prior_rth_val': prior_rth_val,
+            'prior_rth_tpo_vah': prior_rth_tpo_vah, 'prior_rth_tpo_vpoc': prior_rth_tpo_vpoc, 'prior_rth_tpo_val': prior_rth_tpo_val,
             'overnight_vah': overnight_vah, 'overnight_vpoc': overnight_vpoc, 'overnight_val': overnight_val,
+            'overnight_tpo_vah': overnight_tpo_vah, 'overnight_tpo_vpoc': overnight_tpo_vpoc, 'overnight_tpo_val': overnight_tpo_val,
             'developing_vah': developing_vah, 'developing_vpoc': developing_vpoc, 'developing_val': developing_val,
+            'developing_tpo_vah': developing_tpo_vah, 'developing_tpo_vpoc': developing_tpo_vpoc, 'developing_tpo_val': developing_tpo_val,
             'mcvpoc_3day': mcvpoc_3day, 'daily_pivot': daily_pivot,
             'weekly_pivot': weekly_pivot, 'weekly_open': weekly_open,
             'ath_intraday': ath, 'prev_high': prev_high, 'prev_low': prev_low,
@@ -4236,20 +4254,53 @@ async def signal_advisory(body: dict = Body(...)):
                 f'{"bulls in control above this level" if rel == "above" else "bears in control below this level"}'
             )
 
-        # Value Area position
-        vah  = lv.get('session_vah')
-        val  = lv.get('session_val')
-        vpoc = lv.get('session_vpoc')
+        # Prior RTH TPO Value Area (Dalton — most accurate)
+        vah  = lv.get('prior_rth_tpo_vah')  or lv.get('prior_rth_vah')
+        val  = lv.get('prior_rth_tpo_val')  or lv.get('prior_rth_val')
+        vpoc = lv.get('prior_rth_tpo_vpoc') or lv.get('prior_rth_vpoc')
         if vah and val and price:
             if price > vah:
-                va_pos = f'Price is ABOVE the prior session value area (top: {vah}) — extended, reversal risk high'
+                va_pos = f'Price is ABOVE yesterday\'s value area ({val}–{vah}) — extended above prior accepted range, reversal risk'
             elif price < val:
-                va_pos = f'Price is BELOW the prior session value area (bottom: {val}) — extended, reversal risk high'
+                va_pos = f'Price is BELOW yesterday\'s value area ({val}–{vah}) — extended below prior accepted range, reversal risk'
             else:
-                va_pos = f'Price is INSIDE the prior session value area ({val}–{vah}) — two-sided, no directional edge'
+                va_pos = f'Price is INSIDE yesterday\'s value area ({val}–{vah}) — within prior accepted range, two-sided'
             if vpoc:
-                va_pos += f'  |  Session fair value (most-traded price): {vpoc}'
+                va_pos += f'  |  Yesterday\'s most-traded price (fair value): {vpoc}'
             lines.append(va_pos)
+
+        # Overnight TPO Value Area
+        on_vah  = lv.get('overnight_tpo_vah')  or lv.get('overnight_vah')
+        on_val  = lv.get('overnight_tpo_val')   or lv.get('overnight_val')
+        on_vpoc = lv.get('overnight_tpo_vpoc')  or lv.get('overnight_vpoc')
+        if on_vah and on_val and price:
+            if price > on_vah:
+                lines.append(f'Price is above overnight range ({on_val}–{on_vah}) — extended above overnight acceptance')
+            elif price < on_val:
+                lines.append(f'Price is below overnight range ({on_val}–{on_vah}) — extended below overnight acceptance')
+            else:
+                lines.append(f'Price is inside overnight range ({on_val}–{on_vah}), overnight fair value: {on_vpoc}')
+
+        # Developing (today's) value area
+        dev_vah  = lv.get('developing_tpo_vah')  or lv.get('developing_vah')
+        dev_val  = lv.get('developing_tpo_val')   or lv.get('developing_val')
+        dev_vpoc = lv.get('developing_tpo_vpoc')  or lv.get('developing_vpoc')
+        if dev_vah and dev_val and price:
+            lines.append(f'Today\'s developing value area: {dev_val}–{dev_vah}, fair value building at {dev_vpoc}')
+
+        # Key reference levels
+        pivot = lv.get('daily_pivot')
+        if pivot and price:
+            lines.append(f'Daily pivot (H+L+C/3 yesterday): {pivot} — price {"above" if price > pivot else "below"} pivot')
+        mcvpoc = lv.get('mcvpoc_3day')
+        if mcvpoc and price:
+            lines.append(f'3-day composite fair value: {mcvpoc} — price {"above" if price > mcvpoc else "below"} multi-day fair value')
+        vwap = lv.get('vwap')
+        if vwap and price:
+            lines.append(f'VWAP (today\'s volume-weighted average): {vwap} — price {"above" if price > vwap else "below"}')
+        prev_hi = lv.get('prev_high'); prev_lo = lv.get('prev_low')
+        if prev_hi and prev_lo:
+            lines.append(f'Yesterday\'s range: {prev_lo}–{prev_hi}')
 
         # Gap
         gap = lv.get('gap')
