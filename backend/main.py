@@ -969,6 +969,27 @@ async def refresh_signals():
             rows.extend(sigs)
         await asyncio.sleep(0.1)
 
+    # ── ENTRY cascade suppression ────────────────────────────────────────────
+    # For a given symbol+side, only the most sensitive model (AGG > CON > WIDE)
+    # holds ENTRY state. If AGG is ENTRY, demote CON and WIDE to NEAR.
+    # If AGG is clear but CON is ENTRY, demote WIDE to NEAR.
+    # This prevents 3 simultaneous alerts for the same asset when price jumps fast.
+    MODEL_PRIORITY = {'AGG': 0, 'CON': 1, 'WIDE': 2}
+    from collections import defaultdict
+    entry_by_sym_side: dict = defaultdict(list)   # (symbol, side) → [model]
+    for r in rows:
+        if r.get('signal_state') == 'ENTRY':
+            entry_by_sym_side[(r['symbol'], r['side'])].append(r['model'])
+    for (sym, side), entry_models in entry_by_sym_side.items():
+        if len(entry_models) <= 1:
+            continue
+        # Keep only the highest-priority (most sensitive) model as ENTRY
+        best = min(entry_models, key=lambda m: MODEL_PRIORITY.get(m, 99))
+        for r in rows:
+            if r['symbol'] == sym and r['side'] == side and r.get('signal_state') == 'ENTRY' and r['model'] != best:
+                r['signal_state'] = 'NEAR'
+                r['entry_alert']  = False   # no beep for suppressed models
+
     rows.sort(key=lambda r: (r['side'] != 'LONG', -r['swing_pct']))
     state['signals'] = rows
     state['last_signal_update'] = datetime.now(ET).isoformat()
