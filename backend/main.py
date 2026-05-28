@@ -251,6 +251,89 @@ def _compute_vwap_poc(bars: list[dict], tick_size: float) -> dict:
     return {'vwap': vwap, 'poc': poc}
 
 
+def _compute_tpo_value_area(bars: list[dict], tick: float, pct: float = 0.70, period_min: int = 30) -> dict:
+    """Dalton TPO (Time Price Opportunity) Market Profile — original method.
+
+    Groups 1-min bars into `period_min`-minute periods (A=first 30 min, B=next, …).
+    Each period 'touches' every price tick between the period's low and high (1 TPO each).
+    POC  = price touched by the most periods.
+    Value Area = greedy expansion from POC until ≥pct of total TPO count captured.
+
+    Unlike volume profile, this is computed *exactly* from 1-min bars — no intrabar
+    volume distribution assumptions needed.
+
+    Returns {'poc', 'vah', 'val', 'periods'}.
+    """
+    from collections import defaultdict
+    _empty = {'poc': None, 'vah': None, 'val': None, 'periods': 0}
+    if not bars:
+        return _empty
+
+    # Group 1-min bars into 30-min period buckets by ET wall-clock time
+    period_bars: dict = defaultdict(list)
+    for b in bars:
+        dt    = datetime.fromtimestamp(b['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        t_min = dt.hour * 60 + dt.minute
+        key   = (dt.date(), t_min // period_min)
+        period_bars[key].append(b)
+
+    if not period_bars:
+        return _empty
+
+    # Build TPO map — each period contributes exactly 1 count per tick it touched
+    tpo_map: dict[float, int] = defaultdict(int)
+    for pbars in period_bars.values():
+        period_hi = max(b['high'] for b in pbars)
+        period_lo = min(b['low']  for b in pbars)
+        lo_t = round(round(period_lo / tick) * tick, 6)
+        hi_t = round(round(period_hi / tick) * tick, 6)
+        p = lo_t
+        while p <= hi_t + tick * 0.001:   # small epsilon avoids float rounding gaps
+            tpo_map[round(p, 6)] += 1
+            p = round(p + tick, 6)
+
+    if not tpo_map:
+        return _empty
+
+    total_tpos = sum(tpo_map.values())
+    if not total_tpos:
+        return _empty
+    target  = total_tpos * pct
+
+    poc     = max(tpo_map, key=tpo_map.get)
+    prices  = sorted(tpo_map.keys())
+    poc_idx = prices.index(poc)
+
+    # Greedy expansion from POC (same logic as volume profile)
+    va_set  = {poc}
+    va_tpos = tpo_map[poc]
+    lo_idx  = poc_idx
+    hi_idx  = poc_idx
+
+    while va_tpos < target:
+        can_up   = hi_idx + 1 < len(prices)
+        can_down = lo_idx - 1 >= 0
+        if not can_up and not can_down:
+            break
+        up_cnt = tpo_map[prices[hi_idx + 1]] if can_up   else -1
+        dn_cnt = tpo_map[prices[lo_idx - 1]] if can_down else -1
+        if up_cnt >= dn_cnt:
+            hi_idx += 1
+            va_set.add(prices[hi_idx])
+            va_tpos += up_cnt
+        else:
+            lo_idx -= 1
+            va_set.add(prices[lo_idx])
+            va_tpos += dn_cnt
+
+    return {
+        'poc':     round(poc, 2),
+        'vah':     round(max(va_set), 2),
+        'val':     round(min(va_set), 2),
+        'periods': len(period_bars),
+    }
+
+
 def _compute_value_area(bars: list[dict], tick: float, pct: float = 0.70) -> dict:
     """Value Area: price range containing `pct` (default 70%) of session volume.
     Returns {'poc': float, 'vah': float, 'val': float}.
@@ -1974,6 +2057,7 @@ async def get_levels(symbol: str):
     prior_rth_vpoc = None
     prior_rth_vah  = None
     prior_rth_val  = None
+    prior_rth_tpo_vpoc = prior_rth_tpo_vah = prior_rth_tpo_val = None
     prior_rth_dates_asc = [d for d in sorted_rth_dates if d < today]
     if prior_rth_dates_asc:
         prior_rth_bars = rth_by_date.get(prior_rth_dates_asc[0], [])
@@ -1981,15 +2065,25 @@ async def get_levels(symbol: str):
         prior_rth_vpoc = _prior_va['poc']
         prior_rth_vah  = _prior_va['vah']
         prior_rth_val  = _prior_va['val']
+        # Dalton TPO (exact — no volume distribution assumption)
+        _prior_tpo     = _compute_tpo_value_area(prior_rth_bars, tick)
+        prior_rth_tpo_vpoc = _prior_tpo['poc']
+        prior_rth_tpo_vah  = _prior_tpo['vah']
+        prior_rth_tpo_val  = _prior_tpo['val']
 
     # Overnight VPOC / VAH / VAL — today's pre-market session (incl. Sunday night for Monday)
     overnight_vpoc = overnight_vah = overnight_val = None
+    overnight_tpo_vpoc = overnight_tpo_vah = overnight_tpo_val = None
     _on_bars = on_by_date.get(today, [])
     if _on_bars:
         _on_va = _compute_value_area(_on_bars, tick)
         overnight_vpoc = _on_va['poc']
         overnight_vah  = _on_va['vah']
         overnight_val  = _on_va['val']
+        _on_tpo        = _compute_tpo_value_area(_on_bars, tick)
+        overnight_tpo_vpoc = _on_tpo['poc']
+        overnight_tpo_vah  = _on_tpo['vah']
+        overnight_tpo_val  = _on_tpo['val']
     if not overnight_vpoc:
         # Fallback: most recent overnight with data
         for d in sorted(on_by_date.keys(), reverse=True):
@@ -1998,16 +2092,25 @@ async def get_levels(symbol: str):
                 overnight_vpoc = _fb_va['poc']
                 overnight_vah  = _fb_va['vah']
                 overnight_val  = _fb_va['val']
+                _fb_tpo        = _compute_tpo_value_area(on_by_date[d], tick)
+                overnight_tpo_vpoc = _fb_tpo['poc']
+                overnight_tpo_vah  = _fb_tpo['vah']
+                overnight_tpo_val  = _fb_tpo['val']
                 break
 
     # Developing RTH — today's live RTH session (null before 9:30 or on weekends)
     developing_vpoc = developing_vah = developing_val = None
+    developing_tpo_vpoc = developing_tpo_vah = developing_tpo_val = None
     _dev_bars = rth_by_date.get(today, [])
     if _dev_bars:
         _dev_va         = _compute_value_area(_dev_bars, tick)
         developing_vpoc = _dev_va['poc']
         developing_vah  = _dev_va['vah']
         developing_val  = _dev_va['val']
+        _dev_tpo            = _compute_tpo_value_area(_dev_bars, tick)
+        developing_tpo_vpoc = _dev_tpo['poc']
+        developing_tpo_vah  = _dev_tpo['vah']
+        developing_tpo_val  = _dev_tpo['val']
 
     # MCVPOC 3-day — composite of the 3 most recent completed RTH sessions
     mc3: list[dict] = []
@@ -2169,20 +2272,36 @@ async def get_levels(symbol: str):
         'ib_low':      ib_low,
         'ib_complete': ib_complete,
         'levels': {
-            'prior_rth_vah':   prior_rth_vah,
-            'prior_rth_vpoc':  prior_rth_vpoc,
-            'prior_rth_val':   prior_rth_val,
-            'overnight_vah':   overnight_vah,
-            'overnight_vpoc':  overnight_vpoc,
-            'overnight_val':   overnight_val,
-            'developing_vah':  developing_vah,
-            'developing_vpoc': developing_vpoc,
-            'developing_val':  developing_val,
-            'mcvpoc_3day':     mcvpoc_3day,
-            'daily_pivot':     daily_pivot,
-            'prev_high':       prev_high,
-            'prev_low':        prev_low,
-            'vwap':            vwap,
+            # ── Prior RTH (volume profile) ───────────────────────────────────
+            'prior_rth_vah':       prior_rth_vah,
+            'prior_rth_vpoc':      prior_rth_vpoc,
+            'prior_rth_val':       prior_rth_val,
+            # ── Prior RTH (Dalton TPO) ───────────────────────────────────────
+            'prior_rth_tpo_vah':   prior_rth_tpo_vah,
+            'prior_rth_tpo_vpoc':  prior_rth_tpo_vpoc,
+            'prior_rth_tpo_val':   prior_rth_tpo_val,
+            # ── Overnight (volume profile) ───────────────────────────────────
+            'overnight_vah':       overnight_vah,
+            'overnight_vpoc':      overnight_vpoc,
+            'overnight_val':       overnight_val,
+            # ── Overnight (Dalton TPO) ───────────────────────────────────────
+            'overnight_tpo_vah':   overnight_tpo_vah,
+            'overnight_tpo_vpoc':  overnight_tpo_vpoc,
+            'overnight_tpo_val':   overnight_tpo_val,
+            # ── Developing RTH (volume profile) ─────────────────────────────
+            'developing_vah':      developing_vah,
+            'developing_vpoc':     developing_vpoc,
+            'developing_val':      developing_val,
+            # ── Developing RTH (Dalton TPO) ─────────────────────────────────
+            'developing_tpo_vah':  developing_tpo_vah,
+            'developing_tpo_vpoc': developing_tpo_vpoc,
+            'developing_tpo_val':  developing_tpo_val,
+            # ── Other ────────────────────────────────────────────────────────
+            'mcvpoc_3day':         mcvpoc_3day,
+            'daily_pivot':         daily_pivot,
+            'prev_high':           prev_high,
+            'prev_low':            prev_low,
+            'vwap':                vwap,
         }
     }
     _LEVELS_CACHE[symbol] = {'data': _result, 'ts': now_et}
