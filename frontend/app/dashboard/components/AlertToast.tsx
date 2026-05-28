@@ -20,11 +20,11 @@ export default function AlertToast({ alert, onDismiss }: Props) {
   // Animate in
   useEffect(() => {
     const t1 = setTimeout(() => setVisible(true), 10)
-    // Auto-dismiss after 8s
+    // Auto-dismiss after 30s
     const t2 = setTimeout(() => {
       setVisible(false)
       setTimeout(onDismiss, 300)
-    }, 8_000)
+    }, 30_000)
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [onDismiss])
 
@@ -33,20 +33,20 @@ export default function AlertToast({ alert, onDismiss }: Props) {
   return (
     <div
       style={{
-        position  : 'fixed',
-        bottom    : 24,
-        right     : 24,
-        zIndex    : 100,
-        width     : 340,
-        background: 'var(--bg-panel)',
-        border    : `1px solid ${color}`,
-        borderLeft: `4px solid ${color}`,
-        borderRadius: 10,
-        boxShadow : `0 8px 32px rgba(0,0,0,0.5), 0 0 20px ${color}22`,
-        padding   : '14px 16px',
-        transition: 'all 0.3s ease',
-        opacity   : visible ? 1 : 0,
-        transform : visible ? 'translateY(0)' : 'translateY(16px)',
+        position     : 'fixed',
+        top          : 16,
+        left         : '50%',
+        transform    : visible ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(-24px)',
+        zIndex       : 2000,
+        width        : 460,
+        background   : '#0f0d18',
+        border       : `1px solid ${color}`,
+        borderTop    : `4px solid ${color}`,
+        borderRadius : 10,
+        boxShadow    : `0 0 0 1px rgba(0,0,0,0.9), 0 16px 48px rgba(0,0,0,0.8), 0 0 40px ${color}33`,
+        padding      : '16px 20px',
+        transition   : 'all 0.3s cubic-bezier(0.34,1.56,0.64,1)',
+        opacity      : visible ? 1 : 0,
       }}
     >
       {/* Top row */}
@@ -74,18 +74,18 @@ export default function AlertToast({ alert, onDismiss }: Props) {
       </div>
 
       {/* Event title */}
-      <div className="text-sm font-semibold mt-1" style={{ color: 'var(--text-primary)' }}>
+      <div style={{ color: '#e2e8f0', fontSize: '15px', fontWeight: 700, marginTop: '6px', letterSpacing: '-0.01em' }}>
         {alert.title}
       </div>
 
       {/* Forecast / Previous */}
       {(alert.forecast || alert.previous) && (
-        <div className="flex gap-4 mt-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+        <div className="flex gap-4 mt-1.5 text-xs" style={{ color: '#64748b' }}>
           {alert.forecast && (
-            <span>Forecast <span style={{ color: 'var(--text-dim)', fontWeight: 600 }}>{alert.forecast}</span></span>
+            <span>Forecast <span style={{ color: '#cbd5e1', fontWeight: 600 }}>{alert.forecast}</span></span>
           )}
           {alert.previous && (
-            <span>Previous <span style={{ color: 'var(--text-dim)', fontWeight: 600 }}>{alert.previous}</span></span>
+            <span>Previous <span style={{ color: '#cbd5e1', fontWeight: 600 }}>{alert.previous}</span></span>
           )}
         </div>
       )}
