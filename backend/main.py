@@ -1449,10 +1449,10 @@ async def refresh_strip_opens():
                 # rth_open=0 and the entire industries strip blank.
                 if tick not in STRIP_TICKERS or not is_rth:
                     state['rth_open'][sid] = round(chosen['open'], 4)
-                # Outside RTH: seed last_price from the candle's close so the industries
-                # strip shows today's actual close (Schwab returns last=None for ETFs
-                # after hours, so refresh_signals() can't populate it from a live quote).
-                if not is_rth and chosen.get('close'):
+                # Outside RTH: seed last_price from TODAY's confirmed candle close only.
+                # Never use the fallback (yesterday's candle) — that would show yesterday's
+                # close as "current price" and produce a wrong pct until the next cycle.
+                if not is_rth and session_found and chosen.get('close'):
                     state['last_price'][sid] = round(chosen['close'], 4)
                 refreshed += 1
         except Exception as e:
