@@ -177,7 +177,7 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
           />
           {/* Card */}
           <div
-            className="absolute bottom-full left-1/2 z-50 mb-2 rounded-lg p-3 shadow-xl"
+            className="absolute top-full left-1/2 z-50 mt-2 rounded-lg p-3 shadow-xl"
             style={{
               transform:       'translateX(-50%)',
               background:      '#16131f',
