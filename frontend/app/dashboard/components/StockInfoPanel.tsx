@@ -27,6 +27,7 @@ interface StockProfile {
   sector:               string | null
   industry:             string | null
   exchange:             string | null
+  logo_url:             string | null
   market_cap:           number | null
   short_float:          number | null
   beta:                 number | null
@@ -276,21 +277,36 @@ export default function StockInfoPanel({ info, onClose }: { info: StockPanelInfo
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <div style={{ padding: '16px 20px 0', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div className="flex items-start justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center flex-wrap gap-2">
-                <span style={{ fontSize: 20, fontWeight: 800, color: '#e2e8f0', letterSpacing: '0.05em' }}>{info.symbol}</span>
-                {last > 0 && <span style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>${last.toFixed(2)}</span>}
-                <span style={{ fontSize: 12, color: chgColor, fontWeight: 600 }}>
-                  {isUp ? '+' : ''}{info.change.toFixed(2)}&nbsp;({isUp ? '+' : ''}{info.changePct.toFixed(2)}%)
-                </span>
-              </div>
-              {p?.company_name && (
-                <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-                  {p.company_name}
-                  {p.exchange && <span style={{ marginLeft: 6, color: '#334155' }}>· {p.exchange}</span>}
-                  {p.sector   && <span style={{ marginLeft: 6, color: '#334155' }}>· {p.sector}</span>}
-                </div>
+            <div className="flex items-start gap-3 flex-1 min-w-0">
+              {/* Company logo */}
+              {p?.logo_url && (
+                <img
+                  src={p.logo_url}
+                  alt={info.symbol}
+                  style={{
+                    width: 40, height: 40, borderRadius: 8, flexShrink: 0,
+                    objectFit: 'contain', background: 'rgba(255,255,255,0.06)',
+                    padding: 5, border: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                />
               )}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center flex-wrap gap-2">
+                  <span style={{ fontSize: 20, fontWeight: 800, color: '#e2e8f0', letterSpacing: '0.05em' }}>{info.symbol}</span>
+                  {last > 0 && <span style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>${last.toFixed(2)}</span>}
+                  <span style={{ fontSize: 12, color: chgColor, fontWeight: 600 }}>
+                    {isUp ? '+' : ''}{info.change.toFixed(2)}&nbsp;({isUp ? '+' : ''}{info.changePct.toFixed(2)}%)
+                  </span>
+                </div>
+                {p?.company_name && (
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
+                    {p.company_name}
+                    {p.exchange && <span style={{ marginLeft: 6, color: '#334155' }}>· {p.exchange}</span>}
+                    {p.sector   && <span style={{ marginLeft: 6, color: '#334155' }}>· {p.sector}</span>}
+                  </div>
+                )}
+              </div>
             </div>
             <button onClick={onClose} style={{ color: '#475569', fontSize: 18, background: 'none', border: 'none', cursor: 'pointer', lineHeight: 1, padding: 2, flexShrink: 0 }}>✕</button>
           </div>
