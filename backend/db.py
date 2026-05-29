@@ -403,6 +403,12 @@ def get_entry_log(limit: int = 200) -> list[dict]:
     return res.data or []
 
 
+def clear_entry_log() -> int:
+    """Delete all entry_log rows. Returns the number of rows deleted."""
+    res = get_db().table('entry_log').delete().gte('id', 0).execute()
+    return len(res.data) if res.data else 0
+
+
 # ── App Cache (key/value store for persisting computed values) ─────────────────
 
 def cache_get(key: str) -> dict | None:

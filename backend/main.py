@@ -32,7 +32,7 @@ from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 get_last_daily_bar_dates, delete_old_daily_candles,
                 get_etf_holdings, set_etf_holdings,
                 aggregate_1min_to_15min,
-                insert_entry_log, get_entry_log)
+                insert_entry_log, get_entry_log, clear_entry_log)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -5529,3 +5529,15 @@ async def api_entry_log(limit: int = Query(default=200, le=500)):
     except Exception as e:
         log.warning('entry-log fetch error: %s', e)
         return {'entries': [], 'count': 0, 'error': str(e)}
+
+
+@app.delete('/api/entry-log')
+async def api_entry_log_clear():
+    """Purge all entry_log rows (used to reset forward-testing history)."""
+    try:
+        deleted = await asyncio.to_thread(clear_entry_log)
+        log.info('Entry log purged — %d rows deleted', deleted)
+        return {'deleted': deleted}
+    except Exception as e:
+        log.warning('entry-log clear error: %s', e)
+        return {'deleted': 0, 'error': str(e)}

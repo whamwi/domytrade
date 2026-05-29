@@ -88,6 +88,14 @@ export default function EntryLog({ visible, onClose }: Props) {
     } catch { /* silent */ }
   }, [])
 
+  const purge = useCallback(async () => {
+    if (!confirm('Clear all entry log entries?')) return
+    try {
+      await fetch(`${API}/api/entry-log`, { method: 'DELETE' })
+      setEntries([])
+    } catch { /* silent */ }
+  }, [])
+
   useEffect(() => {
     if (!visible) return
     setLoading(true)
@@ -159,12 +167,24 @@ export default function EntryLog({ visible, onClose }: Props) {
           })}
         </div>
 
-        {/* Close button */}
-        <button onClick={onClose} style={{
-          marginLeft: 'auto', background: 'transparent',
-          border: 'none', color: '#64748b', cursor: 'pointer',
-          fontSize: 20, lineHeight: 1, padding: '0 4px',
-        }} title="Close log">✕</button>
+        {/* Clear + Close buttons */}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+          {entries.length > 0 && (
+            <button onClick={purge} style={{
+              background: 'rgba(248,113,113,0.08)',
+              border: '1px solid rgba(248,113,113,0.2)',
+              color: '#f87171', cursor: 'pointer',
+              borderRadius: 5, padding: '2px 9px', fontSize: 11, fontWeight: 600,
+            }} title="Purge all entries">
+              Clear
+            </button>
+          )}
+          <button onClick={onClose} style={{
+            background: 'transparent',
+            border: 'none', color: '#64748b', cursor: 'pointer',
+            fontSize: 20, lineHeight: 1, padding: '0 4px',
+          }} title="Close log">✕</button>
+        </div>
       </div>
 
       {/* Table */}
