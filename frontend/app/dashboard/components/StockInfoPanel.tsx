@@ -342,9 +342,9 @@ export default function StockInfoPanel({
                     <>
                       {p.exchange && <span style={{ fontSize: 10, color: '#334155' }}>·</span>}
                       <span style={{ fontSize: 10, color: '#64748b' }}>{p.sector}</span>
-                      {SECTOR_ETF[p.sector] && (
+                      {SECTOR_ETF[p.sector as string] && (
                         <button
-                          onClick={() => onSectorClick?.(SECTOR_ETF[p.sector]!)}
+                          onClick={() => onSectorClick?.(SECTOR_ETF[p.sector as string]!)}
                           style={{
                             fontSize:      10,
                             fontWeight:    700,
@@ -356,7 +356,7 @@ export default function StockInfoPanel({
                             cursor:        onSectorClick ? 'pointer' : 'default',
                             lineHeight:    '1.6',
                           }}
-                          title={`View ${SECTOR_ETF[p.sector]} sector ETF`}
+                          title={`View ${SECTOR_ETF[p.sector as string]} sector ETF`}
                         >
                           {SECTOR_ETF[p.sector]}
                         </button>
