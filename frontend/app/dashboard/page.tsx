@@ -317,11 +317,11 @@ export default function DashboardPage() {
     const tb = b.symbol.split(':')[0]
     const ia = PINNED_ORDER.indexOf(ta)
     const ib = PINNED_ORDER.indexOf(tb)
-    // Pinned tickers first (in defined order), then alphabetical
+    // Futures pinned first (in defined order); SignalTable handles the rest
     if (ia !== -1 && ib !== -1) return ia - ib
     if (ia !== -1) return -1
     if (ib !== -1) return  1
-    return ta.localeCompare(tb)
+    return 0
   })
 
   // Silent symbols list — filtered by asset type AND watchlist
