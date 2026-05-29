@@ -16,7 +16,7 @@ import AskAI from './components/AskAI'
 import EntryLog from './components/EntryLog'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-const REFRESH_INTERVAL       = 55_000   // normal polling once data is live (backend cycle ~55s)
+const REFRESH_INTERVAL       = 30_000   // normal polling — matches entry log cadence
 const WARMUP_RETRY_INTERVAL  = 10_000   // fast retry while backend is still computing
 const ERROR_REFRESH_INTERVAL =  5_000   // retry on network error
 
