@@ -1027,14 +1027,18 @@ async def refresh_signals():
                 state['cr'][sid] = _cr
 
         # Monitor CR breach → update bias
+        # Rule: the FIRST CR breach always overrides the opening-gap daily_bias
+        # (IB expansion picks the direction; gap bias is secondary).
+        # A SECOND breach in the opposite direction also flips the bias.
         _cr = state['cr'].get(sid)
         if _cr and _cr.get('complete') and last:
             _breached = state['cr_breached'].get(sid)
-            _bias     = state['daily_bias'].get(sid)
             if last > _cr['entry_long']:
                 # Price is above CR high+ticks — LONG breach
                 if not _breached:
+                    # First breach: IB expanded LONG → bias follows IB direction
                     state['cr_breached'][sid] = 'LONG'
+                    state['daily_bias'][sid]  = 'LONG'
                 elif _breached == 'SHORT':
                     # Short failed — flip to LONG
                     state['cr_breached'][sid] = 'LONG'
@@ -1042,7 +1046,9 @@ async def refresh_signals():
             elif last < _cr['entry_short']:
                 # Price is below CR low-ticks — SHORT breach
                 if not _breached:
+                    # First breach: IB expanded SHORT → bias follows IB direction
                     state['cr_breached'][sid] = 'SHORT'
+                    state['daily_bias'][sid]  = 'SHORT'
                 elif _breached == 'LONG':
                     # Long failed — flip to SHORT
                     state['cr_breached'][sid] = 'SHORT'
