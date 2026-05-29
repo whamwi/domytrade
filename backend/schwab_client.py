@@ -246,8 +246,13 @@ def _refresh_access_token() -> str:
         if _on_token_refreshed:
             try:
                 _on_token_refreshed(_token_cache['refresh_token'])
-            except Exception:
-                pass  # never crash on persist failure
+                _log.getLogger(__name__).info('Schwab refresh token persisted to DB')
+            except Exception as _cb_exc:
+                # Log prominently — silent failure means next restart loads a stale token
+                _log.getLogger(__name__).error(
+                    'CRITICAL: Schwab refresh token DB persist FAILED — '
+                    'next restart will use stale token: %s', _cb_exc
+                )
     return _token_cache['access_token']
 
 
