@@ -42,24 +42,20 @@ function ModelBadge({ model }: { model: string }) {
 function SideBadge({ side }: { side: string }) {
   const isLong = side === 'LONG'
   return (
-    <span style={{
-      color: isLong ? '#4ade80' : '#f87171',
-      fontWeight: 700, fontSize: 12,
-    }}>
+    <span style={{ color: isLong ? '#4ade80' : '#f87171', fontWeight: 700, fontSize: 12 }}>
       {isLong ? '▲ LONG' : '▼ SHORT'}
     </span>
   )
 }
 
-function fmt(n: number | null | undefined, dec = 2) {
+function fmt(n: number | null | undefined) {
   if (n == null) return '—'
-  return n.toFixed(dec)
+  return n.toFixed(2)
 }
 
 function fmtTime(iso: string) {
   try {
-    const d = new Date(iso)
-    return d.toLocaleTimeString('en-US', {
+    return new Date(iso).toLocaleTimeString('en-US', {
       hour: '2-digit', minute: '2-digit', second: '2-digit',
       hour12: false, timeZone: 'America/New_York',
     })
@@ -68,8 +64,7 @@ function fmtTime(iso: string) {
 
 function fmtDate(iso: string) {
   try {
-    const d = new Date(iso)
-    return d.toLocaleDateString('en-US', {
+    return new Date(iso).toLocaleDateString('en-US', {
       month: 'short', day: 'numeric', timeZone: 'America/New_York',
     })
   } catch { return '' }
@@ -77,28 +72,21 @@ function fmtDate(iso: string) {
 
 interface Props {
   visible: boolean
+  onClose: () => void
 }
 
-export default function EntryLog({ visible }: Props) {
+export default function EntryLog({ visible, onClose }: Props) {
   const [entries, setEntries] = useState<EntryRow[]>([])
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<'ALL' | 'AGG' | 'CON' | 'WIDE' | 'CR'>('ALL')
-  const [lastCount, setLastCount] = useState(0)
 
   const load = useCallback(async () => {
     try {
       const res = await fetch(`${API}/api/entry-log?limit=200`)
       const data = await res.json()
-      const rows: EntryRow[] = data.entries ?? []
-      setEntries(rows)
-      // Flash indicator if new entries arrived
-      if (rows.length > lastCount && lastCount > 0) {
-        setLastCount(rows.length)
-      } else {
-        setLastCount(rows.length)
-      }
+      setEntries(data.entries ?? [])
     } catch { /* silent */ }
-  }, [lastCount])
+  }, [])
 
   useEffect(() => {
     if (!visible) return
@@ -112,7 +100,7 @@ export default function EntryLog({ visible }: Props) {
 
   const filtered = filter === 'ALL' ? entries : entries.filter(e => e.model === filter)
 
-  // Group by date for visual separation
+  // Group by date
   const grouped: { date: string; rows: EntryRow[] }[] = []
   for (const row of filtered) {
     const d = fmtDate(row.fired_at)
@@ -124,55 +112,77 @@ export default function EntryLog({ visible }: Props) {
   const models: Array<'ALL' | 'AGG' | 'CON' | 'WIDE' | 'CR'> = ['ALL', 'AGG', 'CON', 'WIDE', 'CR']
 
   return (
+    /* Fixed overlay panel — right side, full height */
     <div style={{
-      background: '#111318', border: '1px solid #2a2d36',
-      borderRadius: 10, padding: '16px 20px', marginTop: 16,
+      position: 'fixed',
+      top: 0, right: 0,
+      width: 600,
+      height: '100vh',
+      background: '#0d0f14',
+      borderLeft: '1px solid #2a2d36',
+      display: 'flex',
+      flexDirection: 'column',
+      zIndex: 200,
+      boxShadow: '-8px 0 32px rgba(0,0,0,0.5)',
     }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-        <span style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 14 }}>
-          📋 Entry Log
-        </span>
+      <div style={{
+        padding: '16px 20px',
+        borderBottom: '1px solid #2a2d36',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        flexShrink: 0,
+      }}>
+        <span style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 15 }}>📋 Entry Log</span>
         <span style={{ color: '#64748b', fontSize: 12 }}>
-          {entries.length} entries total
+          {entries.length} entries
         </span>
-        {loading && <span style={{ color: '#64748b', fontSize: 11 }}>loading…</span>}
+        {loading && <span style={{ color: '#475569', fontSize: 11 }}>loading…</span>}
 
         {/* Model filter pills */}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 5, marginLeft: 8 }}>
           {models.map(m => {
             const s = m === 'ALL' ? null : MODEL_STYLE[m]
             const active = filter === m
             return (
-              <button
-                key={m}
-                onClick={() => setFilter(m)}
-                style={{
-                  background: active ? (s ? s.bg : 'rgba(255,255,255,0.08)') : 'transparent',
-                  color: active ? (s ? s.color : '#e2e8f0') : '#64748b',
-                  border: `1px solid ${active ? (s ? s.color + '60' : '#555') : '#2a2d36'}`,
-                  borderRadius: 5, padding: '2px 10px', fontSize: 11,
-                  fontWeight: 600, cursor: 'pointer',
-                }}
-              >
+              <button key={m} onClick={() => setFilter(m)} style={{
+                background: active ? (s ? s.bg : 'rgba(255,255,255,0.08)') : 'transparent',
+                color: active ? (s ? s.color : '#e2e8f0') : '#64748b',
+                border: `1px solid ${active ? (s ? s.color + '50' : '#555') : '#2a2d36'}`,
+                borderRadius: 5, padding: '2px 9px', fontSize: 11,
+                fontWeight: 600, cursor: 'pointer',
+              }}>
                 {m}
               </button>
             )
           })}
         </div>
+
+        {/* Close button */}
+        <button onClick={onClose} style={{
+          marginLeft: 'auto', background: 'transparent',
+          border: 'none', color: '#64748b', cursor: 'pointer',
+          fontSize: 20, lineHeight: 1, padding: '0 4px',
+        }} title="Close log">✕</button>
       </div>
 
       {/* Table */}
-      {filtered.length === 0 ? (
-        <div style={{ color: '#475569', fontSize: 13, textAlign: 'center', padding: '24px 0' }}>
-          No entries yet — waiting for first ENTRY signal
-        </div>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+        {filtered.length === 0 ? (
+          <div style={{
+            color: '#475569', fontSize: 13, textAlign: 'center',
+            padding: '40px 20px',
+          }}>
+            {entries.length === 0
+              ? 'No entries yet — waiting for first ENTRY signal'
+              : 'No entries for this model filter'}
+          </div>
+        ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
+            <thead style={{ position: 'sticky', top: 0, background: '#0d0f14', zIndex: 1 }}>
               <tr style={{ color: '#64748b', borderBottom: '1px solid #1e2130' }}>
-                <th style={th}>Time (ET)</th>
+                <th style={th}>Time ET</th>
                 <th style={th}>Symbol</th>
                 <th style={th}>Model</th>
                 <th style={th}>Side</th>
@@ -180,26 +190,24 @@ export default function EntryLog({ visible }: Props) {
                 <th style={{ ...th, textAlign: 'right' }}>Stop</th>
                 <th style={{ ...th, textAlign: 'right' }}>T1</th>
                 <th style={{ ...th, textAlign: 'right' }}>Target</th>
-                <th style={{ ...th, textAlign: 'right' }}>Last</th>
               </tr>
             </thead>
             <tbody>
               {grouped.map(({ date, rows }) => (
                 <>
                   <tr key={date + '_hdr'}>
-                    <td colSpan={9} style={{
+                    <td colSpan={8} style={{
                       color: '#475569', fontSize: 11, fontWeight: 600,
-                      padding: '8px 8px 4px', letterSpacing: '0.05em',
+                      padding: '10px 10px 4px', letterSpacing: '0.05em',
                       borderBottom: '1px solid #1e2130',
                     }}>
                       {date}
                     </td>
                   </tr>
                   {rows.map(e => (
-                    <tr
-                      key={e.id}
-                      style={{ borderBottom: '1px solid #1a1d27' }}
-                      onMouseEnter={ev => (ev.currentTarget.style.background = '#1a1d27')}
+                    <tr key={e.id}
+                      style={{ borderBottom: '1px solid #141720' }}
+                      onMouseEnter={ev => (ev.currentTarget.style.background = '#13151e')}
                       onMouseLeave={ev => (ev.currentTarget.style.background = 'transparent')}
                     >
                       <td style={td}>{fmtTime(e.fired_at)}</td>
@@ -210,24 +218,23 @@ export default function EntryLog({ visible }: Props) {
                       <td style={{ ...td, textAlign: 'right', color: '#f87171' }}>{fmt(e.stop)}</td>
                       <td style={{ ...td, textAlign: 'right', color: '#94a3b8' }}>{fmt(e.t1)}</td>
                       <td style={{ ...td, textAlign: 'right', color: '#4ade80' }}>{fmt(e.target)}</td>
-                      <td style={{ ...td, textAlign: 'right', color: '#94a3b8' }}>{fmt(e.last_price)}</td>
                     </tr>
                   ))}
                 </>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
 
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '6px 8px',
+  textAlign: 'left', padding: '8px 10px',
   fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap',
 }
 
 const td: React.CSSProperties = {
-  padding: '5px 8px', color: '#94a3b8', whiteSpace: 'nowrap',
+  padding: '6px 10px', color: '#94a3b8', whiteSpace: 'nowrap',
 }

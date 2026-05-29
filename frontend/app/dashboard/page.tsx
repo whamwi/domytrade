@@ -704,20 +704,19 @@ export default function DashboardPage() {
           {isWarmingUp && authed ? (
             <WarmUpScreen seconds={warmSeconds} retries={warmRetries} error={error} onRetry={handleRefresh} />
           ) : (
-            <>
-              <SignalTable
-                signals={filteredSignals}
-                allSymbols={filteredSymbols}
-                loading={loading}
-                error={error}
-                onRetry={handleRefresh}
-                ytdMap={ytdMap}
-              />
-              {/* Entry Log — forward-testing history */}
-              <EntryLog visible={showLog} />
-            </>
+            <SignalTable
+              signals={filteredSignals}
+              allSymbols={filteredSymbols}
+              loading={loading}
+              error={error}
+              onRetry={handleRefresh}
+              ytdMap={ytdMap}
+            />
           )}
         </div>
+
+        {/* Entry Log — fixed overlay panel, shown when Log button is active */}
+        <EntryLog visible={showLog} onClose={() => setShowLog(false)} />
       </div>
 
       {/* Economic Briefing modal */}
