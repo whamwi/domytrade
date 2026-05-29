@@ -1027,30 +1027,20 @@ async def refresh_signals():
                 state['cr'][sid] = _cr
 
         # Monitor CR breach → update bias
-        # Rule: the FIRST CR breach always overrides the opening-gap daily_bias
-        # (IB expansion picks the direction; gap bias is secondary).
-        # A SECOND breach in the opposite direction also flips the bias.
+        # Per original study: breach window = OREnd (10:00) to BreachEnd (10:30) ET.
+        # Only the FIRST breach within that 30-min window counts — no flips, no late entries.
+        # Once breached, cr_breached stays set all day so NEAR/ENTRY can show on the retreat.
+        _cr_breach_active = (10 * 60 <= et_minute < 10 * 60 + 30)  # 10:00–10:30 AM ET
+
         _cr = state['cr'].get(sid)
-        if _cr and _cr.get('complete') and last:
+        if _cr and _cr.get('complete') and last and _cr_breach_active:
             _breached = state['cr_breached'].get(sid)
-            if last > _cr['entry_long']:
-                # Price is above CR high+ticks — LONG breach
-                if not _breached:
-                    # First breach: IB expanded LONG → bias follows IB direction
+            if not _breached:
+                # Only set on FIRST breach within the window — no flips
+                if last > _cr['entry_long']:
                     state['cr_breached'][sid] = 'LONG'
                     state['daily_bias'][sid]  = 'LONG'
-                elif _breached == 'SHORT':
-                    # Short failed — flip to LONG
-                    state['cr_breached'][sid] = 'LONG'
-                    state['daily_bias'][sid]  = 'LONG'
-            elif last < _cr['entry_short']:
-                # Price is below CR low-ticks — SHORT breach
-                if not _breached:
-                    # First breach: IB expanded SHORT → bias follows IB direction
-                    state['cr_breached'][sid] = 'SHORT'
-                    state['daily_bias'][sid]  = 'SHORT'
-                elif _breached == 'LONG':
-                    # Long failed — flip to SHORT
+                elif last < _cr['entry_short']:
                     state['cr_breached'][sid] = 'SHORT'
                     state['daily_bias'][sid]  = 'SHORT'
 
