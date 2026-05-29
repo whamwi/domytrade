@@ -349,6 +349,7 @@ def make_signal(
     stats_wide: dict | None = None,  # WIDE (extra-conservative) model levels
     cr: dict | None = None,          # Clearing Range levels {high, low, mid, entry_long, entry_short, complete}
     cr_breached: str | None = None,  # 'LONG' | 'SHORT' — which CR extreme was first hit
+    cr_confirm_count: int = 0,       # number of post-IB 1-min bars that closed beyond the breach level
 ) -> list[dict] | None:
     """
     Build signal rows for one symbol using HBMR rules.
@@ -551,12 +552,14 @@ def make_signal(
             'l3': round(l3, 5), 'l4': round(l4, 5),
         })
 
-    # ── CR (Clearing Range) retreat signal ───────────────────────────────────────
-    # Fires after the Initial Balance (9:30–10:00 ET) is established and a CR
-    # extreme is breached.  The trade is: breach side → retreat to middle → entry.
-    #   LONG  breach (price > entry_long): look for retreat to mid, stop = entry_short, target = entry_long
-    #   SHORT breach (price < entry_short): look for bounce to mid, stop = entry_long, target = entry_short
-    # NEAR zone = within 30% of the half-range (entry_long/short to mid) from mid.
+    # ── CR (Clearing Range) breakout signal ──────────────────────────────────────
+    # Fires as soon as the IB extreme is breached (price crosses entry_long/short).
+    # State machine:
+    #   NEAR  — breach just detected (< 5 closed candles beyond the level)
+    #   ENTRY — 5+ closed 1-min candles have confirmed the breakout
+    #
+    # Entry reference = CR middle (fade-trade entry after confirmed breakout).
+    # Stop  = opposite CR extreme.  Target = breach extreme (full IB range).
     if cr and cr.get('complete') and cr_breached:
         cr_mid         = cr['mid']
         cr_entry_long  = cr['entry_long']
@@ -564,38 +567,20 @@ def make_signal(
         ts, tv = _tick(api_symbol)
 
         if cr_breached == 'LONG':
-            cr_side  = 'LONG'
-            entry_cr = round(cr_mid / ts) * ts
-            stop_cr  = cr_entry_short
+            cr_side   = 'LONG'
+            entry_cr  = round(cr_mid / ts) * ts
+            stop_cr   = cr_entry_short
             target_cr = cr_entry_long
-            # 1:1 risk from mid to entry_short, projected upward
-            t1_cr    = round((2 * cr_mid - cr_entry_short) / ts) * ts
-
-            cr_half  = cr_entry_long - cr_mid
-            cr_near  = cr_mid + 0.30 * cr_half   # price must drop below this for NEAR
-
-            if last_price <= cr_mid:
-                cr_state = 'ENTRY'
-            elif last_price <= cr_near:
-                cr_state = 'NEAR'
-            else:
-                cr_state = 'NEUTRAL'   # breached but not yet retreated close enough
+            t1_cr     = round((2 * cr_mid - cr_entry_short) / ts) * ts
         else:  # SHORT breach
-            cr_side  = 'SHORT'
-            entry_cr = round(cr_mid / ts) * ts
-            stop_cr  = cr_entry_long
+            cr_side   = 'SHORT'
+            entry_cr  = round(cr_mid / ts) * ts
+            stop_cr   = cr_entry_long
             target_cr = cr_entry_short
-            t1_cr    = round((2 * cr_mid - cr_entry_long) / ts) * ts
+            t1_cr     = round((2 * cr_mid - cr_entry_long) / ts) * ts
 
-            cr_half  = cr_mid - cr_entry_short
-            cr_near  = cr_mid - 0.30 * cr_half   # price must rise above this for NEAR
-
-            if last_price >= cr_mid:
-                cr_state = 'ENTRY'
-            elif last_price >= cr_near:
-                cr_state = 'NEAR'
-            else:
-                cr_state = 'NEUTRAL'   # breached but not yet bounced close enough
+        # ENTRY after 5 confirmed candles; NEAR immediately at breach
+        cr_state = 'ENTRY' if cr_confirm_count >= 5 else 'NEAR'
 
         results.append({
             'symbol'        : symbol_display,
