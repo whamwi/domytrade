@@ -1019,7 +1019,7 @@ async def refresh_signals():
 
         # Compute CR from 9:30–10:00 AM bars (once, after IB complete)
         if sid not in state['cr']:
-            ts_size, _ = _tick(api)
+            ts_size, _ = vbh_engine._tick(api)
             _cr = _compute_cr(state['1min_today'].get(sid, []), ts_size)
             if _cr:
                 state['cr'][sid] = _cr
