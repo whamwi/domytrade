@@ -7,6 +7,7 @@ import SwingBar from './SwingBar'
 import { ETF_META } from './etfMeta'
 import ETFPanel, { EtfPanelInfo } from './ETFPanel'
 import FuturesPanel, { FuturesPanelInfo } from './FuturesPanel'
+import StockInfoPanel, { StockPanelInfo } from './StockInfoPanel'
 
 // Futures that get a clickable levels panel
 const FUTURES_PANEL_TICKERS = new Set(['/ES','/NQ','/YM','/RTY','/GC','/CL','/SI','/PL','/NG','/ZB','/ZN','/HG','/RB','/ZC','/ZS','/BTC'])
@@ -381,6 +382,32 @@ function ETFSymbolCell({
   )
 }
 
+// ── Stock symbol cell: clickable to open fundamentals/technicals panel ───────
+function StockSymbolCell({ symbol, onStockClick }: { symbol: string; onStockClick: () => void }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <td className="px-3 py-2.5">
+      <span
+        className="font-bold tracking-wider"
+        style={{
+          color:         'var(--text-primary)',
+          fontSize:      '13px',
+          cursor:        'pointer',
+          borderBottom:  hovered ? '1px solid #a855f7' : '1px solid transparent',
+          paddingBottom: '1px',
+          transition:    'border-color 0.15s',
+        }}
+        onClick={onStockClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        title="Click to view fundamentals & technicals"
+      >
+        {symbol}
+      </span>
+    </td>
+  )
+}
+
 // ── Entry cell with h_high / h_low tooltip ──────────────────────────────────
 function EntryCell({ sig }: { sig: Signal }) {
   const [hovered, setHovered] = useState(false)
@@ -460,12 +487,14 @@ interface ActiveRowProps {
   rank: number
   onEtfClick:     (info: EtfPanelInfo) => void
   onFuturesClick: (info: FuturesPanelInfo) => void
+  onStockClick:   (info: StockPanelInfo) => void
   ytdMap?: Record<string, number>
 }
 
-function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowProps) {
+function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap }: ActiveRowProps) {
   const isSector  = SECTOR_TICKERS.has(sig.symbol)
   const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
+  const isStock   = !isSector && !isFutures
   const majorColor = MAJOR_MARKET_COLORS[sig.symbol]
   // Futures trade ~23h — a flat bar just means no 1-min data, not that the market is closed.
   // Only show the CLOSED badge for equities/ETFs where flat bar = genuinely no session.
@@ -509,6 +538,11 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, ytdMap }: ActiveRowP
         <FuturesSymbolCell
           symbol={sig.symbol}
           onFuturesClick={() => onFuturesClick({ symbol: sig.symbol, last: sig.last, change, changePct })}
+        />
+      ) : isStock ? (
+        <StockSymbolCell
+          symbol={sig.symbol}
+          onStockClick={() => onStockClick({ symbol: sig.symbol, last: sig.last, change, changePct })}
         />
       ) : (
         <td className="px-3 py-2.5">
@@ -638,12 +672,14 @@ interface NoSignalRowProps {
   rank: number
   onEtfClick:     (info: EtfPanelInfo) => void
   onFuturesClick: (info: FuturesPanelInfo) => void
+  onStockClick:   (info: StockPanelInfo) => void
   ytdMap?: Record<string, number>
 }
 
-function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, ytdMap }: NoSignalRowProps) {
+function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap }: NoSignalRowProps) {
   const isSector  = SECTOR_TICKERS.has(sym.ticker)
   const isFutures = FUTURES_PANEL_TICKERS.has(sym.ticker)
+  const isStock   = !isSector && !isFutures
   const last      = sym.last_price ?? null
   // Use Schwab net_change (matches TOS) — falls back to last-prev_close if unavailable
   const change    = sym.net_change != null ? sym.net_change
@@ -674,6 +710,11 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, ytdMap }: NoSignal
         <FuturesSymbolCell
           symbol={sym.ticker}
           onFuturesClick={() => onFuturesClick({ symbol: sym.ticker, last: last ?? 0, change: change ?? 0, changePct: changePct ?? 0 })}
+        />
+      ) : isStock ? (
+        <StockSymbolCell
+          symbol={sym.ticker}
+          onStockClick={() => onStockClick({ symbol: sym.ticker, last: last ?? 0, change: change ?? 0, changePct: changePct ?? 0 })}
         />
       ) : (
         <td className="px-3 py-2">
@@ -710,6 +751,7 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, ytdMap }: NoSignal
 export default function SignalTable({ signals, allSymbols, loading, error, onRetry, ytdMap }: SignalTableProps) {
   const [etfPanel,     setEtfPanel]     = useState<EtfPanelInfo | null>(null)
   const [futuresPanel, setFuturesPanel] = useState<FuturesPanelInfo | null>(null)
+  const [stockPanel,   setStockPanel]   = useState<StockPanelInfo | null>(null)
 
   if (loading) {
     return (
@@ -789,6 +831,11 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
         <FuturesPanel info={futuresPanel} onClose={() => setFuturesPanel(null)} />
       )}
 
+      {/* Stock fundamentals + technicals panel */}
+      {stockPanel && (
+        <StockInfoPanel info={stockPanel} onClose={() => setStockPanel(null)} />
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full border-collapse">
           <thead>
@@ -802,6 +849,7 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
                 rank={rank++}
                 onEtfClick={setEtfPanel}
                 onFuturesClick={setFuturesPanel}
+                onStockClick={setStockPanel}
                 ytdMap={ytdMap}
               />
             ))}
@@ -812,6 +860,7 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
                 rank={rank++}
                 onEtfClick={setEtfPanel}
                 onFuturesClick={setFuturesPanel}
+                onStockClick={setStockPanel}
                 ytdMap={ytdMap}
               />
             ))}

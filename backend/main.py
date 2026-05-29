@@ -122,6 +122,19 @@ _LEVELS_CACHE_TTL = 30      # seconds — levels stable enough to cache
 _VPOCS_CACHE: dict = {}     # {symbol: {'data': dict, 'ts': datetime}}
 _VPOCS_CACHE_TTL = 120      # seconds — naked VPOCs change slowly
 
+# Stock fundamental profiles — keyed by ticker, refreshed daily at 6 AM ET via yfinance.
+# Also attempted to persist to Supabase stock_profiles table (graceful if table absent).
+# DDL to create the table in Supabase SQL editor:
+#   CREATE TABLE IF NOT EXISTS public.stock_profiles (
+#       ticker TEXT PRIMARY KEY, company_name TEXT, sector TEXT, industry TEXT,
+#       market_cap BIGINT, pe_trailing NUMERIC(10,2), pe_forward NUMERIC(10,2),
+#       eps_trailing NUMERIC(10,4), week_52_high NUMERIC(12,4), week_52_low NUMERIC(12,4),
+#       analyst_rating TEXT, analyst_count INTEGER, target_price NUMERIC(12,4),
+#       beta NUMERIC(8,4), dividend_yield NUMERIC(8,4), description TEXT,
+#       refreshed_at TIMESTAMPTZ DEFAULT now()
+#   );
+_STOCK_PROFILES: dict = {}   # {ticker: profile_dict}
+
 
 # ── In-memory cache (rebuilt from DB on startup) ───────────────────────────────
 state = {
@@ -1665,6 +1678,7 @@ async def background_loop():
     asyncio.create_task(refresh_ytd())
     asyncio.create_task(refresh_daily_candles(incremental=False))  # full 90-day batch
     asyncio.create_task(_refresh_global_markets())                 # prime Asia + FX immediately
+    asyncio.create_task(refresh_stock_profiles())                  # stock fundamentals via yfinance
 
     last_strip_refresh      = time.time()
     last_holdings_refresh   = time.time()
@@ -1676,6 +1690,7 @@ async def background_loop():
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
+    last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
@@ -1777,6 +1792,11 @@ async def background_loop():
                 log.warning('VBH scheduled update error: %s', e)
             last_vbh_update_run = _today
 
+        # 6:00 AM ET — refresh stock fundamental profiles (yfinance)
+        if _et_hhmm == 6 * 60 and last_profiles_run != _today:
+            asyncio.create_task(refresh_stock_profiles())
+            last_profiles_run = _today
+
         if time.time() - last_daily_refresh >= 86400:   # full re-sync once per day
             asyncio.create_task(refresh_daily_candles(incremental=False))
             last_daily_refresh = time.time()
@@ -1786,6 +1806,86 @@ async def background_loop():
                 state['last_stats_update'])).total_seconds() / 3600
             if age_h >= STATS_REFRESH_HOURS:
                 await compute_all_stats()
+
+
+# ── Stock Profiles — yfinance fundamentals, refreshed daily ──────────────────
+
+async def refresh_stock_profiles():
+    """Fetch fundamental data for all stock (non-futures, non-sector) symbols via yfinance.
+
+    Runs at startup and daily at 6:00 AM ET.  Results cached in _STOCK_PROFILES and
+    optionally upserted to the Supabase stock_profiles table if it exists.
+    """
+    import yfinance as yf
+
+    stock_syms = [
+        s for s in state['symbols']
+        if not s['ticker'].startswith('/')
+        and s['ticker'] not in SECTOR_TICKERS
+    ]
+    if not stock_syms:
+        log.info('stock_profiles: no stock symbols found')
+        return
+
+    log.info('stock_profiles: refreshing %d symbols', len(stock_syms))
+
+    rec_map = {
+        'strong_buy': 'Strong Buy', 'buy': 'Buy',
+        'hold': 'Hold', 'sell': 'Sell', 'strong_sell': 'Strong Sell',
+    }
+
+    ticker_to_sid = {s['ticker']: s['id'] for s in stock_syms}
+    fresh: dict = {}
+
+    for sym in stock_syms:
+        ticker = sym['ticker']
+        try:
+            info = await asyncio.to_thread(lambda t=ticker: yf.Ticker(t).info)
+            sid  = ticker_to_sid.get(ticker)
+            last = state['last_price'].get(sid, 0) if sid else 0
+
+            target = info.get('targetMeanPrice')
+            upside = round((target - last) / last * 100, 1) if (target and last) else None
+            rec_key = (info.get('recommendationKey') or '').lower().replace(' ', '_')
+
+            fresh[ticker] = {
+                'ticker':         ticker,
+                'company_name':   info.get('longName') or info.get('shortName') or ticker,
+                'sector':         info.get('sector') or '',
+                'industry':       info.get('industry') or '',
+                'market_cap':     info.get('marketCap'),
+                'pe_trailing':    info.get('trailingPE'),
+                'pe_forward':     info.get('forwardPE'),
+                'eps_trailing':   info.get('trailingEps'),
+                'week_52_high':   info.get('fiftyTwoWeekHigh'),
+                'week_52_low':    info.get('fiftyTwoWeekLow'),
+                'analyst_rating': rec_map.get(rec_key, ''),
+                'analyst_count':  info.get('numberOfAnalystOpinions'),
+                'target_price':   target,
+                'upside_pct':     upside,
+                'beta':           info.get('beta'),
+                'dividend_yield': info.get('dividendYield'),
+                'description':    (info.get('longBusinessSummary') or '')[:600],
+                'refreshed_at':   datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as exc:
+            log.warning('stock_profile %s: %s', ticker, exc)
+
+    _STOCK_PROFILES.update(fresh)
+    log.info('stock_profiles: %d / %d succeeded', len(fresh), len(stock_syms))
+
+    # Optionally persist to Supabase — graceful if table doesn't exist yet
+    try:
+        from db import get_db as _get_db
+        rows = [
+            {k: v for k, v in p.items() if k != 'upside_pct'}
+            for p in fresh.values()
+        ]
+        if rows:
+            _get_db().table('stock_profiles').upsert(rows).execute()
+            log.info('stock_profiles: upserted %d rows to Supabase', len(rows))
+    except Exception as exc:
+        log.debug('stock_profiles: Supabase upsert skipped — %s', exc)
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -4908,3 +5008,49 @@ async def get_session_vpocs(symbol: str):
     }
     _VPOCS_CACHE[symbol] = {'data': _vpoc_result, 'ts': datetime.now(ET)}
     return _vpoc_result
+
+
+# ── Stock Profile endpoint ────────────────────────────────────────────────────
+
+@app.get('/api/stock-profile/{ticker}')
+def get_stock_profile(ticker: str):
+    """Return fundamental profile + live VBH signal data for a stock ticker.
+
+    Fundamentals come from yfinance (refreshed at 6 AM ET daily, also at startup).
+    Signal (entry/stop/target/L1-L4) comes from the live state['signals'] dict.
+    Falls back to Supabase stock_profiles table if the in-memory cache is empty.
+    """
+    ticker = ticker.upper()
+
+    # 1. Try in-memory first
+    profile: dict | None = _STOCK_PROFILES.get(ticker)
+
+    # 2. Supabase fallback (table may or may not exist)
+    if not profile:
+        try:
+            from db import get_db as _get_db
+            res = _get_db().table('stock_profiles').select('*').eq('ticker', ticker).limit(1).execute()
+            if res.data:
+                profile = res.data[0]
+        except Exception:
+            pass
+
+    # 3. Find the active signal for this ticker (supplies technicals)
+    signal = next((s for s in state['signals'] if s['symbol'] == ticker), None)
+
+    # 4. Live price
+    sym_entry = next((s for s in state['symbols'] if s['ticker'] == ticker), None)
+    sid  = sym_entry['id'] if sym_entry else None
+    last = state['last_price'].get(sid) if sid else None
+
+    # 5. Recompute upside with fresh live price
+    if profile and last:
+        tp = profile.get('target_price')
+        profile = {**profile, 'upside_pct': round((tp - last) / last * 100, 1) if tp and last else None}
+
+    return {
+        'ticker':  ticker,
+        'profile': profile,
+        'signal':  signal,
+        'last':    last,
+    }
