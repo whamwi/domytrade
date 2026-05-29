@@ -31,7 +31,8 @@ from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_daily_candles, get_daily_candles_db, get_daily_candles_batch,
                 get_last_daily_bar_dates, delete_old_daily_candles,
                 get_etf_holdings, set_etf_holdings,
-                aggregate_1min_to_15min)
+                aggregate_1min_to_15min,
+                insert_entry_log, get_entry_log)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -1174,6 +1175,33 @@ async def refresh_signals():
             })
         except Exception as e:
             log.warning('Signal snapshot save error: %s', e)
+
+    # ── Entry log — persist every NEAR→ENTRY transition for forward testing ──────
+    _entry_log_rows = [
+        {
+            'fired_at'  : datetime.now(ET).isoformat(),
+            'symbol'    : r['symbol'],
+            'model'     : r['model'],
+            'side'      : r['side'],
+            'entry'     : r['entry'],
+            'stop'      : r['stop'],
+            't1'        : r['t1'],
+            'target'    : r['target'],
+            'last_price': r['last'],
+            'daily_bias': r.get('daily_bias'),
+            'hour_et'   : r.get('hour_et'),
+        }
+        for r in rows if r.get('entry_alert')
+    ]
+    if _entry_log_rows:
+        try:
+            await asyncio.to_thread(insert_entry_log, _entry_log_rows)
+            log.info('Entry log: +%d entries (%s)',
+                     len(_entry_log_rows),
+                     ', '.join(f"{r['symbol']} {r['model']} {r['side']}"
+                               for r in _entry_log_rows))
+        except Exception as e:
+            log.warning('Entry log insert error: %s', e)
 
     # Persist to DB for future backtesting
     if rows:
@@ -5476,3 +5504,20 @@ def get_stock_profile(ticker: str):
         'last':          last,
         'price_history': price_history,
     }
+
+
+# ── Entry Log ─────────────────────────────────────────────────────────────────
+
+@app.get('/api/entry-log')
+async def api_entry_log(limit: int = Query(default=200, le=500)):
+    """Return recent ENTRY alert history for forward-testing analysis.
+
+    Each row is a NEAR→ENTRY transition across all models (AGG/CON/WIDE/CR).
+    Newest first. Default 200 rows, max 500.
+    """
+    try:
+        rows = await asyncio.to_thread(get_entry_log, limit)
+        return {'entries': rows, 'count': len(rows)}
+    except Exception as e:
+        log.warning('entry-log fetch error: %s', e)
+        return {'entries': [], 'count': 0, 'error': str(e)}

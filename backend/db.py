@@ -384,6 +384,25 @@ def insert_signals(rows: list[dict]) -> None:
     get_db().table('vbh_signals').insert(rows).execute()
 
 
+# ── Entry Log (forward-testing record of every ENTRY transition) ───────────────
+
+def insert_entry_log(rows: list[dict]) -> None:
+    """Persist ENTRY alert rows to entry_log for forward-testing analysis."""
+    if not rows:
+        return
+    get_db().table('entry_log').insert(rows).execute()
+
+
+def get_entry_log(limit: int = 200) -> list[dict]:
+    """Return the most recent entry_log rows, newest first."""
+    res = (get_db().table('entry_log')
+           .select('*')
+           .order('fired_at', desc=True)
+           .limit(limit)
+           .execute())
+    return res.data or []
+
+
 # ── App Cache (key/value store for persisting computed values) ─────────────────
 
 def cache_get(key: str) -> dict | None:

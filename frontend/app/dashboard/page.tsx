@@ -13,6 +13,7 @@ import FuturesBrief from './components/FuturesBrief'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
 import AskAI from './components/AskAI'
+import EntryLog from './components/EntryLog'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const REFRESH_INTERVAL       = 55_000   // normal polling once data is live (backend cycle ~55s)
@@ -163,6 +164,7 @@ export default function DashboardPage() {
   const [assetFilter, setAssetFilter] = useState<AssetFilter>('all')
   const [showAsiaFX, setShowAsiaFX]   = useState(false)
   const [focusMode, setFocusMode]     = useState(true)   // pin key futures, hide neutral others
+  const [showLog, setShowLog]         = useState(false)  // entry log panel
 
   // ── Watchlist (persistent symbol picker) ──────────────────────────────────
   const [watchlist, setWatchlist]     = useState<string[]>([])
@@ -537,6 +539,19 @@ export default function DashboardPage() {
             {focusMode ? '⊙ Focus' : '○ Focus'}
           </button>
 
+          {/* Entry log toggle */}
+          <button
+            onClick={() => setShowLog(v => !v)}
+            className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
+            title="Entry log — forward-testing history of all ENTRY signals"
+            style={showLog
+              ? { background: 'rgba(168,85,247,0.15)', color: '#c084fc', border: '1px solid rgba(168,85,247,0.3)' }
+              : { background: 'var(--bg-panel)',        color: 'var(--text-muted)', border: '1px solid transparent' }
+            }
+          >
+            📋 Log
+          </button>
+
           {/* Watchlist picker button */}
           <div className="relative" ref={pickerRef}>
             <button
@@ -710,6 +725,9 @@ export default function DashboardPage() {
               onRetry={handleRefresh}
               ytdMap={ytdMap}
             />
+
+            {/* Entry Log — forward-testing history */}
+            <EntryLog visible={showLog} />
           )}
         </div>
       </div>
