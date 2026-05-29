@@ -1163,7 +1163,15 @@ async def refresh_signals():
     state['signals'] = rows
     state['last_signal_update'] = datetime.now(ET).isoformat()
     state['status'] = 'live'
-    log.info('Signals refreshed — %d rows', len(rows))
+
+    _near_ct  = sum(1 for r in rows if r.get('signal_state') == 'NEAR')
+    _entry_ct = sum(1 for r in rows if r.get('signal_state') == 'ENTRY')
+    _alert_ct = sum(1 for r in rows if r.get('entry_alert'))
+    log.info('Signals refreshed — %d rows | NEAR=%d ENTRY=%d | new_entry_alert=%d',
+             len(rows), _near_ct, _entry_ct, _alert_ct)
+    if _entry_ct and not _alert_ct:
+        _entry_syms = [(r['symbol'], r['model'], r['side']) for r in rows if r.get('signal_state') == 'ENTRY']
+        log.debug('ENTRY signals (no alert — already ENTRY last cycle): %s', _entry_syms)
 
     # ── Persist snapshot to DB so next restart serves data instantly ──────────
     if rows:
