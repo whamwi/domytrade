@@ -427,13 +427,18 @@ def make_signal(
 
         if phase1 and daily_bias:
             # ── Phase 1: strict bias ──────────────────────────────────────
+            # 30% of L1 minimum approach zone (same as Phase 2)
+            _p1_near_buf   = l1 * 0.30
+            _p1_near_long  = max(shortT, hourlyRLH + _p1_near_buf)
+            _p1_near_short = min(longT,  hourlyRHL - _p1_near_buf)
+
             if daily_bias == 'LONG':
                 side   = 'LONG'
                 entry  = hourlyRLH
                 stop   = long_stop
                 t1     = long_t1
                 target = longT
-                if last_price > shortT:
+                if last_price > _p1_near_long:
                     signal_state = 'NEUTRAL'   # waiting for retreat
                 elif last_price <= hourlyRLH:
                     signal_state = 'ENTRY'
@@ -445,7 +450,7 @@ def make_signal(
                 stop   = short_stop
                 t1     = short_t1
                 target = shortT
-                if last_price < longT:
+                if last_price < _p1_near_short:
                     signal_state = 'NEUTRAL'   # waiting for bounce
                 elif last_price >= hourlyRHL:
                     signal_state = 'ENTRY'
@@ -457,13 +462,20 @@ def make_signal(
             l1_range = hourlyRHL - hourlyRLH
             pos_pct  = ((last_price - hourlyRLH) / l1_range * 100) if l1_range > 0 else 50.0
 
+            # Guaranteed minimum NEAR approach zone = 30% of L1 on each side.
+            # When l4 is very close to l1 the gray line barely precedes entry;
+            # this ensures NEAR activates early enough to be actionable.
+            _near_buf   = l1 * 0.30
+            _near_long  = max(shortT, hourlyRLH + _near_buf)   # LONG: at most 30% of L1 above entry
+            _near_short = min(longT,  hourlyRHL - _near_buf)   # SHORT: at least 30% of L1 below entry
+
             if last_price <= hourlyRLH:
                 # At or beyond LONG L1 — ENTRY LONG
                 side         = 'LONG'
                 entry, stop, t1, target = hourlyRLH, long_stop, long_t1, longT
                 signal_state = 'ENTRY'
-            elif last_price <= shortT:
-                # Between LONG L1 and lower gray — NEAR LONG
+            elif last_price <= _near_long:
+                # Within 30% of L1 above LONG entry (or gray line, whichever is farther) — NEAR LONG
                 side         = 'LONG'
                 entry, stop, t1, target = hourlyRLH, long_stop, long_t1, longT
                 signal_state = 'NEAR'
@@ -480,13 +492,13 @@ def make_signal(
                 t1     = long_t1   if side == 'LONG' else short_t1
                 target = longT     if side == 'LONG' else shortT
                 signal_state = 'NEUTRAL'
-            elif last_price < longT:
-                # Upper quarter of L1 range — neutral but drifting SHORT
+            elif last_price < _near_short:
+                # Upper quarter of L1 range — neutral but drifting SHORT (not yet in approach zone)
                 side         = 'SHORT'
                 entry, stop, t1, target = hourlyRHL, short_stop, short_t1, shortT
                 signal_state = 'NEUTRAL'
             elif last_price < hourlyRHL:
-                # Between upper gray and SHORT L1 — NEAR SHORT
+                # Within 30% of L1 below SHORT entry (or gray line, whichever is farther) — NEAR SHORT
                 side         = 'SHORT'
                 entry, stop, t1, target = hourlyRHL, short_stop, short_t1, shortT
                 signal_state = 'NEAR'
