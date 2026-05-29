@@ -301,15 +301,11 @@ export default function StockInfoPanel({
         <div style={{ padding: '16px 20px 0', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-3 flex-1 min-w-0">
-              {/* Company logo via logo.dev — ticker-based, published key is client-safe */}
+              {/* Company logo via logo.dev — no frame, natural rendering */}
               <img
                 src={`https://img.logo.dev/ticker/${info.symbol}?token=pk_fZOnZkh3QrCkdBG6NS8ckQ&size=128&format=png&retina=true`}
                 alt={info.symbol}
-                style={{
-                  width: 40, height: 40, borderRadius: 8, flexShrink: 0,
-                  objectFit: 'contain', background: 'rgba(255,255,255,0.06)',
-                  padding: 5, border: '1px solid rgba(255,255,255,0.08)',
-                }}
+                style={{ height: 48, width: 'auto', flexShrink: 0 }}
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
               />
               <div className="flex-1 min-w-0">
