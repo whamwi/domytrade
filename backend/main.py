@@ -1840,6 +1840,11 @@ async def background_loop():
             state['signals']           = snapshot['signals']
             state['last_signal_update'] = snapshot.get('last_updated', '')
             state['status']            = 'cached'
+            # Seed prev_signal_state so existing ENTRY/NEAR signals don't
+            # re-fire entry_alert on the first refresh cycle after restart.
+            for _sig in snapshot['signals']:
+                _sk = f"{_sig.get('symbol_id')}_{_sig.get('model')}"
+                state['prev_signal_state'][_sk] = _sig.get('signal_state', '')
             log.info('Pre-seeded %d cached signals from DB (last: %s)',
                      len(state['signals']), state['last_signal_update'])
     except Exception as e:
