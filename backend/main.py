@@ -948,15 +948,16 @@ async def refresh_signals():
         et_minute  = now_et.hour * 60 + now_et.minute
 
         # ── Off-hours gate ────────────────────────────────────────────────────────
-        # If no VBH stats exist for the current ET hour, skip make_signal.
-        # This is purely data-driven: futures have 24-hour stats so they always
-        # pass; equities/sectors only have RTH-hour stats so they are suppressed
-        # outside 9:30–16:00 ET automatically.  When off-hours stats are later
-        # added for an asset (e.g. SPY pre-market), it gains signals for those
-        # hours with no code change — no exception lists required.
-        _cur_hour_stats = state['stats_agg'].get(sid, {}).get(now_et.hour, (0, 0, 0, 0))
-        if _cur_hour_stats[2] == 0:
-            continue   # no VBH data for this hour — skip
+        # Only gate symbols that HAVE stats for some hours but NOT the current one.
+        # That pattern means it is genuinely off-hours for that asset.
+        # Symbols with NO stats at all (never computed yet) are let through so
+        # make_signal's own l3==0 guard handles them — prevents them from showing
+        # as CLOSED while compute_all_stats() is still running on startup.
+        _sym_stats      = state['stats_agg'].get(sid, {})
+        _cur_hour_stats = _sym_stats.get(now_et.hour, (0, 0, 0, 0))
+        if _cur_hour_stats[2] == 0 and _sym_stats:
+            # Symbol has stats for other hours — current hour is genuinely off-hours
+            continue
 
         sigs = make_signal(
             tick, api, ohlc, last,
