@@ -4344,10 +4344,20 @@ If the leading sector is weak, the futures will be weak — that is the CAUSE.
 3. SIGNALS LAST: VBH signals show WHERE price is relative to supply/demand zones, \
 not WHY price is moving. A SHORT signal means price is at a supply zone, not that price is weak.
 
+SIGNAL LEVEL MEANINGS (for ALL symbols — equities, ETFs, futures):
+- entry = VBH zone price (support for LONG, resistance for SHORT) — this IS the key S/R level
+- stop  = invalidation level (below red cloud for LONG, above green cloud for SHORT)
+- t1    = 1:1 risk-reward target
+- target = extended target (gray line — T2)
+- h_high/h_low = current session high/low used to compute the levels
+- [ENTRY] = price is at/beyond the zone right now  [NEAR] = approaching  [NEUTRAL] = mid-range
+- daily_bias = opening gap direction (LONG = gapped up, SHORT = gapped down)
+
 FOR ANY STOCK OR ETF (BABA, AAPL, TSLA, etc.):
 - Map it to its sector (BABA → China tech → KWEB/FXI context)
 - Use live internals to judge broad market tone
 - Give a direct view: is the setup long or short, what are the key levels, what is the risk
+- Always reference the actual entry/stop/target numbers from the snapshot when discussing a symbol
 
 ANSWERING "WHY is X weak/strong?":
 - Look at its leading sectors first — are they down? That's why.
@@ -4388,11 +4398,12 @@ def _build_ask_ai_context() -> str:
             label = SECTOR_LEADS.get(ticker, ticker)
             lines.append(f'  {ticker} {arrow}{abs(pct):.2f}%  [{label}]')
 
-    # Active VBH signals (ENTRY and NEAR only)
     sigs = state.get('signals', [])
+
+    # ── ACTIVE signals (ENTRY / NEAR) — full detail ──────────────────────────
     active = [s for s in sigs if s.get('signal_state') in ('ENTRY', 'NEAR')]
     if active:
-        lines.append(f'\nACTIVE VBH SIGNALS ({len(active)} at zone):')
+        lines.append(f'\nACTIVE AT ZONE ({len(active)} signals):')
         for s in active:
             sym  = s.get('symbol', '').split(':')[0]
             mo   = s.get('mo_state', '')
@@ -4403,18 +4414,42 @@ def _build_ask_ai_context() -> str:
                 'NEG_DN': 'momentum falling hard',
             }.get(mo, '')
             lines.append(
-                f"  {sym} {s.get('side')} [{s.get('signal_state')}] "
-                f"zone:{s.get('entry')}  stop:{s.get('stop')}  target:{s.get('l1')}"
+                f"  {sym} {s.get('side')} [{s.get('signal_state')}] model:{s.get('model')} "
+                f"last:{s.get('last')}  entry:{s.get('entry')}  stop:{s.get('stop')}  "
+                f"t1:{s.get('t1')}  target:{s.get('target')}"
                 + (f'  ({mo_plain})' if mo_plain else '')
             )
     else:
         lines.append('\nNo signals currently at entry/near zones.')
 
-    # All signals summary
+    # ── ALL symbol levels (compact — one row per symbol, CON model preferred) ─
+    # Groups signals by symbol so the AI can answer "what are KO's levels?"
+    # regardless of whether it's currently at a zone or not.
+    sym_best: dict[str, dict] = {}
+    MODEL_PREF = {'CON': 0, 'AGG': 1, 'WIDE': 2, 'CR': 3}
+    for s in sigs:
+        sym = s.get('symbol', '').split(':')[0]
+        model = s.get('model', '')
+        existing = sym_best.get(sym)
+        if not existing or MODEL_PREF.get(model, 9) < MODEL_PREF.get(existing.get('model', ''), 9):
+            sym_best[sym] = s
+
+    if sym_best:
+        lines.append('\nALL SYMBOL LEVELS (entry=demand/supply zone, stop=L3 boundary, target=gray):')
+        for sym, s in sorted(sym_best.items()):
+            state_str = s.get('signal_state', 'NEUTRAL')
+            bias_str  = f"  bias:{s.get('daily_bias')}" if s.get('daily_bias') else ''
+            lines.append(
+                f"  {sym} {s.get('side')} [{state_str}]{bias_str}  "
+                f"last:{s.get('last')}  entry:{s.get('entry')}  "
+                f"stop:{s.get('stop')}  t1:{s.get('t1')}  target:{s.get('target')}  "
+                f"h_high:{s.get('hour_high')}  h_low:{s.get('hour_low')}"
+            )
+
     if sigs:
         shorts = sum(1 for s in sigs if s.get('side') == 'SHORT')
         longs  = sum(1 for s in sigs if s.get('side') == 'LONG')
-        lines.append(f'\nTotal signals on board: {len(sigs)} ({longs} long, {shorts} short)')
+        lines.append(f'\nTotal signals: {len(sigs)} ({longs} long, {shorts} short)')
 
     return '\n'.join(lines)
 
