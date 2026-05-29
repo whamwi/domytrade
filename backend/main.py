@@ -1906,8 +1906,12 @@ async def refresh_stock_profiles():
                         except Exception:
                             pass
 
+                        _m = date.month
+                        quarter = f"Q{(_m-1)//3+1} {date.year}"
                         earnings_history.append({
                             'date':         date.strftime('%b %Y'),
+                            'report_date':  date.date().isoformat(),
+                            'quarter':      quarter,
                             'eps_estimate': eps_estimate,
                             'eps_actual':   eps_actual,
                             'surprise_pct': surprise_pct,
@@ -2030,6 +2034,31 @@ async def refresh_stock_profiles():
                 log.info('stock_profiles: upserted %d rows (scalar only) to Supabase', len(rows))
     except Exception as exc:
         log.debug('stock_profiles: Supabase upsert skipped — %s', exc)
+
+    # ── Upsert into normalized stock_earnings table ───────────────────────────
+    try:
+        from db import get_db as _get_db
+        earning_rows = []
+        for profile in fresh.values():
+            ticker = profile['ticker']
+            for h in (profile.get('earnings_history') or []):
+                earning_rows.append({
+                    'ticker':       ticker,
+                    'quarter':      h['quarter'],
+                    'report_date':  h.get('report_date'),
+                    'eps_estimate': h.get('eps_estimate'),
+                    'eps_actual':   h.get('eps_actual'),
+                    'surprise_pct': h.get('surprise_pct'),
+                    'result':       h.get('result'),
+                    'move_pct':     h.get('move_pct'),
+                })
+        if earning_rows:
+            _get_db().table('stock_earnings').upsert(
+                earning_rows, on_conflict='ticker,quarter'
+            ).execute()
+            log.info('stock_earnings: upserted %d rows', len(earning_rows))
+    except Exception as exc:
+        log.debug('stock_earnings: upsert skipped — %s', exc)
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
