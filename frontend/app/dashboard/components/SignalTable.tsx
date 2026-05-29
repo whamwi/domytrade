@@ -81,7 +81,7 @@ function fmt(price: number): string {
   if (price >= 1000) return price.toFixed(2)
   if (price >= 100)  return price.toFixed(2)
   if (price >= 10)   return price.toFixed(3)
-  return price.toFixed(4)
+  return price.toFixed(3)   // e.g. /NG at 3.273 — 3 decimal places
 }
 
 const COLS = [

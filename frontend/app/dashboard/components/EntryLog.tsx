@@ -50,6 +50,7 @@ function SideBadge({ side }: { side: string }) {
 
 function fmt(n: number | null | undefined) {
   if (n == null) return '—'
+  if (n < 10)   return n.toFixed(3)   // /NG and other sub-10 futures
   return n.toFixed(2)
 }
 
