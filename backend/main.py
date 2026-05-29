@@ -166,6 +166,8 @@ state = {
     'last_signal_update': None,
     'status'           : 'starting',
     'active_contracts'  : {},   # {ticker: active_contract} e.g. {'/GC': '/GCQ26'}
+    'last_loop_error'   : None,  # most recent background loop exception string
+    'token_state'       : 'unknown',  # 'loaded_from_db' | 'using_env_var' | 'load_failed'
 }
 
 
@@ -717,6 +719,7 @@ async def refresh_signals():
     try:
         quotes_raw = await asyncio.to_thread(get_quotes, quote_syms)
     except Exception as e:
+        state['last_loop_error'] = f'get_quotes: {type(e).__name__}: {e}'
         log.warning('Quote fetch error: %s', e)
         return
 
@@ -1624,12 +1627,17 @@ async def background_loop():
         if saved_token and saved_token.get('token'):
             _schwab_token_cache['refresh_token'] = saved_token['token']
             log.info('Schwab refresh token loaded from DB cache')
+            state['token_state'] = 'loaded_from_db'
+        else:
+            log.warning('Schwab token: DB cache empty — using env var (may be stale)')
+            state['token_state'] = 'using_env_var'
         # Register callback so every future rotation is persisted automatically
         set_token_refresh_callback(
             lambda t: cache_set('schwab_refresh_token', {'token': t})
         )
     except Exception as e:
         log.warning('Schwab token cache load error: %s', e)
+        state['token_state'] = f'load_failed: {e}'
 
     state['symbols'] = get_active_symbols()
     log.info('Loaded %d symbols', len(state['symbols']))
@@ -1859,6 +1867,7 @@ async def background_loop():
                     await compute_all_stats()
 
         except Exception as _loop_exc:
+            state['last_loop_error'] = f'{type(_loop_exc).__name__}: {_loop_exc}'
             log.error('background_loop cycle error (will retry next tick): %s', _loop_exc, exc_info=True)
 
 
@@ -2148,6 +2157,8 @@ def debug_loop():
         'age_seconds'    : age_s,
         'signal_count'   : len(state['signals']),
         'last_stats'     : state['last_stats_update'],
+        'token_state'    : state.get('token_state', 'unknown'),
+        'last_loop_error': state.get('last_loop_error'),
     }
 
 
