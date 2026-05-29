@@ -134,7 +134,7 @@ export default function EntryLog({ visible, onClose }: Props) {
         gap: 10,
         flexShrink: 0,
       }}>
-        <span style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 15 }}>📋 Entry Log</span>
+        <span style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 15 }}>Entry Log</span>
         <span style={{ color: '#64748b', fontSize: 12 }}>
           {entries.length} entries
         </span>

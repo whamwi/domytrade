@@ -342,7 +342,7 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-full min-h-screen" style={{ background: 'var(--bg-base)' }}>
-      <Sidebar activeTab={activeTab} focusMode={focusMode} onFocusToggle={() => setFocusMode(f => !f)} />
+      <Sidebar activeTab={activeTab} focusMode={focusMode} onFocusToggle={() => setFocusMode(f => !f)} showLog={showLog} onLogToggle={() => setShowLog(v => !v)} />
 
       {/* Agent tab — always mounted to preserve chat history and avoid refetch on toggle */}
       <div className="flex-1 min-w-0 overflow-auto" style={{ display: activeTab === 'agent' ? undefined : 'none' }}>
@@ -526,18 +526,6 @@ export default function DashboardPage() {
             ))}
           </div>
 
-          {/* Entry log toggle */}
-          <button
-            onClick={() => setShowLog(v => !v)}
-            className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
-            title="Entry log — forward-testing history of all ENTRY signals"
-            style={showLog
-              ? { background: 'rgba(168,85,247,0.15)', color: '#c084fc', border: '1px solid rgba(168,85,247,0.3)' }
-              : { background: 'var(--bg-panel)',        color: 'var(--text-muted)', border: '1px solid transparent' }
-            }
-          >
-            📋 Log
-          </button>
 
           {/* Watchlist picker button */}
           <div className="relative" ref={pickerRef}>

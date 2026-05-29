@@ -7,9 +7,11 @@ interface SidebarProps {
   activeTab?: string
   focusMode?: boolean
   onFocusToggle?: () => void
+  showLog?: boolean
+  onLogToggle?: () => void
 }
 
-export default function Sidebar({ activeTab = 'dashboard', focusMode = false, onFocusToggle }: SidebarProps) {
+export default function Sidebar({ activeTab = 'dashboard', focusMode = false, onFocusToggle, showLog = false, onLogToggle }: SidebarProps) {
   const router = useRouter()
 
   async function handleLogout() {
@@ -141,6 +143,40 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
           </svg>
         </button>
       </div>
+
+      {/* Entry log toggle */}
+      <button
+        title="Entry log — forward-testing history of all ENTRY signals"
+        onClick={onLogToggle}
+        className="flex items-center justify-center rounded-lg py-2.5 transition-colors"
+        style={{
+          width: 'calc(100% - 16px)',
+          background: showLog ? 'rgba(168,85,247,0.12)' : 'transparent',
+          color: showLog ? '#c084fc' : 'var(--text-muted)',
+          border: showLog ? '1px solid rgba(168,85,247,0.25)' : '1px solid transparent',
+          marginBottom: 4,
+        }}
+        onMouseEnter={(e) => {
+          if (!showLog) {
+            e.currentTarget.style.background = 'rgba(168,85,247,0.08)'
+            e.currentTarget.style.color = '#c084fc'
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (!showLog) {
+            e.currentTarget.style.background = 'transparent'
+            e.currentTarget.style.color = 'var(--text-muted)'
+          }
+        }}
+      >
+        {/* List / log icon */}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+          <rect x="9" y="3" width="6" height="4" rx="1"/>
+          <line x1="9" y1="12" x2="15" y2="12"/>
+          <line x1="9" y1="16" x2="13" y2="16"/>
+        </svg>
+      </button>
 
       {/* Focus mode toggle */}
       <button
