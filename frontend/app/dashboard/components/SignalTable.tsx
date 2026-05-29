@@ -559,7 +559,7 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
 
       {/* CHANGE from day open */}
       <td className="px-3 py-2.5 text-right tabular-nums" style={{ fontSize: '12px' }}>
-        {sig.prev_close > 0 ? (
+        {ref > 0 ? (
           <span style={{ color: changeColor }}>
             {isUp ? '+' : ''}{change.toFixed(2)}{' '}
             <span style={{ opacity: 0.75 }}>({isUp ? '+' : ''}{changePct.toFixed(2)}%)</span>
