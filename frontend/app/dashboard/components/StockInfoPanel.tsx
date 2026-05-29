@@ -637,9 +637,10 @@ export default function StockInfoPanel({
                 <>
                   <div className="flex items-center gap-2 mb-4 flex-wrap">
                     <span className="rounded px-2 py-0.5 text-xs font-bold"
-                      style={sig.model === 'AGG' ? { background: 'rgba(251,191,36,0.15)',  color: '#fbbf24' }
-                           : sig.model === 'CON' ? { background: 'rgba(165,180,252,0.12)', color: '#a5b4fc' }
-                           :                       { background: 'rgba(45,212,191,0.12)',  color: '#2dd4bf' }}>
+                      style={sig.model === 'AGG'  ? { background: 'rgba(251,191,36,0.15)',  color: '#fbbf24' }
+                           : sig.model === 'CON'  ? { background: 'rgba(165,180,252,0.12)', color: '#a5b4fc' }
+                           : sig.model === 'WIDE' ? { background: 'rgba(45,212,191,0.12)',  color: '#2dd4bf' }
+                           :                        { background: 'rgba(168,85,247,0.15)',  color: '#c084fc' }}>
                       {sig.model}
                     </span>
                     <span className="rounded px-2 py-0.5 text-xs font-bold"

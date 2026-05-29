@@ -29,7 +29,7 @@ interface ApiResponse {
 }
 
 type SideFilter  = 'all' | 'longs' | 'shorts'
-type ModelFilter = 'all' | 'AGG' | 'CON' | 'WIDE'
+type ModelFilter = 'all' | 'AGG' | 'CON' | 'WIDE' | 'CR'
 type AssetFilter = 'all' | 'equities' | 'futures' | 'sectors'
 
 const SECTOR_TICKERS = new Set([
@@ -465,20 +465,20 @@ export default function DashboardPage() {
             className="flex items-center rounded-lg p-0.5 gap-0.5"
             style={{ background: 'var(--bg-panel)' }}
           >
-            {(['all', 'AGG', 'CON', 'WIDE'] as ModelFilter[]).map((f) => (
+            {(['all', 'AGG', 'CON', 'WIDE', 'CR'] as ModelFilter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setModelFilter(f)}
                 className="rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
                 style={
                   modelFilter === f
-                    ? f === 'WIDE'
-                      ? { background: 'rgba(20,184,166,0.25)', color: '#2dd4bf' }
-                      : { background: 'var(--accent-blue)', color: '#fff' }
+                    ? f === 'WIDE' ? { background: 'rgba(20,184,166,0.25)', color: '#2dd4bf' }
+                    : f === 'CR'   ? { background: 'rgba(168,85,247,0.25)',  color: '#c084fc' }
+                    :                { background: 'var(--accent-blue)', color: '#fff' }
                     : { background: 'transparent', color: 'var(--text-muted)' }
                 }
               >
-                {f === 'all' ? 'All Models' : f === 'AGG' ? 'AGGRO' : f === 'CON' ? 'CONSERV' : 'WIDE'}
+                {f === 'all' ? 'All Models' : f === 'AGG' ? 'AGGRO' : f === 'CON' ? 'CONSERV' : f}
               </button>
             ))}
           </div>

@@ -30,7 +30,7 @@ export interface Signal {
   symbol: string
   api_symbol: string
   side: 'LONG' | 'SHORT'
-  model: 'AGG' | 'CON' | 'WIDE'
+  model: 'AGG' | 'CON' | 'WIDE' | 'CR'
   entry: number
   stop: number
   target: number
@@ -574,7 +574,8 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
           style={
             sig.model === 'AGG'  ? { background: 'var(--amber-bg)',  color: '#fbbf24' } :
             sig.model === 'CON'  ? { background: 'var(--indigo-bg)', color: '#a5b4fc' } :
-                                   { background: 'rgba(20,184,166,0.12)', color: '#2dd4bf' }  // WIDE = teal
+            sig.model === 'WIDE' ? { background: 'rgba(20,184,166,0.12)', color: '#2dd4bf' } :
+                                   { background: 'rgba(168,85,247,0.15)', color: '#c084fc' }  // CR = purple
           }
         >
           {sig.model}

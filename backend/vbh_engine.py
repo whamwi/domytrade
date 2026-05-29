@@ -345,8 +345,10 @@ def make_signal(
     dollar_risk: float = 50.0,
     hour_override: int | None = None,
     daily_bias: str | None = None,   # 'LONG' | 'SHORT' — RTH open vs prev_settle
-    et_minute: int | None = None,    # minutes since midnight ET, for phase detection
+    et_minute: int | None = None,    # minutes since midnight ET (kept for compatibility)
     stats_wide: dict | None = None,  # WIDE (extra-conservative) model levels
+    cr: dict | None = None,          # Clearing Range levels {high, low, mid, entry_long, entry_short, complete}
+    cr_breached: str | None = None,  # 'LONG' | 'SHORT' — which CR extreme was first hit
 ) -> list[dict] | None:
     """
     Build signal rows for one symbol using HBMR rules.
@@ -358,8 +360,9 @@ def make_signal(
       longT     (h_low+L4)   ← NEAR/NEUTRAL boundary (SHORT side)
       hourlyRHL (h_low+L1)   ← SHORT entry
 
-    Phase 1 (9:30–11:00 ET): bias-driven, strict side suppression.
-    Phase 2 (after 11:00 ET): position-driven, neutral zone suppressed.
+    Phase 1 (bias active): bias-driven, strict side suppression.  Bias holds until IB
+    is breached in the opposite direction — NO fixed time cutoff.
+    Phase 2 (no bias): position-driven, both sides shown.
     """
     now_et = datetime.now(ET)
     h = hour_override if hour_override is not None else now_et.hour
@@ -412,9 +415,9 @@ def make_signal(
         short_t1   = round((hourlyRHL - short_risk) / ts) * ts
 
         # ── HBMR signal state ────────────────────────────────────────────
-        # Phase 1 = 9:30–11:00 (bias-driven, strict suppression of opposing side)
-        # Phase 2 = after 11:00 (position-driven, neutral zone hidden)
-        phase1 = et_minute is not None and (9 * 60 + 30) <= et_minute < (11 * 60)
+        # Phase 1 = CR bias active (no time limit — holds until IB breached opposite side)
+        # Phase 2 = no bias set — position-driven, both sides shown
+        phase1 = bool(daily_bias)
 
         signal_state: str   # 'NEAR' | 'ENTRY'
         side: str
@@ -546,6 +549,76 @@ def make_signal(
             'hour_et'       : h,
             'l1': round(l1, 5), 'l2': round(l2, 5),
             'l3': round(l3, 5), 'l4': round(l4, 5),
+        })
+
+    # ── CR (Clearing Range) retreat signal ───────────────────────────────────────
+    # Fires after the Initial Balance (9:30–10:00 ET) is established and a CR
+    # extreme is breached.  The trade is: breach side → retreat to middle → entry.
+    #   LONG  breach (price > entry_long): look for retreat to mid, stop = entry_short, target = entry_long
+    #   SHORT breach (price < entry_short): look for bounce to mid, stop = entry_long, target = entry_short
+    # NEAR zone = within 30% of the half-range (entry_long/short to mid) from mid.
+    if cr and cr.get('complete') and cr_breached:
+        cr_mid         = cr['mid']
+        cr_entry_long  = cr['entry_long']
+        cr_entry_short = cr['entry_short']
+        ts, tv = _tick(api_symbol)
+
+        if cr_breached == 'LONG':
+            cr_side  = 'LONG'
+            entry_cr = round(cr_mid / ts) * ts
+            stop_cr  = cr_entry_short
+            target_cr = cr_entry_long
+            # 1:1 risk from mid to entry_short, projected upward
+            t1_cr    = round((2 * cr_mid - cr_entry_short) / ts) * ts
+
+            cr_half  = cr_entry_long - cr_mid
+            cr_near  = cr_mid + 0.30 * cr_half   # price must drop below this for NEAR
+
+            if last_price <= cr_mid:
+                cr_state = 'ENTRY'
+            elif last_price <= cr_near:
+                cr_state = 'NEAR'
+            else:
+                cr_state = 'NEUTRAL'   # breached but not yet retreated close enough
+        else:  # SHORT breach
+            cr_side  = 'SHORT'
+            entry_cr = round(cr_mid / ts) * ts
+            stop_cr  = cr_entry_long
+            target_cr = cr_entry_short
+            t1_cr    = round((2 * cr_mid - cr_entry_long) / ts) * ts
+
+            cr_half  = cr_mid - cr_entry_short
+            cr_near  = cr_mid - 0.30 * cr_half   # price must rise above this for NEAR
+
+            if last_price >= cr_mid:
+                cr_state = 'ENTRY'
+            elif last_price >= cr_near:
+                cr_state = 'NEAR'
+            else:
+                cr_state = 'NEUTRAL'   # breached but not yet bounced close enough
+
+        results.append({
+            'symbol'        : symbol_display,
+            'api_symbol'    : api_symbol,
+            'side'          : cr_side,
+            'model'         : 'CR',
+            'signal_state'  : cr_state,
+            'daily_bias'    : daily_bias,
+            'entry'         : round(entry_cr,  4),
+            'stop'          : round(stop_cr,   4),
+            't1'            : round(t1_cr,     4),
+            'target'        : round(target_cr, 4),
+            'lower_gray'    : round(cr_entry_short, 4),   # CR Low breach level
+            'upper_gray'    : round(cr_entry_long,  4),   # CR High breach level
+            'last'          : round(last_price, 4),
+            'hour_high'     : round(cr['high'], 4),
+            'hour_low'      : round(cr['low'],  4),
+            'swing_pct'     : 0.0,
+            'typical_pct'   : 0.0,
+            'typical_range' : round(cr_entry_long - cr_entry_short, 4),
+            'current_range' : round(cr_entry_long - cr_entry_short, 4),
+            'hour_et'       : h,
+            'l1': 0.0, 'l2': 0.0, 'l3': 0.0, 'l4': 0.0,
         })
 
     return results or None

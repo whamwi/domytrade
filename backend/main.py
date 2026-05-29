@@ -169,6 +169,9 @@ state = {
     'last_loop_error'   : None,  # most recent background loop exception string
     'token_state'       : 'unknown',  # 'loaded_from_db' | 'using_env_var' | 'load_failed'
     '1min_today'        : {},   # {symbol_id: [bars]} — in-memory cache populated by refresh_all_1min()
+    'cr'                : {},   # {symbol_id: {high, low, mid, entry_long, entry_short, complete}}
+    'cr_breached'       : {},   # {symbol_id: 'LONG'|'SHORT'|None} — which CR extreme was first breached
+    'cr_date'           : None, # date string — CR is reset each new trading day
 }
 
 
@@ -237,6 +240,48 @@ def _rth_bias(candles: list[dict]) -> dict:
         bias = 'BEAR'
 
     return {'bias': bias, 'pts': pts, 'rth_open': rth_open, 'prev_close': prev_close}
+
+
+# ── Clearing Range (CR) ───────────────────────────────────────────────────────
+CR_BREACH_TICKS = 2   # ticks beyond CR high/low to confirm a breach
+
+def _compute_cr(min_bars: list, tick_size: float) -> dict | None:
+    """Compute the 30-min Clearing Range (9:30–10:00 AM ET) from 1-min Schwab bars.
+
+    Returns dict with high/low/mid/entry_long/entry_short or None if IB not yet complete.
+    Bars use Schwab's b['datetime'] (Unix ms) format.
+    """
+    now_et     = datetime.now(ET)
+    et_minute  = now_et.hour * 60 + now_et.minute
+    if et_minute < 10 * 60:          # IB window not done yet
+        return None
+    if now_et.weekday() >= 5:        # weekend — no CR
+        return None
+
+    ib_start = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    ib_end   = now_et.replace(hour=10, minute=0,  second=0, microsecond=0)
+    ib_start_ms = int(ib_start.astimezone(timezone.utc).timestamp() * 1000)
+    ib_end_ms   = int(ib_end.astimezone(timezone.utc).timestamp() * 1000)
+
+    ib_bars = [b for b in min_bars if ib_start_ms <= b.get('datetime', 0) < ib_end_ms]
+    if not ib_bars:
+        return None
+
+    cr_high = max(b['high'] for b in ib_bars)
+    cr_low  = min(b['low']  for b in ib_bars)
+    ts      = tick_size or 0.01
+    entry_long  = round((cr_high + CR_BREACH_TICKS * ts) / ts) * ts
+    entry_short = round((cr_low  - CR_BREACH_TICKS * ts) / ts) * ts
+    mid         = round((entry_long + entry_short) / 2, 6)
+
+    return {
+        'high'       : cr_high,
+        'low'        : cr_low,
+        'mid'        : mid,
+        'entry_long' : round(entry_long, 6),
+        'entry_short': round(entry_short, 6),
+        'complete'   : True,
+    }
 
 
 # ── VWAP / POC ────────────────────────────────────────────────────────────────
@@ -942,18 +987,74 @@ async def refresh_signals():
             ohlc['high'] = max(ohlc['high'], acc_high)
             ohlc['low']  = min(ohlc['low'],  acc_low)
 
-        # ── Daily bias: RTH open vs prev_settle ──────────────────────────
+        now_et    = datetime.now(ET)
+        et_minute = now_et.hour * 60 + now_et.minute
+
+        # ── Opening bias (all symbols) — gap vs prior close ───────────────────
+        # Set ONCE per day at RTH open. For equities Schwab q['open'] is the
+        # official 9:30 ET open. For futures rth_open is set from the 9:30 bar.
+        # prev_settle = last − net_change works for every instrument type.
+        if _is_rth and not state['daily_bias'].get(sid):
+            net_chg_now = q.get('net_change', 0)
+            q_open_now  = q.get('open', 0)
+            if net_chg_now and last:
+                _prev = round(last - net_chg_now, 4)
+                # Use futures rth_open (9:30 bar) when available, else Schwab openPrice
+                _open = state['rth_open'].get(sid) or (q_open_now if not tick.startswith('/') else 0)
+                if _open and _prev:
+                    state['prev_settle'][sid] = _prev
+                    if _open > _prev:
+                        state['daily_bias'][sid] = 'LONG'
+                    elif _open < _prev:
+                        state['daily_bias'][sid] = 'SHORT'
+
+        # ── Clearing Range (CR) ───────────────────────────────────────────────
+        # Reset CR each new trading day
+        _today_str = now_et.strftime('%Y-%m-%d')
+        if state['cr_date'] != _today_str:
+            state['cr']         = {}
+            state['cr_breached'] = {}
+            state['daily_bias']  = {}   # reset bias too — new day
+            state['cr_date']    = _today_str
+
+        # Compute CR from 9:30–10:00 AM bars (once, after IB complete)
+        if sid not in state['cr']:
+            ts_size, _ = _tick(api)
+            _cr = _compute_cr(state['1min_today'].get(sid, []), ts_size)
+            if _cr:
+                state['cr'][sid] = _cr
+
+        # Monitor CR breach → update bias
+        _cr = state['cr'].get(sid)
+        if _cr and _cr.get('complete') and last:
+            _breached = state['cr_breached'].get(sid)
+            _bias     = state['daily_bias'].get(sid)
+            if last > _cr['entry_long']:
+                # Price is above CR high+ticks — LONG breach
+                if not _breached:
+                    state['cr_breached'][sid] = 'LONG'
+                elif _breached == 'SHORT':
+                    # Short failed — flip to LONG
+                    state['cr_breached'][sid] = 'LONG'
+                    state['daily_bias'][sid]  = 'LONG'
+            elif last < _cr['entry_short']:
+                # Price is below CR low-ticks — SHORT breach
+                if not _breached:
+                    state['cr_breached'][sid] = 'SHORT'
+                elif _breached == 'LONG':
+                    # Long failed — flip to SHORT
+                    state['cr_breached'][sid] = 'SHORT'
+                    state['daily_bias'][sid]  = 'SHORT'
+
+        # ── Legacy daily bias fallback (futures: was already set via rth_open) ─
         rth_open_val   = state['rth_open'].get(sid, 0)
         prev_settl_val = state['prev_settle'].get(sid)
-        if rth_open_val and prev_settl_val:
+        if rth_open_val and prev_settl_val and not state['daily_bias'].get(sid):
             if rth_open_val > prev_settl_val:
                 state['daily_bias'][sid] = 'LONG'
             elif rth_open_val < prev_settl_val:
                 state['daily_bias'][sid] = 'SHORT'
         bias_val = state['daily_bias'].get(sid)
-
-        now_et     = datetime.now(ET)
-        et_minute  = now_et.hour * 60 + now_et.minute
 
         # ── Off-hours gate ────────────────────────────────────────────────────────
         # Only gate symbols that HAVE stats for some hours but NOT the current one.
@@ -974,6 +1075,8 @@ async def refresh_signals():
             daily_bias=bias_val,
             et_minute=et_minute,
             stats_wide=state['stats_wide'].get(sid, {}),
+            cr=state['cr'].get(sid),
+            cr_breached=state['cr_breached'].get(sid),
         )
         if sigs:
             for s in sigs:
