@@ -172,6 +172,7 @@ state = {
     'cr'                : {},   # {symbol_id: {high, low, mid, entry_long, entry_short, complete}}
     'cr_breached'       : {},   # {symbol_id: 'LONG'|'SHORT'|None} — which CR extreme was first breached
     'cr_date'           : None, # date string — CR is reset each new trading day
+    'cr_sticky'         : {},   # {f"{sid}_CR": int} — remaining cycles to keep NEAR visible (max 4)
 }
 
 
@@ -1015,6 +1016,7 @@ async def refresh_signals():
             state['cr']         = {}
             state['cr_breached'] = {}
             state['daily_bias']  = {}   # reset bias too — new day
+            state['cr_sticky']   = {}   # clear sticky counters — new day
             state['cr_date']    = _today_str
 
         # Compute CR from 9:30–10:00 AM bars (once, after IB complete)
@@ -1098,6 +1100,17 @@ async def refresh_signals():
                         s['mo_state']   = None
                         s['sq_confirm'] = 'NEUTRAL'
                         s['sq_reason']  = 'no squeeze data'
+                # ── CR sticky: keep NEAR visible for 4 cycles after it first fires ──
+                # Prevents the alert from vanishing on the very next refresh if price
+                # briefly touches mid and bounces.  Counter resets on each new NEAR/ENTRY.
+                if s['model'] == 'CR':
+                    _ck = f"{sid}_CR"
+                    if s['signal_state'] in ('NEAR', 'ENTRY'):
+                        state['cr_sticky'][_ck] = 4   # latch / reset countdown
+                    elif state['cr_sticky'].get(_ck, 0) > 0:
+                        state['cr_sticky'][_ck] -= 1
+                        s['signal_state'] = 'NEAR'    # keep visible this cycle
+
                 # Detect NEAR → ENTRY transition for one-shot beep on frontend
                 sk = f"{sid}_{s['model']}"
                 prev_st = state['prev_signal_state'].get(sk)

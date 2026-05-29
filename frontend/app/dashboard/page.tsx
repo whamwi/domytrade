@@ -37,6 +37,9 @@ const SECTOR_TICKERS = new Set([
   'SMH','HACK','SKYY','TAN','JETS','OIH','IYT','EEM','SOCL','KCE','XLG','XRT','OEF',
 ])
 
+// Focus mode: these are always shown regardless of signal state
+const PINNED_TICKERS = new Set(['/ES','/MES','/NQ','/MNQ','/YM','/MYM','/RTY','/M2K','/GC','/MGC'])
+
 function getSessionLabel(): { label: string; color: string; bg: string } {
   const now = new Date()
   // Convert to ET
@@ -159,6 +162,7 @@ export default function DashboardPage() {
   const [modelFilter, setModelFilter] = useState<ModelFilter>('CON')
   const [assetFilter, setAssetFilter] = useState<AssetFilter>('all')
   const [showAsiaFX, setShowAsiaFX]   = useState(false)
+  const [focusMode, setFocusMode]     = useState(true)   // pin key futures, hide neutral others
 
   // ── Watchlist (persistent symbol picker) ──────────────────────────────────
   const [watchlist, setWatchlist]     = useState<string[]>([])
@@ -286,9 +290,10 @@ export default function DashboardPage() {
 
   // Filter signals — watchlist narrows first, then side/model/asset apply on top
   const filteredSignals = (data?.signals ?? []).filter((sig) => {
-    const isFuture  = sig.symbol.startsWith('/')
-    const isSector  = SECTOR_TICKERS.has(sig.symbol)
-    const watchOk   = watchlist.length === 0 || watchlist.includes(sig.symbol)
+    const ticker    = sig.symbol.split(':')[0]
+    const isFuture  = ticker.startsWith('/')
+    const isSector  = SECTOR_TICKERS.has(ticker)
+    const watchOk   = watchlist.length === 0 || watchlist.includes(ticker)
     const sideOk    =
       sideFilter === 'all' ||
       (sideFilter === 'longs'  && sig.side === 'LONG') ||
@@ -299,7 +304,10 @@ export default function DashboardPage() {
       (assetFilter === 'futures'  && isFuture) ||
       (assetFilter === 'equities' && !isFuture && !isSector) ||
       (assetFilter === 'sectors'  && isSector)
-    return watchOk && sideOk && modelOk && assetOk
+    // Focus mode: pin key futures+/GC always; everything else only if at zone
+    const focusOk   = !focusMode || PINNED_TICKERS.has(ticker) ||
+                      sig.signal_state === 'NEAR' || sig.signal_state === 'ENTRY'
+    return watchOk && sideOk && modelOk && assetOk && focusOk
   })
 
   // Silent symbols list — filtered by asset type AND watchlist
@@ -503,6 +511,19 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
+
+          {/* Focus mode toggle */}
+          <button
+            onClick={() => setFocusMode(f => !f)}
+            className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
+            title="Focus: pin /ES /NQ /YM /RTY /GC — hide neutral others"
+            style={focusMode
+              ? { background: 'rgba(74,222,128,0.15)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)' }
+              : { background: 'var(--bg-panel)',         color: 'var(--text-muted)', border: '1px solid transparent' }
+            }
+          >
+            {focusMode ? '⊙ Focus' : '○ Focus'}
+          </button>
 
           {/* Watchlist picker button */}
           <div className="relative" ref={pickerRef}>
