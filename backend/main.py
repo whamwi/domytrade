@@ -947,6 +947,19 @@ async def refresh_signals():
         now_et     = datetime.now(ET)
         et_minute  = now_et.hour * 60 + now_et.minute
 
+        # ── RTH gate for equities & sectors ──────────────────────────────────
+        # Futures (api starts with '/') trade ~23 h — always generate signals.
+        # Equities and sector ETFs only have meaningful RTH stats (9:30–16:00 ET,
+        # Mon–Fri).  Outside that window, skip make_signal entirely so the symbol
+        # falls into silentSymbols on the frontend and shows the CLOSED chip.
+        _is_equity = not api.startswith('/')
+        _is_rth_window = (
+            now_et.weekday() < 5 and                    # Mon–Fri
+            9 * 60 + 30 <= et_minute < 16 * 60          # 9:30 AM – 4:00 PM ET
+        )
+        if _is_equity and not _is_rth_window:
+            continue   # no signal for off-hours equities/sectors
+
         sigs = make_signal(
             tick, api, ohlc, last,
             state['stats_agg'].get(sid, {}),
