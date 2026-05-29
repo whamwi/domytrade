@@ -168,6 +168,7 @@ state = {
     'active_contracts'  : {},   # {ticker: active_contract} e.g. {'/GC': '/GCQ26'}
     'last_loop_error'   : None,  # most recent background loop exception string
     'token_state'       : 'unknown',  # 'loaded_from_db' | 'using_env_var' | 'load_failed'
+    '1min_today'        : {},   # {symbol_id: [bars]} — in-memory cache populated by refresh_all_1min()
 }
 
 
@@ -887,7 +888,10 @@ async def refresh_signals():
             now_et_h   = datetime.now(ET)
             cur_hour   = now_et_h.hour
             hour_floor = now_et_h.replace(minute=0, second=0, microsecond=0)
-            min_bars   = await asyncio.to_thread(get_1min_today, sid)
+            # Read from in-memory cache populated by refresh_all_1min() — avoids
+            # 153 sequential DB round-trips per cycle that previously caused timeouts.
+            # Falls back to empty list if cache hasn't been populated yet (first cycle).
+            min_bars   = state['1min_today'].get(sid, [])
             hour_bars  = [
                 b for b in min_bars
                 if datetime.fromisoformat(b['bar_time']).astimezone(ET) >= hour_floor
@@ -996,7 +1000,6 @@ async def refresh_signals():
                 s['entry_alert'] = (s['signal_state'] == 'ENTRY' and prev_st != 'ENTRY')
                 state['prev_signal_state'][sk] = s['signal_state']
             rows.extend(sigs)
-        await asyncio.sleep(0.1)
 
     # ── Cross-model cascade promotion ────────────────────────────────────────
     # Each model alerts on its own levels independently — no suppression.
@@ -1203,23 +1206,29 @@ async def refresh_all_1min():
     if not all_syms:
         return
 
-    # Stage 1 — concurrent fetches for all symbols
+    # Limit concurrency to avoid exhausting the thread pool on cancellation.
+    # When asyncio.wait_for() cancels this task, executor futures keep running.
+    # With 10 concurrent tasks max, at most 10 zombie threads remain — well within
+    # the default pool size and small enough to clear quickly.
+    _sem = asyncio.Semaphore(10)
+
+    # Stage 1 — bounded-concurrency fetches for all symbols
     async def _fetch(sym: dict) -> tuple[int, list]:
         tick = sym['ticker']
         sid  = sym['id']
-        try:
-            # Futures: use the active front-month contract symbol
-            # Stocks/ETFs: use schwab_symbol directly
-            api_sym = _active_contract(tick) if tick.startswith('/') else sym['schwab_symbol']
-            candles = await asyncio.to_thread(get_session_bars, api_sym)
-            return sid, (candles or [])
-        except Exception as e:
-            log.warning('1min fetch %s: %s', tick, e)
-            return sid, []
+        async with _sem:
+            try:
+                api_sym = _active_contract(tick) if tick.startswith('/') else sym['schwab_symbol']
+                candles = await asyncio.to_thread(get_session_bars, api_sym)
+                return sid, (candles or [])
+            except Exception as e:
+                log.warning('1min fetch %s: %s', tick, e)
+                return sid, []
 
     results = await asyncio.gather(*[_fetch(s) for s in all_syms])
 
-    # Stage 2 — concurrent DB writes (each in its own thread to avoid blocking the event loop)
+    # Stage 2 — populate in-memory cache so refresh_signals() reads from memory
+    # (avoids 153 sequential DB round-trips per cycle) and write to DB concurrently.
     stored = 0
 
     async def _upsert(sid: int, candles: list) -> bool:
@@ -1231,9 +1240,13 @@ async def refresh_all_1min():
             log.warning('1min upsert sid=%s: %s', sid, e)
             return False
 
-    upsert_results = await asyncio.gather(*[
-        _upsert(sid, candles) for sid, candles in results if candles
-    ])
+    upsert_tasks = []
+    for sid, candles in results:
+        state['1min_today'][sid] = candles   # always update memory cache (even if empty)
+        if candles:
+            upsert_tasks.append(_upsert(sid, candles))
+
+    upsert_results = await asyncio.gather(*upsert_tasks)
     stored = sum(upsert_results)
 
     futures_n = sum(1 for s in all_syms if s['ticker'].startswith('/'))
