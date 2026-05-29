@@ -2013,14 +2013,21 @@ async def refresh_stock_profiles():
     _STOCK_PROFILES.update(fresh)
     log.info('stock_profiles: %d / %d succeeded', len(fresh), len(stock_syms))
 
-    # Persist scalar fields to Supabase — skip JSON arrays
-    _SKIP = {'earnings_history', 'news'}
+    # Persist to Supabase.  Try full upsert including JSONB fields (earnings_history,
+    # news) first; if the table doesn't have those columns yet, fall back to scalars only.
+    _JSON_FIELDS = {'earnings_history', 'news'}
     try:
         from db import get_db as _get_db
-        rows = [{k: v for k, v in p.items() if k not in _SKIP} for p in fresh.values()]
+        rows = [dict(p) for p in fresh.values()]
         if rows:
-            _get_db().table('stock_profiles').upsert(rows).execute()
-            log.info('stock_profiles: upserted %d rows to Supabase', len(rows))
+            try:
+                _get_db().table('stock_profiles').upsert(rows).execute()
+                log.info('stock_profiles: upserted %d rows (full) to Supabase', len(rows))
+            except Exception:
+                # JSONB columns may not exist — fall back to scalar fields only
+                scalar_rows = [{k: v for k, v in p.items() if k not in _JSON_FIELDS} for p in fresh.values()]
+                _get_db().table('stock_profiles').upsert(scalar_rows).execute()
+                log.info('stock_profiles: upserted %d rows (scalar only) to Supabase', len(rows))
     except Exception as exc:
         log.debug('stock_profiles: Supabase upsert skipped — %s', exc)
 
