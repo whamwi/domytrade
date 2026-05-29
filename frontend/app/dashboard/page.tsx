@@ -126,8 +126,11 @@ export default function DashboardPage() {
     if (hasEntryAlert) playAlertSound()
   }, [data?.signals])
 
-  // Warm-up timer: count elapsed seconds while signals haven't arrived yet
-  const isWarmingUp = !error && (data === null || data.signals.length === 0)
+  // Warm-up timer: only show spinner while backend hasn't responded at all.
+  // If status is 'live' or 'cached', backend is healthy — 0 signals just means
+  // off-hours (all stocks blocked). Don't spin forever in that case.
+  const backendLive = data?.status === 'live' || data?.status === 'cached'
+  const isWarmingUp = !error && (data === null || (!backendLive && data.signals.length === 0))
   useEffect(() => {
     if (isWarmingUp) {
       if (!warmTimerRef.current) {

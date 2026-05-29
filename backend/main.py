@@ -1187,6 +1187,8 @@ async def refresh_signals():
         log.debug('ENTRY signals (no alert — already ENTRY last cycle): %s', _entry_syms)
 
     # ── Persist snapshot to DB so next restart serves data instantly ──────────
+    # Only save if we have signals — don't overwrite a good snapshot with an
+    # empty array (which happens off-hours when all stocks are RTH-gated).
     if rows:
         try:
             from db import cache_set
