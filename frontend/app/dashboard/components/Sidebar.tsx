@@ -5,9 +5,11 @@ import { supabase } from '@/lib/supabase'
 
 interface SidebarProps {
   activeTab?: string
+  focusMode?: boolean
+  onFocusToggle?: () => void
 }
 
-export default function Sidebar({ activeTab = 'dashboard' }: SidebarProps) {
+export default function Sidebar({ activeTab = 'dashboard', focusMode = false, onFocusToggle }: SidebarProps) {
   const router = useRouter()
 
   async function handleLogout() {
@@ -139,6 +141,39 @@ export default function Sidebar({ activeTab = 'dashboard' }: SidebarProps) {
           </svg>
         </button>
       </div>
+
+      {/* Focus mode toggle */}
+      <button
+        title={focusMode ? 'Focus ON — pinned markets + NEAR/ENTRY only' : 'Focus OFF — showing all signals'}
+        onClick={onFocusToggle}
+        className="flex items-center justify-center rounded-lg py-2.5 transition-colors"
+        style={{
+          width: 'calc(100% - 16px)',
+          background: focusMode ? 'rgba(74,222,128,0.12)' : 'transparent',
+          color: focusMode ? '#4ade80' : 'var(--text-muted)',
+          border: focusMode ? '1px solid rgba(74,222,128,0.25)' : '1px solid transparent',
+          marginBottom: 4,
+        }}
+        onMouseEnter={(e) => {
+          if (!focusMode) {
+            e.currentTarget.style.background = 'rgba(74,222,128,0.08)'
+            e.currentTarget.style.color = '#4ade80'
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (!focusMode) {
+            e.currentTarget.style.background = 'transparent'
+            e.currentTarget.style.color = 'var(--text-muted)'
+          }
+        }}
+      >
+        {/* Target / focus icon */}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <circle cx="12" cy="12" r="6" />
+          <circle cx="12" cy="12" r="2" />
+        </svg>
+      </button>
 
       {/* Logout at bottom */}
       <button

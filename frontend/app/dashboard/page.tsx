@@ -342,7 +342,7 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-full min-h-screen" style={{ background: 'var(--bg-base)' }}>
-      <Sidebar activeTab={activeTab} />
+      <Sidebar activeTab={activeTab} focusMode={focusMode} onFocusToggle={() => setFocusMode(f => !f)} />
 
       {/* Agent tab — always mounted to preserve chat history and avoid refetch on toggle */}
       <div className="flex-1 min-w-0 overflow-auto" style={{ display: activeTab === 'agent' ? undefined : 'none' }}>
@@ -525,19 +525,6 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-
-          {/* Focus mode toggle */}
-          <button
-            onClick={() => setFocusMode(f => !f)}
-            className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
-            title="Focus: pin /ES /NQ /YM /RTY /GC — hide neutral others"
-            style={focusMode
-              ? { background: 'rgba(74,222,128,0.15)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)' }
-              : { background: 'var(--bg-panel)',         color: 'var(--text-muted)', border: '1px solid transparent' }
-            }
-          >
-            {focusMode ? '⊙ Focus' : '○ Focus'}
-          </button>
 
           {/* Entry log toggle */}
           <button
