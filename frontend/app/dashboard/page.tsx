@@ -289,6 +289,8 @@ export default function DashboardPage() {
   }
 
   // Filter signals — watchlist narrows first, then side/model/asset apply on top
+  const PINNED_ORDER = ['/ES','/MES','/NQ','/MNQ','/YM','/MYM','/RTY','/M2K','/GC','/MGC']
+
   const filteredSignals = (data?.signals ?? []).filter((sig) => {
     const ticker    = sig.symbol.split(':')[0]
     const isFuture  = ticker.startsWith('/')
@@ -308,6 +310,16 @@ export default function DashboardPage() {
     const focusOk   = !focusMode || PINNED_TICKERS.has(ticker) ||
                       sig.signal_state === 'NEAR' || sig.signal_state === 'ENTRY'
     return watchOk && sideOk && modelOk && assetOk && focusOk
+  }).sort((a, b) => {
+    const ta = a.symbol.split(':')[0]
+    const tb = b.symbol.split(':')[0]
+    const ia = PINNED_ORDER.indexOf(ta)
+    const ib = PINNED_ORDER.indexOf(tb)
+    // Pinned tickers first (in defined order), then alphabetical
+    if (ia !== -1 && ib !== -1) return ia - ib
+    if (ia !== -1) return -1
+    if (ib !== -1) return  1
+    return ta.localeCompare(tb)
   })
 
   // Silent symbols list — filtered by asset type AND watchlist
