@@ -1811,12 +1811,20 @@ async def background_loop():
 # ── Stock Profiles — yfinance fundamentals, refreshed daily ──────────────────
 
 async def refresh_stock_profiles():
-    """Fetch fundamental data for all stock (non-futures, non-sector) symbols via yfinance.
+    """Fetch fundamental + earnings data for all stock symbols via yfinance.
 
-    Runs at startup and daily at 6:00 AM ET.  Results cached in _STOCK_PROFILES and
-    optionally upserted to the Supabase stock_profiles table if it exists.
+    Runs at startup and daily at 6:00 AM ET.  8 concurrent workers so 109 stocks
+    complete in ~30s instead of 5+ minutes.
+
+    Per ticker:
+      - info:            market cap, short float, beta, analyst rating/target, revenue TTM
+      - earnings_dates:  last 8 quarters EPS estimate vs actual, surprise %
+      - history(2y):     daily OHLC — used to compute overnight post-earnings move
+                         (prior RTH close → next day open)
+      - news:            3 most recent headlines
     """
     import yfinance as yf
+    import pandas as pd
 
     stock_syms = [
         s for s in state['symbols']
@@ -1827,60 +1835,157 @@ async def refresh_stock_profiles():
         log.info('stock_profiles: no stock symbols found')
         return
 
-    log.info('stock_profiles: refreshing %d symbols', len(stock_syms))
+    log.info('stock_profiles: refreshing %d symbols (8 concurrent)', len(stock_syms))
 
-    rec_map = {
+    REC_MAP = {
         'strong_buy': 'Strong Buy', 'buy': 'Buy',
         'hold': 'Hold', 'sell': 'Sell', 'strong_sell': 'Strong Sell',
     }
 
-    ticker_to_sid = {s['ticker']: s['id'] for s in stock_syms}
-    fresh: dict = {}
-
-    for sym in stock_syms:
-        ticker = sym['ticker']
+    def _fetch_one(ticker: str) -> dict | None:
+        """All yfinance I/O for one ticker — runs in thread pool."""
         try:
-            info = await asyncio.to_thread(lambda t=ticker: yf.Ticker(t).info)
-            sid  = ticker_to_sid.get(ticker)
-            last = state['last_price'].get(sid, 0) if sid else 0
+            yt   = yf.Ticker(ticker)
+            info = yt.info
 
-            target = info.get('targetMeanPrice')
-            upside = round((target - last) / last * 100, 1) if (target and last) else None
+            # ── Earnings history — last 8 reported quarters ────────────────
+            earnings_history: list[dict] = []
+            try:
+                edf = yt.earnings_dates        # index=date, cols: EPS Estimate / Reported EPS / Surprise(%)
+                if edf is not None and len(edf) > 0:
+                    # 2-year daily bars for overnight-move calculation
+                    hist = yt.history(period='2y', interval='1d')
+                    hist.index = hist.index.normalize()
+
+                    for date, row in edf.iterrows():
+                        eps_actual = row.get('Reported EPS')
+                        if eps_actual is None or pd.isna(eps_actual):
+                            continue          # future quarter — no actual yet
+                        eps_actual    = round(float(eps_actual), 2)
+                        eps_estimate  = row.get('EPS Estimate')
+                        eps_estimate  = round(float(eps_estimate), 2) if (eps_estimate is not None and not pd.isna(eps_estimate)) else None
+                        surprise_pct  = row.get('Surprise(%)')
+                        surprise_pct  = round(float(surprise_pct), 1) if (surprise_pct is not None and not pd.isna(surprise_pct)) else None
+                        result        = ('BEAT' if eps_actual > (eps_estimate or 0) else 'MISS') if eps_estimate is not None else None
+
+                        # Overnight reaction: prior close → next trading day open
+                        move_pct = None
+                        try:
+                            date_ts   = pd.Timestamp(date.date())
+                            prior_row = hist[hist.index < date_ts]
+                            next_row  = hist[hist.index > date_ts]
+                            if len(prior_row) > 0 and len(next_row) > 0:
+                                prior_close = float(prior_row.iloc[-1]['Close'])
+                                next_open   = float(next_row.iloc[0]['Open'])
+                                if prior_close > 0:
+                                    move_pct = round((next_open - prior_close) / prior_close * 100, 1)
+                        except Exception:
+                            pass
+
+                        earnings_history.append({
+                            'date':         date.strftime('%b %Y'),
+                            'eps_estimate': eps_estimate,
+                            'eps_actual':   eps_actual,
+                            'surprise_pct': surprise_pct,
+                            'result':       result,
+                            'move_pct':     move_pct,
+                        })
+                        if len(earnings_history) >= 8:
+                            break
+            except Exception as e:
+                log.debug('earnings_dates %s: %s', ticker, e)
+
+            # ── Beat stats ─────────────────────────────────────────────────
+            beat_count  = sum(1 for h in earnings_history if h['result'] == 'BEAT')
+            beat_streak = 0
+            for h in earnings_history:
+                if h['result'] == 'BEAT': beat_streak += 1
+                else: break
+            surprises   = [h['surprise_pct'] for h in earnings_history if h['surprise_pct'] is not None]
+            moves       = [abs(h['move_pct'])  for h in earnings_history if h['move_pct']  is not None]
+            avg_surprise = round(sum(surprises) / len(surprises), 1) if surprises else None
+            avg_move     = round(sum(moves)     / len(moves),     1) if moves     else None
+
+            # Most recent completed quarter EPS (Overview hero row)
+            last_q = earnings_history[0] if earnings_history else {}
+
+            # ── Next earnings date ─────────────────────────────────────────
+            next_earnings_date = None
+            raw_dates = info.get('earningsDate')
+            if raw_dates:
+                import datetime as _dt
+                ts  = raw_dates[0] if isinstance(raw_dates, list) else raw_dates
+                ned = _dt.datetime.fromtimestamp(float(ts), tz=timezone.utc).date()
+                next_earnings_date = ned.isoformat()
+
+            # ── News (3 most recent headlines) ─────────────────────────────
+            news: list[dict] = []
+            try:
+                for n in (yt.news or [])[:3]:
+                    news.append({
+                        'title':        (n.get('title') or '')[:120],
+                        'publisher':    n.get('publisher') or '',
+                        'published_at': n.get('providerPublishTime') or n.get('publishedAt') or 0,
+                    })
+            except Exception:
+                pass
+
+            # ── Analyst ────────────────────────────────────────────────────
             rec_key = (info.get('recommendationKey') or '').lower().replace(' ', '_')
 
-            fresh[ticker] = {
-                'ticker':         ticker,
-                'company_name':   info.get('longName') or info.get('shortName') or ticker,
-                'sector':         info.get('sector') or '',
-                'industry':       info.get('industry') or '',
-                'market_cap':     info.get('marketCap'),
-                'pe_trailing':    info.get('trailingPE'),
-                'pe_forward':     info.get('forwardPE'),
-                'eps_trailing':   info.get('trailingEps'),
-                'week_52_high':   info.get('fiftyTwoWeekHigh'),
-                'week_52_low':    info.get('fiftyTwoWeekLow'),
-                'analyst_rating': rec_map.get(rec_key, ''),
-                'analyst_count':  info.get('numberOfAnalystOpinions'),
-                'target_price':   target,
-                'upside_pct':     upside,
-                'beta':           info.get('beta'),
-                'dividend_yield': info.get('dividendYield'),
-                'description':    (info.get('longBusinessSummary') or '')[:600],
-                'refreshed_at':   datetime.now(timezone.utc).isoformat(),
+            return {
+                'ticker':               ticker,
+                'company_name':         info.get('longName') or info.get('shortName') or ticker,
+                'sector':               info.get('sector') or '',
+                'industry':             info.get('industry') or '',
+                'exchange':             info.get('exchange') or '',
+                'market_cap':           info.get('marketCap'),
+                'short_float':          info.get('shortPercentOfFloat'),
+                'beta':                 info.get('beta'),
+                'revenue_ttm':          info.get('totalRevenue'),
+                'week_52_high':         info.get('fiftyTwoWeekHigh'),
+                'week_52_low':          info.get('fiftyTwoWeekLow'),
+                'analyst_rating':       REC_MAP.get(rec_key, ''),
+                'analyst_count':        info.get('numberOfAnalystOpinions'),
+                'target_price':         info.get('targetMeanPrice'),
+                # Most recent quarter EPS
+                'last_eps_actual':      last_q.get('eps_actual'),
+                'last_eps_estimate':    last_q.get('eps_estimate'),
+                'last_eps_surprise_pct': last_q.get('surprise_pct'),
+                'last_eps_result':      last_q.get('result'),
+                # Earnings
+                'next_earnings_date':   next_earnings_date,
+                'earnings_history':     earnings_history,
+                'beat_count':           beat_count,
+                'beat_streak':          beat_streak,
+                'avg_surprise_pct':     avg_surprise,
+                'avg_move_pct':         avg_move,
+                # News
+                'news':                 news,
+                'refreshed_at':         datetime.now(timezone.utc).isoformat(),
             }
         except Exception as exc:
             log.warning('stock_profile %s: %s', ticker, exc)
+            return None
 
+    # ── 8-concurrent fetch ──────────────────────────────────────────────────
+    sem = asyncio.Semaphore(8)
+
+    async def _bounded(ticker: str):
+        async with sem:
+            return await asyncio.to_thread(_fetch_one, ticker)
+
+    results = await asyncio.gather(*[_bounded(s['ticker']) for s in stock_syms])
+
+    fresh = {r['ticker']: r for r in results if r}
     _STOCK_PROFILES.update(fresh)
     log.info('stock_profiles: %d / %d succeeded', len(fresh), len(stock_syms))
 
-    # Optionally persist to Supabase — graceful if table doesn't exist yet
+    # Persist scalar fields to Supabase — skip JSON blobs (earnings_history, news)
+    _SKIP = {'earnings_history', 'news'}
     try:
         from db import get_db as _get_db
-        rows = [
-            {k: v for k, v in p.items() if k != 'upside_pct'}
-            for p in fresh.values()
-        ]
+        rows = [{k: v for k, v in p.items() if k not in _SKIP} for p in fresh.values()]
         if rows:
             _get_db().table('stock_profiles').upsert(rows).execute()
             log.info('stock_profiles: upserted %d rows to Supabase', len(rows))
@@ -5014,18 +5119,18 @@ async def get_session_vpocs(symbol: str):
 
 @app.get('/api/stock-profile/{ticker}')
 def get_stock_profile(ticker: str):
-    """Return fundamental profile + live VBH signal data for a stock ticker.
+    """Return fundamental profile + live VBH signal + sparkline for a stock ticker.
 
-    Fundamentals come from yfinance (refreshed at 6 AM ET daily, also at startup).
-    Signal (entry/stop/target/L1-L4) comes from the live state['signals'] dict.
-    Falls back to Supabase stock_profiles table if the in-memory cache is empty.
+    Fundamentals/earnings/news come from yfinance (refreshed 6 AM ET daily + startup).
+    Signal (entry/stop/target/L1-L4) comes from live state['signals'].
+    price_history (daily closes, 90 days) comes from ticker_candles_daily DB.
     """
     ticker = ticker.upper()
 
-    # 1. Try in-memory first
+    # 1. In-memory first
     profile: dict | None = _STOCK_PROFILES.get(ticker)
 
-    # 2. Supabase fallback (table may or may not exist)
+    # 2. Supabase fallback — scalar fields only (no earnings_history/news JSON)
     if not profile:
         try:
             from db import get_db as _get_db
@@ -5035,22 +5140,39 @@ def get_stock_profile(ticker: str):
         except Exception:
             pass
 
-    # 3. Find the active signal for this ticker (supplies technicals)
-    signal = next((s for s in state['signals'] if s['symbol'] == ticker), None)
-
-    # 4. Live price
+    # 3. Recompute live fields
     sym_entry = next((s for s in state['symbols'] if s['ticker'] == ticker), None)
     sid  = sym_entry['id'] if sym_entry else None
     last = state['last_price'].get(sid) if sid else None
 
-    # 5. Recompute upside with fresh live price
-    if profile and last:
+    if profile:
         tp = profile.get('target_price')
-        profile = {**profile, 'upside_pct': round((tp - last) / last * 100, 1) if tp and last else None}
+        # Live upside % and days-to-earnings recomputed every call
+        upside = round((tp - last) / last * 100, 1) if (tp and last) else None
+        ned_str = profile.get('next_earnings_date')
+        days_to = None
+        if ned_str:
+            from datetime import date as _date
+            ned = _date.fromisoformat(ned_str)
+            days_to = (ned - datetime.now(ET).date()).days
+        profile = {**profile, 'upside_pct': upside, 'days_to_earnings': days_to}
+
+    # 4. Active VBH signal (Technicals tab)
+    signal = next((s for s in state['signals'] if s['symbol'] == ticker), None)
+
+    # 5. Daily closes for 90-day sparkline
+    price_history: list[dict] = []
+    try:
+        from db import get_daily_candles_db as _daily_db
+        bars = _daily_db(ticker, 90)
+        price_history = [{'date': b['bar_date'], 'close': float(b['close'])} for b in bars]
+    except Exception:
+        pass
 
     return {
-        'ticker':  ticker,
-        'profile': profile,
-        'signal':  signal,
-        'last':    last,
+        'ticker':        ticker,
+        'profile':       profile,
+        'signal':        signal,
+        'last':          last,
+        'price_history': price_history,
     }
