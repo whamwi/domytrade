@@ -687,9 +687,15 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
   const ref       = last && change != null ? last - change : null
   const changePct = change !== null && ref ? (change / ref) * 100 : null
   const isUp      = change !== null ? change >= 0 : true
+  const changeColor = change !== null ? (isUp ? '#4ade80' : '#f87171') : 'var(--text-dim)'
+
+  // Equities in the silent list are always off-hours market-closed rows:
+  // during RTH make_signal emits at least NEUTRAL so they move to sortedSignals.
+  // Show LAST + CHG at full brightness; everything else grayed.
+  const offHoursEquity = isStock
 
   return (
-    <tr style={{ borderBottom: '1px solid var(--border)', opacity: 0.38 }}>
+    <tr style={{ borderBottom: '1px solid var(--border)', opacity: offHoursEquity ? 1 : 0.38 }}>
       <td className="px-3 py-2" style={{ color: 'var(--text-dim)', fontSize: '12px' }}>{rank}</td>
 
       {/* SYMBOL */}
@@ -724,12 +730,15 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
         </td>
       )}
 
-      {/* LAST */}
-      <td className="px-3 py-2 text-right tabular-nums" style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
-        {last != null ? last.toFixed(2) : <Dash />}
+      {/* LAST — full brightness for off-hours equities */}
+      <td className="px-3 py-2 text-right tabular-nums"
+          style={{ color: 'var(--text-primary)', fontSize: '13px', fontWeight: offHoursEquity ? 600 : 400 }}>
+        {last != null ? fmt(last) : <Dash />}
       </td>
-      {/* CHG */}
-      <td className="px-3 py-2 text-right tabular-nums" style={{ fontSize: '12px', color: change !== null ? (isUp ? '#4ade80' : '#f87171') : 'var(--text-dim)' }}>
+
+      {/* CHG — full color for off-hours equities */}
+      <td className="px-3 py-2 text-right tabular-nums"
+          style={{ fontSize: '12px', color: change !== null ? changeColor : 'var(--text-dim)' }}>
         {change !== null && changePct !== null ? (
           <>
             {isUp ? '+' : ''}{change.toFixed(2)}{' '}
@@ -737,12 +746,45 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
           </>
         ) : <Dash />}
       </td>
-      {/* Fill remaining 8 columns with dashes (MODEL, SQ 5m, SIDE, ALERT, ENTRY, STOP, TARGET, DAILY SWING) */}
-      {Array.from({ length: 8 }).map((_, i) => (
-        <td key={i} className="px-3 py-2 text-center">
+
+      {/* MODEL */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
+
+      {/* AI */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
+
+      {/* SIDE — grayed out */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
+
+      {/* ALERT — subtle CLOSED chip for off-hours equities, dash otherwise */}
+      <td className="px-3 py-2">
+        {offHoursEquity ? (
+          <span
+            className="inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wider"
+            style={{
+              background: 'rgba(100,116,139,0.08)',
+              color:      'rgba(100,116,139,0.4)',
+              border:     '1px solid rgba(100,116,139,0.12)',
+            }}
+          >
+            CLOSED
+          </span>
+        ) : (
           <Dash />
-        </td>
-      ))}
+        )}
+      </td>
+
+      {/* ENTRY */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
+
+      {/* STOP */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
+
+      {/* TARGET */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
+
+      {/* DAILY SWING */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
     </tr>
   )
 }
