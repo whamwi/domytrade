@@ -1065,6 +1065,14 @@ async def refresh_signals():
                 state['daily_bias'][sid] = 'SHORT'
         bias_val = state['daily_bias'].get(sid)
 
+        # ── RTH hard gate for stocks ──────────────────────────────────────────────
+        # Equities and ETFs have no valid VBH data outside 09:30–16:00 ET.
+        # Futures (ticker starts with '/') trade nearly 24/7 — always let through.
+        _is_stock = not tick.startswith('/')
+        _is_rth   = 9 * 60 + 30 <= et_minute < 16 * 60
+        if _is_stock and not _is_rth:
+            continue
+
         # ── Off-hours gate ────────────────────────────────────────────────────────
         # Only gate symbols that HAVE stats for some hours but NOT the current one.
         # That pattern means it is genuinely off-hours for that asset.
