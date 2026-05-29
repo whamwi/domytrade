@@ -891,11 +891,12 @@ async def refresh_signals():
             # Read from in-memory cache populated by refresh_all_1min() — avoids
             # 153 sequential DB round-trips per cycle that previously caused timeouts.
             # Falls back to empty list if cache hasn't been populated yet (first cycle).
-            min_bars   = state['1min_today'].get(sid, [])
-            hour_bars  = [
-                b for b in min_bars
-                if datetime.fromisoformat(b['bar_time']).astimezone(ET) >= hour_floor
-            ]
+            min_bars      = state['1min_today'].get(sid, [])
+            # Schwab candles use b['datetime'] (Unix ms) — NOT b['bar_time'].
+            # Comparing in ms avoids ISO-parse overhead and the KeyError that
+            # previously caused ohlc to silently fall back to the accumulator only.
+            hour_floor_ms = int(hour_floor.astimezone(timezone.utc).timestamp() * 1000)
+            hour_bars     = [b for b in min_bars if b.get('datetime', 0) >= hour_floor_ms]
             if hour_bars:
                 ohlc = {
                     'open'  : hour_bars[0]['open'],
