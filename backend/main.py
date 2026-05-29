@@ -1948,12 +1948,17 @@ async def refresh_stock_profiles():
             # ── News (3 most recent headlines) ─────────────────────────────
             news: list[dict] = []
             try:
-                for n in (yt.news or [])[:3]:
-                    news.append({
-                        'title':        (n.get('title') or '')[:120],
-                        'publisher':    n.get('publisher') or '',
-                        'published_at': n.get('providerPublishTime') or n.get('publishedAt') or 0,
-                    })
+                raw_news = yt.news or []
+                for n in raw_news[:5]:   # scan up to 5, keep first 3 non-empty
+                    title     = (n.get('title') or n.get('Title') or '')[:120]
+                    publisher = (n.get('publisher') or n.get('Publisher') or
+                                 (n.get('source') or {}).get('name') or '')
+                    pub_time  = (n.get('providerPublishTime') or n.get('publishedAt') or
+                                 n.get('time') or 0)
+                    if title:
+                        news.append({'title': title, 'publisher': publisher, 'published_at': pub_time})
+                    if len(news) >= 3:
+                        break
             except Exception:
                 pass
 
@@ -2025,8 +2030,8 @@ async def refresh_stock_profiles():
     _STOCK_PROFILES.update(fresh)
     log.info('stock_profiles: %d / %d succeeded', len(fresh), len(stock_syms))
 
-    # Persist scalar fields to Supabase — skip JSON blobs and derived fields
-    _SKIP = {'earnings_history', 'news', 'logo_url'}
+    # Persist scalar fields to Supabase — skip only JSON arrays (not plain strings)
+    _SKIP = {'earnings_history', 'news'}
     try:
         from db import get_db as _get_db
         rows = [{k: v for k, v in p.items() if k not in _SKIP} for p in fresh.values()]

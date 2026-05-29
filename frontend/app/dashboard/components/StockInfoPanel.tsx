@@ -220,8 +220,31 @@ function TechnicalsChart({ sig, last }: { sig: SignalData; last: number }) {
   )
 }
 
+// ── Sector → ETF mapping ──────────────────────────────────────────────────────
+const SECTOR_ETF: Record<string, string> = {
+  'Technology':             'XLK',
+  'Healthcare':             'XLV',
+  'Financial Services':     'XLF',
+  'Communication Services': 'XLC',
+  'Consumer Cyclical':      'XLY',
+  'Industrials':            'XLI',
+  'Consumer Defensive':     'XLP',
+  'Energy':                 'XLE',
+  'Basic Materials':        'XLB',
+  'Utilities':              'XLU',
+  'Real Estate':            'XLRE',
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
-export default function StockInfoPanel({ info, onClose }: { info: StockPanelInfo; onClose: () => void }) {
+export default function StockInfoPanel({
+  info,
+  onClose,
+  onSectorClick,
+}: {
+  info:           StockPanelInfo
+  onClose:        () => void
+  onSectorClick?: (etf: string) => void
+}) {
   const [tab,     setTab]     = useState<'overview' | 'earnings' | 'technicals'>('overview')
   const [data,    setData]    = useState<ProfileResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -292,6 +315,7 @@ export default function StockInfoPanel({ info, onClose }: { info: StockPanelInfo
                 />
               )}
               <div className="flex-1 min-w-0">
+                {/* Symbol + price + change */}
                 <div className="flex items-center flex-wrap gap-2">
                   <span style={{ fontSize: 20, fontWeight: 800, color: '#e2e8f0', letterSpacing: '0.05em' }}>{info.symbol}</span>
                   {last > 0 && <span style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>${last.toFixed(2)}</span>}
@@ -299,13 +323,47 @@ export default function StockInfoPanel({ info, onClose }: { info: StockPanelInfo
                     {isUp ? '+' : ''}{info.change.toFixed(2)}&nbsp;({isUp ? '+' : ''}{info.changePct.toFixed(2)}%)
                   </span>
                 </div>
+
+                {/* Company name — white */}
                 {p?.company_name && (
-                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginTop: 2 }}>
                     {p.company_name}
-                    {p.exchange && <span style={{ marginLeft: 6, color: '#334155' }}>· {p.exchange}</span>}
-                    {p.sector   && <span style={{ marginLeft: 6, color: '#334155' }}>· {p.sector}</span>}
                   </div>
                 )}
+
+                {/* Exchange · Sector · [ETF chip] */}
+                <div className="flex items-center flex-wrap gap-1.5 mt-1">
+                  {p?.exchange && (
+                    <span style={{ fontSize: 10, color: '#64748b', fontWeight: 500 }}>
+                      {p.exchange}
+                    </span>
+                  )}
+                  {p?.sector && (
+                    <>
+                      {p.exchange && <span style={{ fontSize: 10, color: '#334155' }}>·</span>}
+                      <span style={{ fontSize: 10, color: '#64748b' }}>{p.sector}</span>
+                      {SECTOR_ETF[p.sector] && (
+                        <button
+                          onClick={() => onSectorClick?.(SECTOR_ETF[p.sector]!)}
+                          style={{
+                            fontSize:      10,
+                            fontWeight:    700,
+                            color:         '#a855f7',
+                            background:    'rgba(168,85,247,0.12)',
+                            border:        '1px solid rgba(168,85,247,0.25)',
+                            borderRadius:  4,
+                            padding:       '1px 6px',
+                            cursor:        onSectorClick ? 'pointer' : 'default',
+                            lineHeight:    '1.6',
+                          }}
+                          title={`View ${SECTOR_ETF[p.sector]} sector ETF`}
+                        >
+                          {SECTOR_ETF[p.sector]}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
             <button onClick={onClose} style={{ color: '#475569', fontSize: 18, background: 'none', border: 'none', cursor: 'pointer', lineHeight: 1, padding: 2, flexShrink: 0 }}>✕</button>

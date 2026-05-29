@@ -875,7 +875,22 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
 
       {/* Stock fundamentals + technicals panel */}
       {stockPanel && (
-        <StockInfoPanel info={stockPanel} onClose={() => setStockPanel(null)} />
+        <StockInfoPanel
+          info={stockPanel}
+          onClose={() => setStockPanel(null)}
+          onSectorClick={(etf) => {
+            setStockPanel(null)
+            const sym = allSymbols.find(s => s.ticker === etf)
+            setEtfPanel({
+              symbol:    etf,
+              last:      sym?.last_price  ?? 0,
+              change:    sym?.net_change  ?? 0,
+              changePct: (sym?.net_change && sym?.last_price)
+                ? (sym.net_change / (sym.last_price - sym.net_change)) * 100
+                : 0,
+            })
+          }}
+        />
       )}
 
       <div className="overflow-x-auto">
