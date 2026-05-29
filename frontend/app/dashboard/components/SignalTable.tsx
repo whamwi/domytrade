@@ -831,22 +831,24 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
   //   1st tier — ENTRY  (most urgent)
   //   2nd tier — NEAR
   //   3rd tier — everything else (NEUTRAL / no state)
-  // Within each tier: sectors sorted by YTD% desc; non-sectors keep backend swing_pct order.
+  // Within each tier: swing_pct desc (most stretched first); sectors also sorted by YTD% desc.
   const STATE_RANK: Record<string, number> = { ENTRY: 0, NEAR: 1 }
   const sortedSignals = [...signals].sort((a, b) => {
     const aRank = STATE_RANK[a.signal_state ?? ''] ?? 2
     const bRank = STATE_RANK[b.signal_state ?? ''] ?? 2
     if (aRank !== bRank) return aRank - bRank
 
-    // Same state tier — sectors sorted by YTD desc
+    // Same state tier — sectors also sorted by YTD desc
     const aIsSector = SECTOR_TICKERS.has(a.symbol)
     const bIsSector = SECTOR_TICKERS.has(b.symbol)
     if (aIsSector && bIsSector) {
       const aYtd = ytdMap?.[a.symbol] ?? -Infinity
       const bYtd = ytdMap?.[b.symbol] ?? -Infinity
-      return bYtd - aYtd
+      if (bYtd !== aYtd) return bYtd - aYtd
     }
-    return 0
+
+    // Within same tier: most stretched setup first
+    return (b.swing_pct ?? 0) - (a.swing_pct ?? 0)
   })
 
   const activeSymbols = new Set(signals.map((s) => s.symbol))
