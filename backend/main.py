@@ -1959,21 +1959,8 @@ async def refresh_stock_profiles():
             except Exception:
                 pass
 
-            # ── Logo URL via Clearbit CDN ──────────────────────────────────
-            # Clearbit resolves logos by company domain — no API key required.
-            # yfinance info['website'] gives e.g. "https://www.apple.com"
-            logo_url = None
-            try:
-                from urllib.parse import urlparse as _urlparse
-                website = info.get('website') or ''
-                if website:
-                    parsed = _urlparse(website)
-                    domain = (parsed.netloc or parsed.path).lower()
-                    domain = domain.replace('www.', '').strip('/')
-                    if domain:
-                        logo_url = f'https://logo.clearbit.com/{domain}'
-            except Exception:
-                pass
+            # Logo is constructed client-side from the ticker via logo.dev —
+            # no URL to fetch or store here.
 
             # ── Analyst ────────────────────────────────────────────────────
             rec_key = (info.get('recommendationKey') or '').lower().replace(' ', '_')
@@ -1984,7 +1971,6 @@ async def refresh_stock_profiles():
                 'sector':               info.get('sector') or '',
                 'industry':             info.get('industry') or '',
                 'exchange':             info.get('exchange') or '',
-                'logo_url':             logo_url,
                 'market_cap':           info.get('marketCap'),
                 'short_float':          info.get('shortPercentOfFloat'),
                 'beta':                 info.get('beta'),
@@ -2027,7 +2013,7 @@ async def refresh_stock_profiles():
     _STOCK_PROFILES.update(fresh)
     log.info('stock_profiles: %d / %d succeeded', len(fresh), len(stock_syms))
 
-    # Persist scalar fields to Supabase — skip only JSON arrays (not plain strings)
+    # Persist scalar fields to Supabase — skip JSON arrays
     _SKIP = {'earnings_history', 'news'}
     try:
         from db import get_db as _get_db
