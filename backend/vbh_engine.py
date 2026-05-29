@@ -499,6 +499,18 @@ def make_signal(
         typical = l3
         swing_pct = round(current_range / typical * 100, 1) if typical else 0
 
+        # ── Guard against stale/inverted levels ───────────────────────────────
+        # If current_hour_ohlc h_high/h_low carry forward from a prior session,
+        # the computed T2 target can land on the wrong side of the stop, making
+        # the signal geometrically impossible.  Neutralise rather than emit a
+        # phantom ENTRY/NEAR that the price can never reach cleanly.
+        #   LONG  valid: target > entry > stop  (target is profit, above entry)
+        #   SHORT valid: target < entry < stop  (target is profit, below entry)
+        if side == 'LONG'  and target <= stop:
+            signal_state = 'NEUTRAL'
+        elif side == 'SHORT' and target >= stop:
+            signal_state = 'NEUTRAL'
+
         results.append({
             'symbol'        : symbol_display,
             'api_symbol'    : api_symbol,
