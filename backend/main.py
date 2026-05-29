@@ -1159,7 +1159,12 @@ async def refresh_signals():
                 r['signal_state'] = 'NEAR'
                 r['entry_alert']  = False   # visual only — no beep
 
-    rows.sort(key=lambda r: (r['side'] != 'LONG', -r['swing_pct']))
+    _STATE_ORDER = {'ENTRY': 0, 'NEAR': 1}
+    rows.sort(key=lambda r: (
+        _STATE_ORDER.get(r.get('signal_state', ''), 2),   # ENTRY → NEAR → everything else
+        r['side'] != 'LONG',                               # LONG before SHORT within tier
+        -r['swing_pct'],                                   # most stretched first
+    ))
     state['signals'] = rows
     state['last_signal_update'] = datetime.now(ET).isoformat()
     state['status'] = 'live'
