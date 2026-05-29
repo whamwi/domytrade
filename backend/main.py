@@ -1693,7 +1693,10 @@ async def background_loop():
         """Independent 10s loop — updates hourly H/L accumulators between signal refreshes."""
         while True:
             await asyncio.sleep(HL_REFRESH_SECS)
-            await refresh_hourly_hl()
+            try:
+                await refresh_hourly_hl()
+            except Exception as _hl_e:
+                log.warning('_hl_loop error: %s', _hl_e)
 
     asyncio.create_task(_hl_loop())   # fast H/L accumulator — runs independently at 10s
 
@@ -1717,119 +1720,136 @@ async def background_loop():
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
 
     while True:
-        await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 60s cadence
-        # Stage 1: refresh 1-min bars — hard 45s cap so a slow Schwab response
-        # (headers arrive fast, body trickles) can't block the whole cycle.
+        await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 30s cadence
         try:
-            await asyncio.wait_for(refresh_all_1min(), timeout=45)
-        except asyncio.TimeoutError:
-            log.warning('refresh_all_1min timed out (45s) — skipping this cycle')
-        # Stage 2: compute signals — reads fresh 1-min bars from DB
-        try:
-            await asyncio.wait_for(refresh_signals(), timeout=90)
-        except asyncio.TimeoutError:
-            log.warning('refresh_signals timed out (90s) — skipping this cycle')
-        await refresh_mag10_prices()
-
-        # Incremental 1-min candle update — runs every 60s during RTH
-        asyncio.create_task(refresh_holding_candles())
-
-        # refresh_strip_opens() fetches daily candles for MAG10 open prices.
-        # rth_open for STRIP_ETFs comes from refresh_signals() live quotes — NOT here
-        # (Schwab never returns in-progress daily bars so daily candles can't give today's open).
-        if time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
-            await refresh_strip_opens()
-            last_strip_refresh = time.time()
-
-        # Proactive global-markets refresh — 15 min during US hours, 30 min during
-        # Asian session (6 PM – 8 AM ET).  _refresh_global_markets() honours its own
-        # DB-cache TTL so this is cheap on most ticks.
-        _gm_et_hour = datetime.now(ET).hour
-        _gm_ttl     = 1800 if (_gm_et_hour >= 18 or _gm_et_hour < 8) else 900
-        if time.time() - last_global_markets >= _gm_ttl:
+            # Stage 1: refresh 1-min bars — hard 45s cap so a slow Schwab response
+            # (headers arrive fast, body trickles) can't block the whole cycle.
             try:
-                gm_data = await _refresh_global_markets()
-                if gm_data.get('fx') or gm_data.get('asia'):
-                    _GLOBAL_MARKETS_CACHE['data'] = gm_data
-                    _GLOBAL_MARKETS_CACHE['ts']   = time.time()
-                last_global_markets = time.time()
+                await asyncio.wait_for(refresh_all_1min(), timeout=45)
+            except asyncio.TimeoutError:
+                log.warning('refresh_all_1min timed out (45s) — skipping this cycle')
             except Exception as e:
-                log.warning('Background global-markets refresh error: %s', e)
-
-        # Refresh ETF holdings once per day
-        if time.time() - last_holdings_refresh >= HOLDINGS_REFRESH_SECS:
-            asyncio.create_task(refresh_etf_holdings())
-            _candle_tickers.clear()   # force ticker list reload after holdings refresh
-            last_holdings_refresh = time.time()
-
-        # Re-check active contracts once per hour (catches roll days automatically)
-        if time.time() - last_contract_refresh >= CONTRACT_REFRESH_SECS:
-            await refresh_active_contracts()
-            last_contract_refresh = time.time()
-
-        # Refresh YTD once per day
-        if time.time() - last_ytd_refresh >= HOLDINGS_REFRESH_SECS:
-            asyncio.create_task(refresh_ytd())
-            last_ytd_refresh = time.time()
-
-        # Purge 1-min candles older than 4 days once per day
-        if time.time() - last_candle_purge >= HOLDINGS_REFRESH_SECS:
+                log.warning('refresh_all_1min error: %s', e)
+            # Stage 2: compute signals — reads fresh 1-min bars from DB
             try:
-                deleted = await asyncio.to_thread(delete_old_ticker_candles, 4)
-                if deleted:
-                    log.info('Purged %d old 1-min candle rows', deleted)
+                await asyncio.wait_for(refresh_signals(), timeout=90)
+            except asyncio.TimeoutError:
+                log.warning('refresh_signals timed out (90s) — skipping this cycle')
             except Exception as e:
-                log.warning('Candle purge error: %s', e)
-            last_candle_purge = time.time()
-
-        # Daily candle refresh schedule:
-        #   4:30 PM ET — incremental (today's close just printed)
-        #   2:00 AM ET — full 90-day re-sync (catches any gaps, nightly housekeeping)
-        _now_et  = datetime.now(ET)
-        _today   = _now_et.date().isoformat()
-        _et_hhmm = _now_et.hour * 60 + _now_et.minute
-
-        if _et_hhmm == 16 * 60 + 30 and last_daily_close_run != _today:
-            asyncio.create_task(refresh_daily_candles(incremental=True))
-            last_daily_close_run = _today
-
-        # 5:00 PM ET — compact 1-min bars older than 2 days into 15-min bars
-        if _et_hhmm == 17 * 60 and last_1min_agg_run != _today:
+                log.warning('refresh_signals error: %s', e)
             try:
-                result = await asyncio.to_thread(aggregate_1min_to_15min, 2)
-                log.info('1-min → 15-min aggregation: %d buckets written, %d rows deleted',
-                         result['aggregated'], result['deleted'])
+                await refresh_mag10_prices()
             except Exception as e:
-                log.warning('1-min aggregation error: %s', e)
-            last_1min_agg_run = _today
+                log.warning('refresh_mag10_prices error: %s', e)
 
-        # 5:30 AM ET — daily VBH table update (overnight session just closed)
-        # Fetches new 30-min Schwab candles since last stored bar, recomputes
-        # ATR means, upserts ohlc_hourly + vbh_stats, reloads engine cache.
-        if _et_hhmm == 5 * 60 + 30 and last_vbh_update_run != _today:
-            try:
-                from vbh_updater import run_update
-                result = await asyncio.to_thread(run_update)
-                log.info('VBH scheduled update — ok=%s  failed=%s',
-                         result['ok'], result['failed'])
-            except Exception as e:
-                log.warning('VBH scheduled update error: %s', e)
-            last_vbh_update_run = _today
+            # Incremental 1-min candle update — runs every 60s during RTH
+            asyncio.create_task(refresh_holding_candles())
 
-        # 6:00 AM ET — refresh stock fundamental profiles (yfinance)
-        if _et_hhmm == 6 * 60 and last_profiles_run != _today:
-            asyncio.create_task(refresh_stock_profiles())
-            last_profiles_run = _today
+            # refresh_strip_opens() fetches daily candles for MAG10 open prices.
+            # rth_open for STRIP_ETFs comes from refresh_signals() live quotes — NOT here
+            # (Schwab never returns in-progress daily bars so daily candles can't give today's open).
+            if time.time() - last_strip_refresh >= STRIP_REFRESH_SECS:
+                try:
+                    await refresh_strip_opens()
+                except Exception as e:
+                    log.warning('refresh_strip_opens error: %s', e)
+                last_strip_refresh = time.time()
 
-        if time.time() - last_daily_refresh >= 86400:   # full re-sync once per day
-            asyncio.create_task(refresh_daily_candles(incremental=False))
-            last_daily_refresh = time.time()
+            # Proactive global-markets refresh — 15 min during US hours, 30 min during
+            # Asian session (6 PM – 8 AM ET).  _refresh_global_markets() honours its own
+            # DB-cache TTL so this is cheap on most ticks.
+            _gm_et_hour = datetime.now(ET).hour
+            _gm_ttl     = 1800 if (_gm_et_hour >= 18 or _gm_et_hour < 8) else 900
+            if time.time() - last_global_markets >= _gm_ttl:
+                try:
+                    gm_data = await _refresh_global_markets()
+                    if gm_data.get('fx') or gm_data.get('asia'):
+                        _GLOBAL_MARKETS_CACHE['data'] = gm_data
+                        _GLOBAL_MARKETS_CACHE['ts']   = time.time()
+                    last_global_markets = time.time()
+                except Exception as e:
+                    log.warning('Background global-markets refresh error: %s', e)
 
-        if state['last_stats_update']:
-            age_h = (datetime.now(ET) - datetime.fromisoformat(
-                state['last_stats_update'])).total_seconds() / 3600
-            if age_h >= STATS_REFRESH_HOURS:
-                await compute_all_stats()
+            # Refresh ETF holdings once per day
+            if time.time() - last_holdings_refresh >= HOLDINGS_REFRESH_SECS:
+                asyncio.create_task(refresh_etf_holdings())
+                _candle_tickers.clear()   # force ticker list reload after holdings refresh
+                last_holdings_refresh = time.time()
+
+            # Re-check active contracts once per hour (catches roll days automatically)
+            if time.time() - last_contract_refresh >= CONTRACT_REFRESH_SECS:
+                try:
+                    await refresh_active_contracts()
+                except Exception as e:
+                    log.warning('refresh_active_contracts error: %s', e)
+                last_contract_refresh = time.time()
+
+            # Refresh YTD once per day
+            if time.time() - last_ytd_refresh >= HOLDINGS_REFRESH_SECS:
+                asyncio.create_task(refresh_ytd())
+                last_ytd_refresh = time.time()
+
+            # Purge 1-min candles older than 4 days once per day
+            if time.time() - last_candle_purge >= HOLDINGS_REFRESH_SECS:
+                try:
+                    deleted = await asyncio.to_thread(delete_old_ticker_candles, 4)
+                    if deleted:
+                        log.info('Purged %d old 1-min candle rows', deleted)
+                except Exception as e:
+                    log.warning('Candle purge error: %s', e)
+                last_candle_purge = time.time()
+
+            # Daily candle refresh schedule:
+            #   4:30 PM ET — incremental (today's close just printed)
+            #   2:00 AM ET — full 90-day re-sync (catches any gaps, nightly housekeeping)
+            _now_et  = datetime.now(ET)
+            _today   = _now_et.date().isoformat()
+            _et_hhmm = _now_et.hour * 60 + _now_et.minute
+
+            if _et_hhmm == 16 * 60 + 30 and last_daily_close_run != _today:
+                asyncio.create_task(refresh_daily_candles(incremental=True))
+                last_daily_close_run = _today
+
+            # 5:00 PM ET — compact 1-min bars older than 2 days into 15-min bars
+            if _et_hhmm == 17 * 60 and last_1min_agg_run != _today:
+                try:
+                    result = await asyncio.to_thread(aggregate_1min_to_15min, 2)
+                    log.info('1-min → 15-min aggregation: %d buckets written, %d rows deleted',
+                             result['aggregated'], result['deleted'])
+                except Exception as e:
+                    log.warning('1-min aggregation error: %s', e)
+                last_1min_agg_run = _today
+
+            # 5:30 AM ET — daily VBH table update (overnight session just closed)
+            # Fetches new 30-min Schwab candles since last stored bar, recomputes
+            # ATR means, upserts ohlc_hourly + vbh_stats, reloads engine cache.
+            if _et_hhmm == 5 * 60 + 30 and last_vbh_update_run != _today:
+                try:
+                    from vbh_updater import run_update
+                    result = await asyncio.to_thread(run_update)
+                    log.info('VBH scheduled update — ok=%s  failed=%s',
+                             result['ok'], result['failed'])
+                except Exception as e:
+                    log.warning('VBH scheduled update error: %s', e)
+                last_vbh_update_run = _today
+
+            # 6:00 AM ET — refresh stock fundamental profiles (yfinance)
+            if _et_hhmm == 6 * 60 and last_profiles_run != _today:
+                asyncio.create_task(refresh_stock_profiles())
+                last_profiles_run = _today
+
+            if time.time() - last_daily_refresh >= 86400:   # full re-sync once per day
+                asyncio.create_task(refresh_daily_candles(incremental=False))
+                last_daily_refresh = time.time()
+
+            if state['last_stats_update']:
+                age_h = (datetime.now(ET) - datetime.fromisoformat(
+                    state['last_stats_update'])).total_seconds() / 3600
+                if age_h >= STATS_REFRESH_HOURS:
+                    await compute_all_stats()
+
+        except Exception as _loop_exc:
+            log.error('background_loop cycle error (will retry next tick): %s', _loop_exc, exc_info=True)
 
 
 # ── Stock Profiles — yfinance fundamentals, refreshed daily ──────────────────
@@ -2098,6 +2118,26 @@ def get_signals(model: str = Query('all'), side: str = Query('all')):
         'last_updated': state['last_signal_update'],
         'last_stats'  : state['last_stats_update'],
         'status'      : state['status'],
+    }
+
+
+@app.get('/api/debug/loop')
+def debug_loop():
+    """Quick health probe for the background loop — shows last update age."""
+    import time as _time
+    last = state.get('last_signal_update')
+    age_s = None
+    if last:
+        try:
+            age_s = round((datetime.now(ET) - datetime.fromisoformat(last)).total_seconds())
+        except Exception:
+            pass
+    return {
+        'status'         : state['status'],
+        'last_updated'   : last,
+        'age_seconds'    : age_s,
+        'signal_count'   : len(state['signals']),
+        'last_stats'     : state['last_stats_update'],
     }
 
 
