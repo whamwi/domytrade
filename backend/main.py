@@ -1030,19 +1030,29 @@ async def refresh_signals():
         # Per original study: breach window = OREnd (10:00) to BreachEnd (10:30) ET.
         # Only the FIRST breach within that 30-min window counts — no flips, no late entries.
         # Once breached, cr_breached stays set all day so NEAR/ENTRY can show on the retreat.
+        # INVALIDATION (Option A): if price crosses the OPPOSITE extreme at any time after
+        # the window, the CR signal is killed (cr_breached cleared). daily_bias stays stamped
+        # at the original breach direction — VBH Phase 1 signals continue unaffected.
         _cr_breach_active = (10 * 60 <= et_minute < 10 * 60 + 30)  # 10:00–10:30 AM ET
 
         _cr = state['cr'].get(sid)
-        if _cr and _cr.get('complete') and last and _cr_breach_active:
+        if _cr and _cr.get('complete') and last:
             _breached = state['cr_breached'].get(sid)
-            if not _breached:
-                # Only set on FIRST breach within the window — no flips
+            if _cr_breach_active and not _breached:
+                # First breach within the window — stamp direction on both cr and bias
                 if last > _cr['entry_long']:
                     state['cr_breached'][sid] = 'LONG'
                     state['daily_bias'][sid]  = 'LONG'
                 elif last < _cr['entry_short']:
                     state['cr_breached'][sid] = 'SHORT'
                     state['daily_bias'][sid]  = 'SHORT'
+            elif _breached and not _cr_breach_active:
+                # Window closed — watch for opposite-side cross to invalidate CR signal.
+                # daily_bias is intentionally left unchanged (asset stays stamped LONG/SHORT).
+                if _breached == 'LONG' and last < _cr['entry_short']:
+                    state['cr_breached'][sid] = None   # CR signal killed
+                elif _breached == 'SHORT' and last > _cr['entry_long']:
+                    state['cr_breached'][sid] = None   # CR signal killed
 
         # ── Legacy daily bias fallback (futures: was already set via rth_open) ─
         rth_open_val   = state['rth_open'].get(sid, 0)
