@@ -689,10 +689,15 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
   const isUp      = change !== null ? change >= 0 : true
   const changeColor = change !== null ? (isUp ? '#4ade80' : '#f87171') : 'var(--text-dim)'
 
-  // Equities in the silent list are always off-hours market-closed rows:
-  // during RTH make_signal emits at least NEUTRAL so they move to sortedSignals.
-  // Show LAST + CHG at full brightness; everything else grayed.
-  const offHoursEquity = isStock
+  // Equities may end up in NoSignalRow for two reasons:
+  //  1. Genuinely off-hours (pre/post market) → show CLOSED chip at full brightness
+  //  2. Stats not yet computed (new symbol / first boot) → during RTH show dim row, no CLOSED chip
+  // Detect RTH so we don't falsely label stats-less symbols as CLOSED during market hours.
+  const _nowET     = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  const _etMinutes = _nowET.getHours() * 60 + _nowET.getMinutes()
+  const _isWeekday = _nowET.getDay() >= 1 && _nowET.getDay() <= 5
+  const _isRTH     = _isWeekday && _etMinutes >= 570 && _etMinutes < 960  // 9:30–16:00 ET
+  const offHoursEquity = isStock && !_isRTH
 
   return (
     <tr style={{ borderBottom: '1px solid var(--border)', opacity: offHoursEquity ? 1 : 0.38 }}>
