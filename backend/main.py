@@ -1058,24 +1058,6 @@ async def refresh_signals():
                 state['daily_bias'][sid] = 'SHORT'
         bias_val = state['daily_bias'].get(sid)
 
-        # ── CR confirmation candle count ───────────────────────────────────────
-        # Count 1-min bars that CLOSED beyond the breach level after IB ended.
-        # >= 5 closed candles beyond the level → CR ENTRY (confirmed breakout).
-        _cr_confirm_count = 0
-        _cr_now = state['cr'].get(sid)
-        _cr_breached_now = state['cr_breached'].get(sid)
-        if _cr_now and _cr_now.get('complete') and _cr_breached_now:
-            _ib_end_et  = now_et.replace(hour=10, minute=0, second=0, microsecond=0)
-            _ib_end_ms  = int(_ib_end_et.astimezone(timezone.utc).timestamp() * 1000)
-            _post_ib    = [b for b in state['1min_today'].get(sid, [])
-                           if b.get('datetime', 0) >= _ib_end_ms and b.get('close')]
-            if _cr_breached_now == 'LONG':
-                _cr_confirm_count = sum(
-                    1 for b in _post_ib if b['close'] >= _cr_now['entry_long'])
-            else:
-                _cr_confirm_count = sum(
-                    1 for b in _post_ib if b['close'] <= _cr_now['entry_short'])
-
         # ── Off-hours gate ────────────────────────────────────────────────────────
         # Only gate symbols that HAVE stats for some hours but NOT the current one.
         # That pattern means it is genuinely off-hours for that asset.
@@ -1097,7 +1079,6 @@ async def refresh_signals():
             stats_wide=state['stats_wide'].get(sid, {}),
             cr=state['cr'].get(sid),
             cr_breached=state['cr_breached'].get(sid),
-            cr_confirm_count=_cr_confirm_count,
         )
         if sigs:
             for s in sigs:

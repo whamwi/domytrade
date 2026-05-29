@@ -349,7 +349,6 @@ def make_signal(
     stats_wide: dict | None = None,  # WIDE (extra-conservative) model levels
     cr: dict | None = None,          # Clearing Range levels {high, low, mid, entry_long, entry_short, complete}
     cr_breached: str | None = None,  # 'LONG' | 'SHORT' — which CR extreme was first hit
-    cr_confirm_count: int = 0,       # number of post-IB 1-min bars that closed beyond the breach level
 ) -> list[dict] | None:
     """
     Build signal rows for one symbol using HBMR rules.
@@ -364,6 +363,8 @@ def make_signal(
     Phase 1 (bias active): bias-driven, strict side suppression.  Bias holds until IB
     is breached in the opposite direction — NO fixed time cutoff.
     Phase 2 (no bias): position-driven, both sides shown.
+
+    CR fade trade: after IB breach, NEAR until price retreats to CR mid → ENTRY.
     """
     now_et = datetime.now(ET)
     h = hour_override if hour_override is not None else now_et.hour
@@ -552,14 +553,19 @@ def make_signal(
             'l3': round(l3, 5), 'l4': round(l4, 5),
         })
 
-    # ── CR (Clearing Range) breakout signal ──────────────────────────────────────
-    # Fires as soon as the IB extreme is breached (price crosses entry_long/short).
-    # State machine:
-    #   NEAR  — breach just detected (< 5 closed candles beyond the level)
-    #   ENTRY — 5+ closed 1-min candles have confirmed the breakout
+    # ── CR (Clearing Range) fade-trade signal ───────────────────────────────────
+    # Fade strategy: after IB extreme is breached, wait for price to RETREAT BACK
+    # to the CR midpoint — that is the fade entry.
     #
-    # Entry reference = CR middle (fade-trade entry after confirmed breakout).
-    # Stop  = opposite CR extreme.  Target = breach extreme (full IB range).
+    # State machine:
+    #   NEAR  — breach detected; price has NOT yet returned to mid (waiting)
+    #   ENTRY — price has retreated back to/through the CR mid (fade entry live)
+    #
+    # LONG breach (price broke above entry_long): fade by selling the retreat to mid.
+    # SHORT breach (price broke below entry_short): fade by buying the bounce to mid.
+    #
+    # Entry = CR mid, Stop = opposite CR extreme, Target = breach extreme.
+    # Sticky logic in main.py keeps NEAR visible for 4 cycles after it first fires.
     if cr and cr.get('complete') and cr_breached:
         cr_mid         = cr['mid']
         cr_entry_long  = cr['entry_long']
@@ -572,15 +578,16 @@ def make_signal(
             stop_cr   = cr_entry_short
             target_cr = cr_entry_long
             t1_cr     = round((2 * cr_mid - cr_entry_short) / ts) * ts
+            # ENTRY when price retreats back to/below mid; NEAR while still above
+            cr_state  = 'ENTRY' if last_price <= cr_mid else 'NEAR'
         else:  # SHORT breach
             cr_side   = 'SHORT'
             entry_cr  = round(cr_mid / ts) * ts
             stop_cr   = cr_entry_long
             target_cr = cr_entry_short
             t1_cr     = round((2 * cr_mid - cr_entry_long) / ts) * ts
-
-        # ENTRY after 5 confirmed candles; NEAR immediately at breach
-        cr_state = 'ENTRY' if cr_confirm_count >= 5 else 'NEAR'
+            # ENTRY when price bounces back to/above mid; NEAR while still below
+            cr_state  = 'ENTRY' if last_price >= cr_mid else 'NEAR'
 
         results.append({
             'symbol'        : symbol_display,
