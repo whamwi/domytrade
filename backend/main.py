@@ -947,19 +947,21 @@ async def refresh_signals():
         now_et     = datetime.now(ET)
         et_minute  = now_et.hour * 60 + now_et.minute
 
-        # ── Off-hours gate: only run make_signal when levels exist ──────────────
-        # Assets with 24-hour VBH stats (futures: /ES, /GC, /YM …) have non-zero
-        # L values at hour 0 (midnight ET).  Assets whose hour-0 L3 is zero have
-        # no off-hours levels (equities, sectors, any future not yet in the table)
-        # and are suppressed outside RTH so they show the CLOSED chip instead.
-        _stats_agg_sid = state['stats_agg'].get(sid, {})
-        _has_24h_levels = _stats_agg_sid.get(0, (0, 0, 0, 0))[2] > 0
+        # ── Off-hours gate ────────────────────────────────────────────────────────
+        # Futures (api starts with '/') trade ~23 h and always have 24-hour VBH
+        # stats — always generate signals.
+        # Equities and sector ETFs only trade RTH (9:30–16:00 ET, Mon–Fri).
+        # Schwab CAN return extended-hours candles for equities (pre-market from
+        # 4 AM ET), which means _compute_dynamic may produce non-zero off-hours
+        # stats for them — so checking hour-0 stats is unreliable.  The symbol
+        # prefix is the correct discriminator: futures always start with '/'.
+        _is_futures     = api.startswith('/')
         _is_rth_window  = (
             now_et.weekday() < 5 and                    # Mon–Fri
             9 * 60 + 30 <= et_minute < 16 * 60          # 9:30 AM – 4:00 PM ET
         )
-        if not _has_24h_levels and not _is_rth_window:
-            continue   # no signal outside RTH for assets without 24h levels
+        if not _is_futures and not _is_rth_window:
+            continue   # no signal outside RTH for equities / sector ETFs
 
         sigs = make_signal(
             tick, api, ohlc, last,
