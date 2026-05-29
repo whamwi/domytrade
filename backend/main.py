@@ -1666,7 +1666,10 @@ async def background_loop():
         _contract = front_month_code(_s['ticker'])
         log.info('  %-8s  →  %s', _s['ticker'], _contract)
 
-    await refresh_active_contracts()  # discover true active contracts FIRST (e.g. /GCQ26 not /GCM26)
+    try:
+        await asyncio.wait_for(refresh_active_contracts(), timeout=30)
+    except (asyncio.TimeoutError, Exception) as e:
+        log.warning('startup refresh_active_contracts: %s', e)
 
     # ── Seed stats from DB instantly, then compute fresh in background ─────────
     # compute_all_stats() fetches 90-day Schwab candles for 44 symbols and can
@@ -1677,16 +1680,22 @@ async def background_loop():
     _seed_state_stats_from_db()   # instant — no network calls
     asyncio.create_task(compute_all_stats())  # refresh from Schwab in background
 
-    await refresh_strip_opens()   # fetch true RTH 9:30 opens for Industries strip (incl. MAG10)
-    await refresh_mag10_prices()  # prime MAG10 live prices before first request
+    try:
+        await asyncio.wait_for(refresh_strip_opens(), timeout=60)
+    except (asyncio.TimeoutError, Exception) as e:
+        log.warning('startup refresh_strip_opens: %s', e)
+    try:
+        await asyncio.wait_for(refresh_mag10_prices(), timeout=30)
+    except (asyncio.TimeoutError, Exception) as e:
+        log.warning('startup refresh_mag10_prices: %s', e)
     try:
         await asyncio.wait_for(refresh_all_1min(), timeout=45)
-    except asyncio.TimeoutError:
-        log.warning('startup refresh_all_1min timed out (45s) — continuing')
+    except (asyncio.TimeoutError, Exception) as e:
+        log.warning('startup refresh_all_1min: %s', e)
     try:
         await asyncio.wait_for(refresh_signals(), timeout=90)
-    except asyncio.TimeoutError:
-        log.warning('startup refresh_signals timed out (90s) — continuing')
+    except (asyncio.TimeoutError, Exception) as e:
+        log.warning('startup refresh_signals: %s', e)
 
     # ── Define inner loops BEFORE creating tasks ───────────────────────────────
     async def _hl_loop():
