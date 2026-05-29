@@ -146,6 +146,7 @@ state = {
     'hourly_low'        : {},    # {symbol_id: float}  — running min of last_price since current ET hour started
     'hourly_hour'       : {},    # {symbol_id: int}    — ET hour when above accumulators were last reset
     'strip_session_date': None,  # date — set by refresh_strip_opens when a real RTH candle is found today
+    'strip_prev_close'  : {},    # {symbol_id: float}  — prior RTH close for STRIP_ETFS, refreshed every 5 min from daily candles (independent of 24h stats cycle)
     'signals'           : [],
     'squeeze'           : {},   # {symbol_id: sq_result} — 5-min SqueezePRO for MARKET_TICKERS
     'last_stats_update': None,
@@ -1443,6 +1444,19 @@ async def refresh_strip_opens():
                     break
             if chosen is None:
                 chosen = candles[-1]   # holiday / pre-market: use last session as placeholder
+
+            # strip_prev_close — prior RTH session's close, used as the % baseline.
+            # Derived from the most recent candle whose date is strictly before today.
+            # Updated every 5 min so the industries strip resets correctly at the start
+            # of each new day, independent of the 24h compute_all_stats() cycle.
+            prior_candle = next(
+                (c for c in reversed(candles)
+                 if datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET).date() < today_et),
+                None
+            )
+            if prior_candle and prior_candle.get('close'):
+                state['strip_prev_close'][sid] = round(prior_candle['close'], 4)
+
             if chosen['open']:
                 # During live RTH skip: refresh_signals() will set the more accurate value.
                 # Pre-market AND post-close: always write so a server restart doesn't leave
@@ -1893,7 +1907,11 @@ def get_industries():
         if not sym:
             continue
         sid        = sym['id']
-        prev_close = state['prev_close'].get(sid, 0)
+        # strip_prev_close: refreshed every 5 min from daily candles — always the most
+        # recent completed RTH session's close, independent of the 24h stats cycle.
+        # Falls back to prev_close (set at startup) if strip candles haven't loaded yet.
+        prev_close = (state['strip_prev_close'].get(sid)
+                      or state['prev_close'].get(sid, 0))
         # current price: live last during RTH, today's candle close after 4 PM.
         current    = state['last_price'].get(sid, 0) or prev_close
         # Standard daily % change: vs yesterday's close (includes the overnight gap).
