@@ -983,26 +983,39 @@ async def refresh_signals():
             rows.extend(sigs)
         await asyncio.sleep(0.1)
 
-    # ── ENTRY cascade suppression ────────────────────────────────────────────
-    # For a given symbol+side, only the most sensitive model (AGG > CON > WIDE)
-    # holds ENTRY state. If AGG is ENTRY, demote CON and WIDE to NEAR.
-    # If AGG is clear but CON is ENTRY, demote WIDE to NEAR.
-    # This prevents 3 simultaneous alerts for the same asset when price jumps fast.
+    # ── Cross-model cascade promotion ────────────────────────────────────────
+    # Each model alerts on its own levels independently — no suppression.
+    # However: if a more sensitive model (AGG) is already ENTRY, promote the
+    # less sensitive models (CON, WIDE) to at least NEAR so a CON-only or
+    # WIDE-only user gets a visible warning that the setup is active one tier up.
+    # This does NOT trigger an entry_alert beep — only a visual NEAR badge.
     MODEL_PRIORITY = {'AGG': 0, 'CON': 1, 'WIDE': 2}
     from collections import defaultdict
-    entry_by_sym_side: dict = defaultdict(list)   # (symbol, side) → [model]
+    best_state: dict = defaultdict(lambda: 'NEUTRAL')  # (symbol, side) → best state across models
     for r in rows:
-        if r.get('signal_state') == 'ENTRY':
-            entry_by_sym_side[(r['symbol'], r['side'])].append(r['model'])
-    for (sym, side), entry_models in entry_by_sym_side.items():
-        if len(entry_models) <= 1:
-            continue
-        # Keep only the highest-priority (most sensitive) model as ENTRY
-        best = min(entry_models, key=lambda m: MODEL_PRIORITY.get(m, 99))
-        for r in rows:
-            if r['symbol'] == sym and r['side'] == side and r.get('signal_state') == 'ENTRY' and r['model'] != best:
+        key = (r['symbol'], r['side'])
+        cur = r.get('signal_state', 'NEUTRAL')
+        if MODEL_PRIORITY.get(r['model'], 99) < MODEL_PRIORITY.get(
+            next((rr['model'] for rr in rows if (rr['symbol'], rr['side']) == key and rr.get('signal_state') == best_state[key]), 'WIDE'), 99
+        ):
+            best_state[key] = cur
+    # Promote NEUTRAL → NEAR on less-sensitive models when a more sensitive one is ENTRY/NEAR
+    for r in rows:
+        key = (r['symbol'], r['side'])
+        row_state = r.get('signal_state', 'NEUTRAL')
+        top_state = best_state[key]
+        row_priority = MODEL_PRIORITY.get(r['model'], 99)
+        # Only promote if this row is less sensitive AND currently NEUTRAL
+        if row_state == 'NEUTRAL' and top_state in ('ENTRY', 'NEAR'):
+            # Find the most sensitive model currently ENTRY or NEAR for this symbol/side
+            top_model = min(
+                (rr for rr in rows if (rr['symbol'], rr['side']) == key and rr.get('signal_state') in ('ENTRY', 'NEAR')),
+                key=lambda rr: MODEL_PRIORITY.get(rr['model'], 99),
+                default=None,
+            )
+            if top_model and MODEL_PRIORITY.get(top_model['model'], 99) < row_priority:
                 r['signal_state'] = 'NEAR'
-                r['entry_alert']  = False   # no beep for suppressed models
+                r['entry_alert']  = False   # visual only — no beep
 
     rows.sort(key=lambda r: (r['side'] != 'LONG', -r['swing_pct']))
     state['signals'] = rows
