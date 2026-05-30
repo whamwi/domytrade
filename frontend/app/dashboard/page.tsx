@@ -174,7 +174,9 @@ export default function DashboardPage() {
   // ── Watchlist (persistent symbol picker) ──────────────────────────────────
   const [watchlist, setWatchlist]     = useState<string[]>([])
   const [pickerOpen, setPickerOpen]   = useState(false)
-  const pickerRef = useRef<HTMLDivElement>(null)
+  const [watchSearch, setWatchSearch] = useState('')
+  const pickerRef    = useRef<HTMLDivElement>(null)
+  const watchSearchRef = useRef<HTMLInputElement>(null)
 
   // Load from localStorage once on mount
   useEffect(() => {
@@ -189,9 +191,10 @@ export default function DashboardPage() {
     localStorage.setItem('domytrade_watchlist', JSON.stringify(watchlist))
   }, [watchlist])
 
-  // Close picker on outside click
+  // Close picker on outside click; auto-focus search on open
   useEffect(() => {
-    if (!pickerOpen) return
+    if (!pickerOpen) { setWatchSearch(''); return }
+    setTimeout(() => watchSearchRef.current?.focus(), 50)
     const handler = (e: MouseEvent) => {
       if (pickerRef.current && !pickerRef.current.contains(e.target as Node))
         setPickerOpen(false)
@@ -557,15 +560,35 @@ export default function DashboardPage() {
             {pickerOpen && (
               <div
                 className="absolute top-full left-0 z-50 mt-1 rounded-xl overflow-hidden shadow-2xl"
-                style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', width: '200px', maxHeight: '320px', overflowY: 'auto' }}
+                style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', width: '200px' }}
               >
+                {/* Search input */}
+                <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)' }}>
+                  <input
+                    ref={watchSearchRef}
+                    type="text"
+                    placeholder="Search…"
+                    value={watchSearch}
+                    onChange={e => setWatchSearch(e.target.value)}
+                    onKeyDown={e => e.key === 'Escape' && setPickerOpen(false)}
+                    className="w-full rounded-md px-2.5 py-1.5 text-xs outline-none"
+                    style={{
+                      background: 'var(--bg-base)',
+                      border: '1px solid var(--border)',
+                      color: 'var(--text-primary)',
+                      caretColor: '#fbbf24',
+                    }}
+                  />
+                </div>
+                {/* Scrollable symbol list */}
+                <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
                 {/* Futures group */}
-                {allSymbols.filter(s => s.ticker.startsWith('/')).length > 0 && (
+                {allSymbols.filter(s => s.ticker.startsWith('/') && s.ticker.toLowerCase().includes(watchSearch.toLowerCase())).length > 0 && (
                   <>
                     <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-dim)', background: 'var(--bg-base)' }}>
                       Futures
                     </div>
-                    {allSymbols.filter(s => s.ticker.startsWith('/')).map(s => (
+                    {allSymbols.filter(s => s.ticker.startsWith('/') && s.ticker.toLowerCase().includes(watchSearch.toLowerCase())).map(s => (
                       <button
                         key={s.ticker}
                         onClick={() => toggleWatchlist(s.ticker)}
@@ -584,12 +607,12 @@ export default function DashboardPage() {
                   </>
                 )}
                 {/* Sectors group */}
-                {allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker)).length > 0 && (
+                {allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker) && s.ticker.toLowerCase().includes(watchSearch.toLowerCase())).length > 0 && (
                   <>
                     <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-dim)', background: 'var(--bg-base)' }}>
                       Sectors / ETFs
                     </div>
-                    {allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker)).map(s => (
+                    {allSymbols.filter(s => SECTOR_TICKERS.has(s.ticker) && s.ticker.toLowerCase().includes(watchSearch.toLowerCase())).map(s => (
                       <button
                         key={s.ticker}
                         onClick={() => toggleWatchlist(s.ticker)}
@@ -608,12 +631,12 @@ export default function DashboardPage() {
                   </>
                 )}
                 {/* Equities group */}
-                {allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker)).length > 0 && (
+                {allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker) && s.ticker.toLowerCase().includes(watchSearch.toLowerCase())).length > 0 && (
                   <>
                     <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-dim)', background: 'var(--bg-base)' }}>
                       Equities
                     </div>
-                    {allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker)).map(s => (
+                    {allSymbols.filter(s => !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker) && s.ticker.toLowerCase().includes(watchSearch.toLowerCase())).map(s => (
                       <button
                         key={s.ticker}
                         onClick={() => toggleWatchlist(s.ticker)}
@@ -631,6 +654,7 @@ export default function DashboardPage() {
                     ))}
                   </>
                 )}
+                </div>{/* end scrollable list */}
               </div>
             )}
           </div>
