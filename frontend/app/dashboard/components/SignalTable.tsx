@@ -12,12 +12,13 @@ import StockInfoPanel, { StockPanelInfo } from './StockInfoPanel'
 // Futures that get a clickable levels panel
 const FUTURES_PANEL_TICKERS = new Set(['/ES','/NQ','/YM','/RTY','/GC','/CL','/SI','/PL','/NG','/ZB','/ZN','/HG','/RB','/ZC','/ZS','/BTC'])
 
-// The 4 major US equity index futures — each with a distinct accent color
+// Major futures — each with a distinct accent color
 const MAJOR_MARKET_COLORS: Record<string, { border: string; bg: string; hover: string }> = {
   '/ES' : { border: 'rgba(59,130,246,0.6)',  bg: 'rgba(59,130,246,0.05)',  hover: 'rgba(59,130,246,0.10)'  }, // blue
   '/NQ' : { border: 'rgba(168,85,247,0.6)',  bg: 'rgba(168,85,247,0.05)',  hover: 'rgba(168,85,247,0.10)'  }, // purple
   '/YM' : { border: 'rgba(251,146,60,0.6)',  bg: 'rgba(251,146,60,0.05)',  hover: 'rgba(251,146,60,0.10)'  }, // orange
   '/RTY': { border: 'rgba(20,184,166,0.6)',  bg: 'rgba(20,184,166,0.05)',  hover: 'rgba(20,184,166,0.10)'  }, // teal
+  '/GC' : { border: 'rgba(234,179,8,0.6)',   bg: 'rgba(234,179,8,0.05)',   hover: 'rgba(234,179,8,0.10)'   }, // gold
 }
 
 // Mirrors the set in page.tsx — used to identify sector/ETF tickers
