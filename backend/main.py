@@ -1927,6 +1927,7 @@ async def background_loop():
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
+    last_vbh_stocks_vbh_run = ''   # 'YYYY-MM-DD' of last Saturday VBH recompute for stocks
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
 
     while True:
@@ -2030,18 +2031,36 @@ async def background_loop():
                     log.warning('1-min aggregation error: %s', e)
                 last_1min_agg_run = _today
 
-            # 5:30 AM ET — daily VBH table update (overnight session just closed)
-            # Fetches new 30-min Schwab candles since last stored bar, recomputes
-            # ATR means, upserts ohlc_hourly + vbh_stats, reloads engine cache.
+            # 5:30 AM ET — daily VBH table update (overnight session just closed).
+            # Fetches new 30-min Schwab candles for ALL active symbols (futures +
+            # stocks/sectors) and stores them in ohlc_30min.  VBH stats are
+            # recomputed only for futures — stocks VBH recomputes on Saturday.
             if _et_hhmm == 5 * 60 + 30 and last_vbh_update_run != _today:
                 try:
                     from vbh_updater import run_update
-                    result = await asyncio.to_thread(run_update)
-                    log.info('VBH scheduled update — ok=%s  failed=%s',
+                    result = await asyncio.to_thread(
+                        run_update, include_stocks=True, vbh_for_stocks=False)
+                    log.info('VBH daily update — ok=%s  failed=%s',
                              result['ok'], result['failed'])
                 except Exception as e:
-                    log.warning('VBH scheduled update error: %s', e)
+                    log.warning('VBH daily update error: %s', e)
                 last_vbh_update_run = _today
+
+            # Saturday 8:00 AM ET — weekly VBH recompute for stocks/sectors.
+            # Runs once per week after the full week of 30-min bars has been
+            # accumulated.  Futures are already up-to-date from the daily run.
+            _weekday = datetime.now(ET).weekday()   # 0=Mon … 5=Sat, 6=Sun
+            if (_weekday == 5 and _et_hhmm == 8 * 60
+                    and last_vbh_stocks_vbh_run != _today):
+                try:
+                    from vbh_updater import run_update
+                    result = await asyncio.to_thread(
+                        run_update, include_stocks=True, vbh_for_stocks=True)
+                    log.info('VBH weekly stocks recompute — ok=%s  failed=%s',
+                             result['ok'], result['failed'])
+                except Exception as e:
+                    log.warning('VBH weekly stocks recompute error: %s', e)
+                last_vbh_stocks_vbh_run = _today
 
             # 6:00 AM ET — refresh stock fundamental profiles (yfinance)
             if _et_hhmm == 6 * 60 and last_profiles_run != _today:
@@ -5561,3 +5580,72 @@ async def api_entry_log_clear():
     except Exception as e:
         log.warning('entry-log clear error: %s', e)
         return {'deleted': 0, 'error': str(e)}
+
+
+# ── Asset Personality: hour score for all active symbols ─────────────────────
+@app.get('/api/personality')
+async def api_personality():
+    """
+    Returns asset personality hour scores for all symbols in asset_personality
+    at the current ET hour.  Used by the dashboard grid to show Hot/Good/Neutral/Avoid
+    buttons per model (AGG / CON / WIDE) on every row.
+
+    Response shape:
+      {
+        hour_et: 14,
+        session: "RTH",
+        data: {
+          "/ES":  { AGG: {...}, CON: {...}, WIDE: {...} },
+          "AAPL": { AGG: {...}, CON: {...}, WIDE: {...} },
+          ...
+        }
+      }
+    """
+    et_now   = datetime.now(ET)
+    et_hour  = et_now.hour
+    session  = 'RTH' if 9 <= et_hour <= 15 else 'OFF'
+
+    def _fetch():
+        from db import get_db
+        db = get_db()
+
+        # All personality rows for current hour
+        rows = (db.table('asset_personality')
+                  .select('symbol_id,model,signal_strength,direction_bias,'
+                          'win_rate,avg_pnl_usd,net_pnl_usd,total_trades,'
+                          'long_win_rate,short_win_rate,long_net_usd,short_net_usd,session')
+                  .eq('hour_et', et_hour)
+                  .execute())
+
+        # Build ticker → id map
+        syms     = db.table('symbols').select('id,ticker').execute()
+        id_to_tk = {r['id']: r['ticker'] for r in syms.data}
+
+        result: dict = {}
+        for row in rows.data:
+            ticker = id_to_tk.get(row['symbol_id'])
+            if not ticker:
+                continue
+            if ticker not in result:
+                result[ticker] = {}
+            result[ticker][row['model']] = {
+                'signal_strength': row['signal_strength'],   # STRONG|MODERATE|WEAK|DEAD
+                'direction_bias':  row['direction_bias'],    # LONG|SHORT|NEUTRAL|AVOID
+                'win_rate':        row['win_rate'],
+                'avg_pnl_usd':     row['avg_pnl_usd'],
+                'net_pnl_usd':     row['net_pnl_usd'],
+                'total_trades':    row['total_trades'],
+                'long_win_rate':   row['long_win_rate'],
+                'short_win_rate':  row['short_win_rate'],
+                'long_net_usd':    row['long_net_usd'],
+                'short_net_usd':   row['short_net_usd'],
+                'session':         row['session'],
+            }
+        return result
+
+    try:
+        data = await asyncio.to_thread(_fetch)
+        return {'hour_et': et_hour, 'session': session, 'data': data}
+    except Exception as e:
+        log.warning('personality fetch error: %s', e)
+        return {'hour_et': et_hour, 'session': session, 'data': {}, 'error': str(e)}

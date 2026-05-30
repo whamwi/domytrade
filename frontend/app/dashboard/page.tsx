@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Sidebar from './components/Sidebar'
-import SignalTable, { Signal, SymbolInfo } from './components/SignalTable'
+import SignalTable, { Signal, SymbolInfo, PersonalityMap } from './components/SignalTable'
 import MarketBias, { MarketBiasItem } from './components/MarketBias'
 import SectorStrip, { SectorItem } from './components/SectorStrip'
 import BriefingModal from './components/BriefingModal'
@@ -102,6 +102,8 @@ export default function DashboardPage() {
   const [marketBias, setMarketBias] = useState<MarketBiasItem[]>([])
   const [industries, setIndustries] = useState<SectorItem[]>([])
   const [ytdMap, setYtdMap] = useState<Record<string, number>>({})
+  const [personalityData, setPersonalityData] = useState<PersonalityMap>({})
+  const [personalityHour, setPersonalityHour] = useState<number>(-1)
   const [vix, setVix] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -228,12 +230,13 @@ export default function DashboardPage() {
 
   const fetchSignals = useCallback(async () => {
     try {
-      const [sigRes, symRes, biasRes, indRes, ytdRes] = await Promise.all([
+      const [sigRes, symRes, biasRes, indRes, ytdRes, persRes] = await Promise.all([
         fetch(`${API_URL}/api/signals?model=all&side=all`, { cache: 'no-store' }),
         fetch(`${API_URL}/api/symbols`,                    { cache: 'no-store' }),
         fetch(`${API_URL}/api/market-bias`,                { cache: 'no-store' }),
         fetch(`${API_URL}/api/industries`,                 { cache: 'no-store' }),
         fetch(`${API_URL}/api/sector-ytd`,                 { cache: 'no-store' }),
+        fetch(`${API_URL}/api/personality`,                { cache: 'no-store' }),
       ])
       if (!sigRes.ok) throw new Error(`HTTP ${sigRes.status}`)
       const json: ApiResponse = await sigRes.json()
@@ -268,6 +271,11 @@ export default function DashboardPage() {
       }
       if (ytdRes.ok) {
         setYtdMap(await ytdRes.json())
+      }
+      if (persRes.ok) {
+        const persJson = await persRes.json()
+        setPersonalityData(persJson.data ?? {})
+        setPersonalityHour(persJson.hour_et ?? -1)
       }
 
       // Retry faster while signals haven't arrived yet
@@ -702,6 +710,8 @@ export default function DashboardPage() {
               error={error}
               onRetry={handleRefresh}
               ytdMap={ytdMap}
+              personalityData={personalityData}
+              personalityHour={personalityHour}
             />
           )}
         </div>

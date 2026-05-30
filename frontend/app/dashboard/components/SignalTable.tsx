@@ -68,6 +68,23 @@ export interface SymbolInfo {
   net_change?: number | null
 }
 
+export interface ModelHourScore {
+  signal_strength: 'STRONG' | 'MODERATE' | 'WEAK' | 'DEAD'
+  direction_bias:  'LONG' | 'SHORT' | 'NEUTRAL' | 'AVOID'
+  win_rate:        number
+  avg_pnl_usd:     number
+  net_pnl_usd:     number
+  total_trades:    number
+  long_win_rate:   number
+  short_win_rate:  number
+  long_net_usd:    number
+  short_net_usd:   number
+  session:         string
+}
+
+// personalityData shape: ticker → model → ModelHourScore
+export type PersonalityMap = Record<string, Record<string, ModelHourScore>>
+
 interface SignalTableProps {
   signals: Signal[]
   allSymbols: SymbolInfo[]
@@ -75,6 +92,8 @@ interface SignalTableProps {
   error: string | null
   onRetry: () => void
   ytdMap?: Record<string, number>
+  personalityData?: PersonalityMap
+  personalityHour?: number
 }
 
 function fmt(price: number): string {
@@ -89,10 +108,10 @@ const COLS = [
   { label: 'SYMBOL',      align: 'left'   },
   { label: 'LAST',        align: 'right'  },
   { label: 'CHG',         align: 'right'  },
-  { label: 'MODEL',       align: 'left'   },  // AGG or CON
-  { label: 'AI',           align: 'center' },  // on-demand AI advisory
+  { label: 'MODEL',       align: 'left'   },  // active signal model
+  { label: 'SCORE',       align: 'center' },  // hour personality: AGG · CON · WIDE
   { label: 'SIDE',        align: 'left'   },
-  { label: 'ALERT',       align: 'left'   },  // near gray trigger
+  { label: 'ALERT',       align: 'left'   },
   { label: 'ENTRY',       align: 'right'  },
   { label: 'STOP',        align: 'right'  },
   { label: 'TARGET',      align: 'right'  },
@@ -259,6 +278,241 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
                 </div>
               </>
             )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Hour Score: Hot / Good / Neutral / Avoid per model ───────────────────────
+const SCORE_CONFIG: Record<string, { label: string; bg: string; color: string }> = {
+  STRONG:   { label: 'Hot',     bg: 'rgba(251,146,60,0.18)',  color: '#fb923c' },
+  MODERATE: { label: 'Good',    bg: 'rgba(74,222,128,0.15)',  color: '#4ade80' },
+  WEAK:     { label: 'Neutral', bg: 'rgba(148,163,184,0.10)', color: '#94a3b8' },
+  DEAD:     { label: 'Avoid',   bg: 'rgba(248,113,113,0.10)', color: '#6b7280' },
+}
+const BIAS_ARROW: Record<string, string> = {
+  LONG: ' ↑', SHORT: ' ↓', NEUTRAL: '', AVOID: '',
+}
+
+function HourScoreCell({ ticker, scores, hour }: {
+  ticker: string
+  scores: Record<string, ModelHourScore> | undefined
+  hour:   number
+}) {
+  const [popup, setPopup] = useState<{
+    model: string; score: ModelHourScore; top: number; left: number; above: boolean
+  } | null>(null)
+  const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+
+  const open = (model: string, score: ModelHourScore) => {
+    const btn = btnRefs.current[model]
+    if (!btn) return
+    const r    = btn.getBoundingClientRect()
+    const popW = 300
+    let left   = r.left + r.width / 2 - popW / 2
+    left       = Math.max(8, Math.min(left, window.innerWidth - popW - 8))
+    const spaceBelow = window.innerHeight - r.bottom
+    const above      = spaceBelow < 260
+    const top        = above ? r.top - 6 : r.bottom + 6
+    setPopup({ model, score, top, left, above })
+  }
+
+  const session = popup?.score.session ?? (hour >= 9 && hour <= 15 ? 'RTH' : 'OFF')
+
+  return (
+    <div className="inline-flex items-center gap-1">
+      {(['AGG', 'CON', 'WIDE'] as const).map((model) => {
+        const score  = scores?.[model]
+        const cfg    = score ? SCORE_CONFIG[score.signal_strength] : null
+        return (
+          <div key={model} className="flex flex-col items-center gap-0.5">
+            {/* tiny model label */}
+            <span style={{ fontSize: '9px', color: '#475569', lineHeight: 1, letterSpacing: '0.05em' }}>
+              {model}
+            </span>
+            <button
+              ref={el => { btnRefs.current[model] = el }}
+              onClick={() => score && open(model, score)}
+              disabled={!score}
+              className="rounded px-1.5 py-0.5 text-xs font-bold transition-opacity"
+              style={cfg
+                ? { background: cfg.bg, color: cfg.color, minWidth: '46px', cursor: 'pointer' }
+                : { background: 'rgba(71,85,105,0.08)', color: '#334155', minWidth: '46px', cursor: 'default' }
+              }
+            >
+              {cfg ? cfg.label : '—'}
+            </button>
+          </div>
+        )
+      })}
+
+      {/* Detail popup */}
+      {popup && (
+        <>
+          <div className="fixed inset-0 z-[1090]" onClick={() => setPopup(null)} />
+          <div
+            className="rounded-xl shadow-2xl"
+            style={{
+              position:  'fixed',
+              top:       popup.above ? undefined : popup.top,
+              bottom:    popup.above ? window.innerHeight - popup.top : undefined,
+              left:      popup.left,
+              width:     '300px',
+              zIndex:    1100,
+              background: '#13111d',
+              border:    '1px solid rgba(255,255,255,0.09)',
+              boxShadow: '0 0 0 1px rgba(0,0,0,0.7), 0 20px 50px rgba(0,0,0,0.9)',
+              overflow:  'hidden',
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              padding:    '10px 14px 8px',
+              borderBottom: '1px solid rgba(255,255,255,0.07)',
+              display:    'flex', alignItems: 'center', justifyContent: 'space-between',
+            }}>
+              <div>
+                <span style={{ fontWeight: 700, fontSize: '13px', color: '#e2e8f0', letterSpacing: '0.05em' }}>
+                  {ticker}
+                </span>
+                <span style={{ color: '#475569', fontSize: '11px', marginLeft: '8px' }}>
+                  H{String(hour).padStart(2, '0')} · {session}
+                </span>
+              </div>
+              <button onClick={() => setPopup(null)}
+                style={{ color: '#475569', fontSize: '13px', background: 'none', border: 'none', cursor: 'pointer', lineHeight: 1 }}>
+                ✕
+              </button>
+            </div>
+
+            {/* Model comparison table */}
+            <div style={{ padding: '8px 14px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '44px 1fr 52px 64px 52px',
+                            gap: '4px', marginBottom: '6px' }}>
+                {['', 'Score', 'WR', 'Avg/trade', 'Bias'].map(h => (
+                  <span key={h} style={{ fontSize: '9px', color: '#475569',
+                    textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
+                    {h}
+                  </span>
+                ))}
+              </div>
+              {(['AGG', 'CON', 'WIDE'] as const).map(m => {
+                const s    = scores?.[m]
+                const cfg  = s ? SCORE_CONFIG[s.signal_strength] : null
+                const isSel = m === popup.model
+                return (
+                  <div
+                    key={m}
+                    onClick={() => s && setPopup(p => p ? { ...p, model: m, score: s } : null)}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '44px 1fr 52px 64px 52px',
+                      gap: '4px', alignItems: 'center',
+                      padding: '4px 6px', borderRadius: '6px', cursor: s ? 'pointer' : 'default',
+                      background: isSel ? 'rgba(255,255,255,0.05)' : 'transparent',
+                      marginBottom: '2px',
+                    }}
+                  >
+                    <span style={{
+                      fontSize: '10px', fontWeight: 700, color:
+                        m === 'AGG' ? '#fbbf24' : m === 'CON' ? '#a5b4fc' : '#2dd4bf'
+                    }}>{m}</span>
+                    {cfg
+                      ? <span className="rounded px-1.5 py-0.5 text-xs font-bold inline-block"
+                              style={{ background: cfg.bg, color: cfg.color, textAlign: 'center' }}>
+                          {cfg.label}
+                        </span>
+                      : <span style={{ color: '#334155', fontSize: '11px' }}>—</span>
+                    }
+                    <span style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'right' }}>
+                      {s ? `${s.win_rate.toFixed(0)}%` : '—'}
+                    </span>
+                    <span style={{ fontSize: '11px', color: s && s.avg_pnl_usd >= 0 ? '#4ade80' : '#f87171', textAlign: 'right' }}>
+                      {s ? `$${s.avg_pnl_usd >= 0 ? '+' : ''}${s.avg_pnl_usd.toFixed(0)}` : '—'}
+                    </span>
+                    <span style={{ fontSize: '10px', color: '#64748b', textAlign: 'center' }}>
+                      {s ? `${s.direction_bias}${BIAS_ARROW[s.direction_bias] ?? ''}` : '—'}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Selected model detail */}
+            {(() => {
+              const s = popup.score
+              const longPct  = s.total_trades > 0 ? (s.long_win_rate) : 0
+              const shortPct = s.total_trades > 0 ? (s.short_win_rate) : 0
+              const longUsd  = s.long_net_usd
+              const shortUsd = s.short_net_usd
+              return (
+                <div style={{
+                  margin: '0 14px 12px',
+                  padding: '10px 12px',
+                  background: 'rgba(255,255,255,0.03)',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                }}>
+                  <div style={{ fontSize: '10px', color: '#475569', marginBottom: '8px',
+                    fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    {popup.model} · Direction breakdown · {s.total_trades} trades
+                  </div>
+
+                  {/* Long bar */}
+                  <div style={{ marginBottom: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between',
+                      fontSize: '11px', marginBottom: '3px' }}>
+                      <span style={{ color: '#4ade80', fontWeight: 600 }}>Long</span>
+                      <span style={{ color: '#94a3b8' }}>
+                        {longPct.toFixed(0)}% WR &nbsp;
+                        <span style={{ color: longUsd >= 0 ? '#4ade80' : '#f87171' }}>
+                          ${longUsd >= 0 ? '+' : ''}{longUsd.toFixed(0)}
+                        </span>
+                      </span>
+                    </div>
+                    <div style={{ height: '4px', background: 'rgba(255,255,255,0.06)', borderRadius: '2px' }}>
+                      <div style={{ height: '100%', width: `${Math.min(longPct, 100)}%`,
+                        background: '#4ade80', borderRadius: '2px', transition: 'width 0.4s' }} />
+                    </div>
+                  </div>
+
+                  {/* Short bar */}
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between',
+                      fontSize: '11px', marginBottom: '3px' }}>
+                      <span style={{ color: '#f87171', fontWeight: 600 }}>Short</span>
+                      <span style={{ color: '#94a3b8' }}>
+                        {shortPct.toFixed(0)}% WR &nbsp;
+                        <span style={{ color: shortUsd >= 0 ? '#4ade80' : '#f87171' }}>
+                          ${shortUsd >= 0 ? '+' : ''}{shortUsd.toFixed(0)}
+                        </span>
+                      </span>
+                    </div>
+                    <div style={{ height: '4px', background: 'rgba(255,255,255,0.06)', borderRadius: '2px' }}>
+                      <div style={{ height: '100%', width: `${Math.min(shortPct, 100)}%`,
+                        background: '#f87171', borderRadius: '2px', transition: 'width 0.4s' }} />
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+
+            {/* Footer */}
+            <div style={{
+              padding: '6px 14px 10px',
+              borderTop: '1px solid rgba(255,255,255,0.05)',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <span style={{ fontSize: '10px', color: '#334155' }}>
+                365d · asset personality profile
+              </span>
+              <button onClick={() => setPopup(null)}
+                style={{ fontSize: '10px', color: '#475569', background: 'none', border: 'none', cursor: 'pointer' }}>
+                close
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -489,9 +743,11 @@ interface ActiveRowProps {
   onFuturesClick: (info: FuturesPanelInfo) => void
   onStockClick:   (info: StockPanelInfo) => void
   ytdMap?: Record<string, number>
+  personalityData?: PersonalityMap
+  personalityHour?: number
 }
 
-function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap }: ActiveRowProps) {
+function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap, personalityData, personalityHour }: ActiveRowProps) {
   const isSector  = SECTOR_TICKERS.has(sig.symbol)
   const isFutures = FUTURES_PANEL_TICKERS.has(sig.symbol)
   const isStock   = !isSector && !isFutures
@@ -582,17 +838,13 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
         </span>
       </td>
 
-      {/* AI — on-demand advisory (major market futures only) */}
+      {/* SCORE — asset personality hour score (AGG · CON · WIDE) */}
       <td className="px-3 py-2.5 text-center">
-        {majorColor ? (
-          <AiAdvisoryButton
-            symbol={sig.symbol.split(':')[0]}
-            model={sig.model}
-            side={sig.side}
-          />
-        ) : (
-          <Dash />
-        )}
+        <HourScoreCell
+          ticker={sig.symbol.split(':')[0]}
+          scores={personalityData?.[sig.symbol.split(':')[0]]}
+          hour={personalityHour ?? -1}
+        />
       </td>
 
       {/* SIDE */}
@@ -675,9 +927,11 @@ interface NoSignalRowProps {
   onFuturesClick: (info: FuturesPanelInfo) => void
   onStockClick:   (info: StockPanelInfo) => void
   ytdMap?: Record<string, number>
+  personalityData?: PersonalityMap
+  personalityHour?: number
 }
 
-function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap }: NoSignalRowProps) {
+function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap, personalityData, personalityHour }: NoSignalRowProps) {
   const isSector  = SECTOR_TICKERS.has(sym.ticker)
   const isFutures = FUTURES_PANEL_TICKERS.has(sym.ticker)
   const isStock   = !isSector && !isFutures
@@ -756,8 +1010,14 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
       {/* MODEL */}
       <td className="px-3 py-2 text-center"><Dash /></td>
 
-      {/* AI */}
-      <td className="px-3 py-2 text-center"><Dash /></td>
+      {/* SCORE — asset personality hour score */}
+      <td className="px-3 py-2 text-center">
+        <HourScoreCell
+          ticker={sym.ticker}
+          scores={personalityData?.[sym.ticker]}
+          hour={personalityHour ?? -1}
+        />
+      </td>
 
       {/* SIDE — grayed out */}
       <td className="px-3 py-2 text-center"><Dash /></td>
@@ -796,7 +1056,7 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
 }
 
 // ── Main export ──────────────────────────────────────────────────────────────
-export default function SignalTable({ signals, allSymbols, loading, error, onRetry, ytdMap }: SignalTableProps) {
+export default function SignalTable({ signals, allSymbols, loading, error, onRetry, ytdMap, personalityData, personalityHour }: SignalTableProps) {
   const [etfPanel,     setEtfPanel]     = useState<EtfPanelInfo | null>(null)
   const [futuresPanel, setFuturesPanel] = useState<FuturesPanelInfo | null>(null)
   const [stockPanel,   setStockPanel]   = useState<StockPanelInfo | null>(null)
@@ -912,6 +1172,8 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
                 onFuturesClick={setFuturesPanel}
                 onStockClick={setStockPanel}
                 ytdMap={ytdMap}
+                personalityData={personalityData}
+                personalityHour={personalityHour}
               />
             ))}
             {silentSymbols.map((sym) => (
@@ -923,6 +1185,8 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
                 onFuturesClick={setFuturesPanel}
                 onStockClick={setStockPanel}
                 ytdMap={ytdMap}
+                personalityData={personalityData}
+                personalityHour={personalityHour}
               />
             ))}
             {signals.length === 0 && silentSymbols.length === 0 && (
