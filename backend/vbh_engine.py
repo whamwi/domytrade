@@ -578,16 +578,16 @@ def make_signal(
             stop_cr   = cr_entry_short
             target_cr = cr_entry_long
             t1_cr     = round((2 * cr_mid - cr_entry_short) / ts) * ts
-            # ENTRY when price retreats back to/below mid; NEAR while still above
-            cr_state  = 'ENTRY' if last_price <= cr_mid else 'NEAR'
+            # ENTRY when price retreats back to/below mid; TRENDING while still above (breakout holding)
+            cr_state  = 'ENTRY' if last_price <= cr_mid else 'TRENDING'
         else:  # SHORT breach
             cr_side   = 'SHORT'
             entry_cr  = round(cr_mid / ts) * ts
             stop_cr   = cr_entry_long
             target_cr = cr_entry_short
             t1_cr     = round((2 * cr_mid - cr_entry_long) / ts) * ts
-            # ENTRY when price bounces back to/above mid; NEAR while still below
-            cr_state  = 'ENTRY' if last_price >= cr_mid else 'NEAR'
+            # ENTRY when price bounces back to/above mid; TRENDING while still above (breakdown holding)
+            cr_state  = 'ENTRY' if last_price >= cr_mid else 'TRENDING'
 
         results.append({
             'symbol'        : symbol_display,
