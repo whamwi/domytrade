@@ -183,12 +183,12 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
 
   const FONT       = "'SF Mono', ui-monospace, monospace"
   const ROW_H      = 16
-  const PRICE_W    = 58
-  const SEP        = 6
-  const PRIOR_ON_W = hasPriorOn ? 80 : 0
-  const PRIOR_W    = 110
-  const ON_W       = hasOn ? 85 : 0
-  const TODAY_W    = 175
+  const PRICE_W    = 56
+  const SEP        = 7
+  const PRIOR_ON_W = hasPriorOn ? 95 : 0
+  const PRIOR_W    = 108
+  const ON_W       = hasOn ? 130 : 0
+  const TODAY_W    = 160
   const TOTAL_W    = PRICE_W + SEP
     + (hasPriorOn ? PRIOR_ON_W + SEP : 0)
     + PRIOR_W + SEP
@@ -237,7 +237,7 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
         height={totalH}
         style={{ display: 'block', fontFamily: FONT, overflow: 'visible' }}
       >
-        {/* ── Prior Overnight value area shading ── */}
+        {/* ── Prior Overnight value area shading (3-zone: purple VAH / indigo POC / blue VAL) ── */}
         {hasPriorOn && priorOvernight.vah != null && priorOvernight.val != null && priorOvernight.poc != null && (() => {
           const idxVAH = sortedPrices.findIndex(p => p <= priorOvernight.vah!)
           const idxPOC = sortedPrices.findIndex(p => p <= priorOvernight.poc!)
@@ -248,12 +248,15 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
           const yVAL = idxVAL * ROW_H + ROW_H
           return (
             <g>
+              {/* VAH → POC: purple (above-POC zone) */}
               <rect x={xPriorOn} y={yVAH} width={PRIOR_ON_W} height={yPOC - yVAH}
-                fill="#6366f1" fillOpacity={0.05} />
+                fill="#a78bfa" fillOpacity={0.09} />
+              {/* POC row: indigo highlight */}
               <rect x={xPriorOn} y={yPOC} width={PRIOR_ON_W} height={ROW_H}
-                fill="#6366f1" fillOpacity={0.15} />
+                fill="#6366f1" fillOpacity={0.22} />
+              {/* POC → VAL: blue (below-POC zone) */}
               <rect x={xPriorOn} y={yPOC + ROW_H} width={PRIOR_ON_W} height={yVAL - yPOC - ROW_H}
-                fill="#6366f1" fillOpacity={0.04} />
+                fill="#3b82f6" fillOpacity={0.08} />
             </g>
           )
         })()}
@@ -279,7 +282,7 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
           )
         })()}
 
-        {/* ── Current Overnight value area shading ── */}
+        {/* ── Current Overnight value area shading (3-zone: teal VAH / cyan POC / sky VAL) ── */}
         {hasOn && overnight.vah != null && overnight.val != null && overnight.poc != null && (() => {
           const idxVAH = sortedPrices.findIndex(p => p <= overnight.vah!)
           const idxPOC = sortedPrices.findIndex(p => p <= overnight.poc!)
@@ -290,12 +293,15 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
           const yVAL = idxVAL * ROW_H + ROW_H
           return (
             <g>
+              {/* VAH → POC: teal (above-POC zone) */}
               <rect x={xOn} y={yVAH} width={ON_W} height={yPOC - yVAH}
-                fill="#22d3ee" fillOpacity={0.05} />
+                fill="#14b8a6" fillOpacity={0.12} />
+              {/* POC row: bright cyan highlight */}
               <rect x={xOn} y={yPOC} width={ON_W} height={ROW_H}
-                fill="#22d3ee" fillOpacity={0.18} />
+                fill="#22d3ee" fillOpacity={0.28} />
+              {/* POC → VAL: sky blue (below-POC zone) */}
               <rect x={xOn} y={yPOC + ROW_H} width={ON_W} height={yVAL - yPOC - ROW_H}
-                fill="#22d3ee" fillOpacity={0.04} />
+                fill="#0ea5e9" fillOpacity={0.10} />
             </g>
           )
         })()}
@@ -378,9 +384,9 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
                     fill="rgba(99,102,241,0.08)" rx={1} />
                   {priorOnRow.letters.split('').map((ltr, li) => (
                     <text key={li}
-                      x={xPriorOn + 3 + li * 6}
+                      x={xPriorOn + 2 + li * 5.5}
                       y={y + ROW_H - 4}
-                      fontSize={7.5} fontWeight={isPriorOnPOC ? '700' : '400'}
+                      fontSize={7} fontWeight={isPriorOnPOC ? '700' : '400'}
                       fill={ON_LETTER_COLOR[ltr] ?? '#6366f1'}
                       opacity={isSPPriorOn ? 0.35 : 0.55}>
                       {ltr}
@@ -422,9 +428,9 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
                     fill="rgba(34,211,238,0.06)" rx={1} />
                   {onRow.letters.split('').map((ltr, li) => (
                     <text key={li}
-                      x={xOn + 3 + li * 6.5}
+                      x={xOn + 2 + li * 6}
                       y={y + ROW_H - 4}
-                      fontSize={8} fontWeight={isOnPOC ? '700' : '400'}
+                      fontSize={7.5} fontWeight={isOnPOC ? '700' : '400'}
                       fill={ON_LETTER_COLOR[ltr] ?? '#22d3ee'}
                       opacity={isSPOn ? 0.5 : 0.9}>
                       {ltr}
@@ -897,7 +903,7 @@ export default function MarketProfile() {
 
       {/* Main content */}
       {data && !loading && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: '20px', alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: '16px', alignItems: 'start' }}>
 
           {/* ── TPO Chart ── */}
           <div style={{ padding: '16px', background: 'var(--bg-panel)',
