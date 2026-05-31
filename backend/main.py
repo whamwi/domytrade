@@ -6449,6 +6449,9 @@ async def api_market_profile(symbol: str):
     elif on_bars:
         srt_on = sorted(on_bars, key=lambda b: b['datetime'])
         current_price = srt_on[-1]['close']
+    # Fallback: use the most recent bar across all fetched bars (e.g. Sunday with no overnight yet)
+    if current_price is None and raw_1min:
+        current_price = sorted(raw_1min, key=lambda b: b['datetime'])[-1]['close']
 
     rule_80 = _check_80pct_rule(
         open_price or 0.0, a_period, b_period,

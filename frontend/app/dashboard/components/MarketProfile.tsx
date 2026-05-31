@@ -414,17 +414,29 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
                   fill="#6366f1" opacity={0.6}>◆</text>
               )}
 
-              {/* Prior RTH letters */}
+              {/* Prior RTH letters — per-letter so A & B render white */}
               {priorRow && (
                 <g>
                   <rect x={xPrior} y={y + 2} width={priorBarW} height={ROW_H - 4}
                     fill={isSPPrior ? 'rgba(248,113,113,0.15)' : 'rgba(129,140,248,0.12)'}
                     rx={1} />
-                  <text x={xPrior + 3} y={y + ROW_H - 4}
-                    fontSize={8.5} fill={isPriorPOC ? '#a78bfa' : isSPPrior ? '#f87171' : '#475569'}
-                    fontWeight={isPriorPOC ? '700' : '400'}>
-                    {priorRow.letters}
-                  </text>
+                  {priorRow.letters.split('').map((ltr, li) => {
+                    const isIB = ltr === 'A' || ltr === 'B'
+                    const lc   = isIB         ? '#ffffff'
+                               : isPriorPOC   ? '#a78bfa'
+                               : isSPPrior    ? '#f87171'
+                               : '#475569'
+                    return (
+                      <text key={li}
+                        x={xPrior + 3 + li * 6}
+                        y={y + ROW_H - 4}
+                        fontSize={8.5}
+                        fontWeight={isIB || isPriorPOC ? '700' : '400'}
+                        fill={lc}>
+                        {ltr}
+                      </text>
+                    )
+                  })}
                 </g>
               )}
               {(isPriorPOC || isPriorVAH || isPriorVAL) && (
@@ -713,9 +725,9 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
     return (
       <div style={{ padding: '12px 16px', background: 'var(--bg-panel)',
         border: '1px solid var(--border)', borderRadius: '10px' }}>
-        <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)',
           textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>{title}</div>
-        <p style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{signals.description}</p>
+        <p style={{ fontSize: '13px', color: 'var(--text-dim)' }}>{signals.description}</p>
       </div>
     )
   }
@@ -731,9 +743,9 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
         style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none',
           cursor: 'pointer', display: 'flex', alignItems: 'center',
           justifyContent: 'space-between' }}>
-        <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+        <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)',
           textTransform: 'uppercase', letterSpacing: '0.08em' }}>{title}</span>
-        <span style={{ fontSize: '12px', fontWeight: 700, color: bcfg.color,
+        <span style={{ fontSize: '13px', fontWeight: 700, color: bcfg.color,
           background: bcfg.bg, border: `1px solid ${bcfg.border}`,
           borderRadius: '5px', padding: '2px 10px' }}>
           {bcfg.icon} {signals.bias_label}
@@ -749,9 +761,9 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
             return (
               <div key={i} style={{ paddingLeft: '10px',
                 borderLeft: `2px solid ${sc.dot}` }}>
-                <div style={{ fontSize: '11px', fontWeight: 700, color: sc.color,
+                <div style={{ fontSize: '13px', fontWeight: 700, color: sc.color,
                   marginBottom: '2px' }}>{s.signal}</div>
-                <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
                   {s.detail}
                 </div>
               </div>
@@ -762,11 +774,11 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
           {signals.trade_plan && (
             <div style={{ padding: '8px 10px', background: `${bcfg.color}0d`,
               border: `1px solid ${bcfg.border}`, borderRadius: '7px' }}>
-              <div style={{ fontSize: '9px', fontWeight: 700, color: bcfg.color,
+              <div style={{ fontSize: '10px', fontWeight: 700, color: bcfg.color,
                 textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
                 Trade Plan
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
                 {signals.trade_plan}
               </div>
             </div>
@@ -774,7 +786,7 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
 
           {/* Day context */}
           {signals.day_context && (
-            <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.4,
+            <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.4,
               fontStyle: 'italic' }}>
               {signals.day_context}
             </div>
@@ -783,7 +795,7 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
           {/* Key levels */}
           {signals.key_levels && signals.key_levels.length > 0 && (
             <div>
-              <div style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)',
+              <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
                 textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>
                 Key Levels
               </div>
@@ -799,10 +811,10 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
                     <div key={i} style={{ display: 'flex', justifyContent: 'space-between',
                       alignItems: 'center', padding: '3px 0',
                       borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                      <span style={{ fontSize: '10px', color: lc, fontWeight: 600 }}>
+                      <span style={{ fontSize: '12px', color: lc, fontWeight: 600 }}>
                         {kl.label}
                       </span>
-                      <span style={{ fontSize: '11px', fontWeight: 700, color: lc,
+                      <span style={{ fontSize: '13px', fontWeight: 700, color: lc,
                         fontFamily: 'monospace' }}>
                         {kl.level.toFixed(2)}
                       </span>
