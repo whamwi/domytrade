@@ -960,11 +960,20 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
 }
 
 export default function MarketProfile() {
-  const [symbol,   setSymbol]   = useState('/ES')
-  const [data,     setData]     = useState<MPData | null>(null)
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState<string | null>(null)
-  const [showHelp, setShowHelp] = useState(false)
+  const [symbol,      setSymbol]      = useState('/ES')
+  const [data,        setData]        = useState<MPData | null>(null)
+  const [loading,     setLoading]     = useState(false)
+  const [error,       setError]       = useState<string | null>(null)
+  const [tokenBanner, setTokenBanner] = useState<{status:string; message:string} | null>(null)
+  const [showHelp,    setShowHelp]    = useState(false)
+
+  // Check Schwab token health on mount — show banner before the app breaks
+  useEffect(() => {
+    fetch(`${API_URL}/api/token-status`)
+      .then(r => r.json())
+      .then(d => { if (d.status !== 'ok') setTokenBanner(d) })
+      .catch(() => {})
+  }, [])
 
   const load = useCallback(async (sym: string) => {
     setLoading(true)
@@ -974,7 +983,20 @@ export default function MarketProfile() {
         `${API_URL}/api/market-profile/${encodeURIComponent(sym)}`,
         { cache: 'no-store' }
       )
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        // Try to parse a structured error from the backend
+        let msg = `HTTP ${res.status}`
+        try {
+          const body = await res.json()
+          if (body.error === 'token_expired') {
+            setTokenBanner({ status: 'expired', message: body.message })
+            msg = body.message
+          } else if (body.message) {
+            msg = body.message
+          }
+        } catch {}
+        throw new Error(msg)
+      }
       setData(await res.json())
     } catch (e) {
       setError(String(e))
@@ -1167,6 +1189,30 @@ export default function MarketProfile() {
 
       {/* Help modal */}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+
+      {/* Schwab token banner — shown when token is expiring or expired */}
+      {tokenBanner && (() => {
+        const isExpired  = tokenBanner.status === 'expired'
+        const isCritical = tokenBanner.status === 'critical'
+        const bg      = isExpired  ? 'rgba(248,113,113,0.12)' : 'rgba(251,191,36,0.10)'
+        const border  = isExpired  ? 'rgba(248,113,113,0.35)' : 'rgba(251,191,36,0.30)'
+        const color   = isExpired  ? '#f87171'                 : '#fbbf24'
+        const icon    = isExpired  ? '🔴' : isCritical ? '🟠' : '🟡'
+        return (
+          <div style={{ margin: '0 0 12px', padding: '10px 16px',
+            background: bg, border: `1px solid ${border}`, borderRadius: '8px',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+            <span style={{ fontSize: '12px', color, lineHeight: 1.5 }}>
+              {icon} <strong>Schwab token {isExpired ? 'expired' : 'expiring soon'}:</strong>{' '}
+              {tokenBanner.message}
+            </span>
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+              Run <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 5px',
+                borderRadius: '3px' }}>renew_schwab_token.py</code>
+            </span>
+          </div>
+        )
+      })()}
 
       {/* Loading / Error states */}
       {loading && (

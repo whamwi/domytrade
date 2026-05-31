@@ -1818,10 +1818,21 @@ async def background_loop():
         else:
             log.warning('Schwab token: DB cache empty — using env var (may be stale)')
             state['token_state'] = 'using_env_var'
-        # Register callback so every future rotation is persisted automatically
-        set_token_refresh_callback(
-            lambda t: cache_set('schwab_refresh_token', {'token': t})
-        )
+        # Register callback so every future rotation is persisted automatically.
+        # Also record the issue timestamp so we can warn before expiry.
+        def _persist_token(t: str) -> None:
+            cache_set('schwab_refresh_token', {
+                'token':    t,
+                'issued_at': datetime.now(timezone.utc).isoformat(),
+            })
+        set_token_refresh_callback(_persist_token)
+        # Back-fill issued_at if it's missing (first run after this deploy)
+        if saved_token and saved_token.get('token') and not saved_token.get('issued_at'):
+            cache_set('schwab_refresh_token', {
+                'token':    saved_token['token'],
+                'issued_at': datetime.now(timezone.utc).isoformat(),
+            })
+            log.info('Schwab token: issued_at back-filled')
     except Exception as e:
         log.warning('Schwab token cache load error: %s', e)
         state['token_state'] = f'load_failed: {e}'
@@ -2380,6 +2391,54 @@ def health():
         'signals': len(state['signals']),
         'symbols': len(state['symbols']),
     }
+
+
+@app.get('/api/token-status')
+def token_status():
+    """Return Schwab refresh-token age so the frontend can warn before expiry.
+
+    Schwab refresh tokens are valid for ~7 days.  We store the issued_at
+    timestamp in app_cache alongside the token so we can compute how many
+    days remain without making any Schwab API calls.
+    """
+    from db import cache_get
+    SCHWAB_REFRESH_TTL_DAYS = 7
+
+    try:
+        cached = cache_get('schwab_refresh_token') or {}
+        issued_at_str = cached.get('issued_at')
+        if not issued_at_str:
+            return {
+                'status':   'unknown',
+                'message':  'Token issue date not recorded — renew to start tracking.',
+                'age_days': None,
+                'days_remaining': None,
+            }
+        issued_at   = datetime.fromisoformat(issued_at_str)
+        age_days    = (datetime.now(timezone.utc) - issued_at).total_seconds() / 86400
+        days_left   = SCHWAB_REFRESH_TTL_DAYS - age_days
+
+        if days_left <= 0:
+            status  = 'expired'
+            message = 'Schwab token EXPIRED — run renew_schwab_token.py immediately.'
+        elif days_left <= 1.5:
+            status  = 'critical'
+            message = f'Token expires in {days_left:.1f} days — renew today.'
+        elif days_left <= 3:
+            status  = 'warning'
+            message = f'Token expires in {days_left:.1f} days — renew soon.'
+        else:
+            status  = 'ok'
+            message = f'Token valid — {days_left:.1f} days remaining.'
+
+        return {
+            'status':         status,
+            'message':        message,
+            'age_days':       round(age_days, 1),
+            'days_remaining': round(days_left, 1),
+        }
+    except Exception as e:
+        return {'status': 'unknown', 'message': str(e), 'age_days': None, 'days_remaining': None}
 
 
 @app.get('/api/debug/contracts')
@@ -6876,12 +6935,27 @@ async def api_market_profile(symbol: str):
     Returns today's developing TPO profile (letters A–M), prior RTH profile,
     overnight context, opening type, day type classification, and the 80% rule.
     """
+    from fastapi import HTTPException
+    from fastapi.responses import JSONResponse
+
     symbol = symbol.upper()
     tick   = _tick_for(symbol)
     now_et = datetime.now(ET)
     today  = now_et.date()
 
-    raw_1min = await asyncio.to_thread(get_candles, symbol, 5, 1)
+    try:
+        raw_1min = await asyncio.to_thread(get_candles, symbol, 5, 1)
+    except Exception as exc:
+        err_str = str(exc)
+        if 'invalid_grant' in err_str or 'refresh_token' in err_str.lower() or '401' in err_str:
+            return JSONResponse(status_code=503, content={
+                'error': 'token_expired',
+                'message': 'Schwab token expired — run renew_schwab_token.py to restore live data.',
+            })
+        return JSONResponse(status_code=503, content={
+            'error': 'schwab_unavailable',
+            'message': f'Could not reach Schwab API: {err_str[:120]}',
+        })
 
     # Classify bars into RTH and overnight sessions.
     # All bars belonging to the same overnight session are keyed to the date
