@@ -9,7 +9,7 @@ import MarketBias, { MarketBiasItem } from './components/MarketBias'
 import SectorStrip, { SectorItem } from './components/SectorStrip'
 import BriefingModal from './components/BriefingModal'
 import AlertToast from './components/AlertToast'
-import FuturesBrief from './components/FuturesBrief'
+import MarketProfile from './components/MarketProfile'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
 import AskAI from './components/AskAI'
@@ -358,9 +358,9 @@ export default function DashboardPage() {
     <div className="flex h-full min-h-screen" style={{ background: 'var(--bg-base)' }}>
       <Sidebar activeTab={activeTab} focusMode={focusMode} onFocusToggle={() => setFocusMode(f => !f)} showLog={showLog} onLogToggle={() => setShowLog(v => !v)} />
 
-      {/* Agent tab — always mounted to preserve chat history and avoid refetch on toggle */}
+      {/* Market Profile tab */}
       <div className="flex-1 min-w-0 overflow-auto" style={{ display: activeTab === 'agent' ? undefined : 'none' }}>
-        <FuturesBrief />
+        <MarketProfile />
       </div>
 
       {/* Main content — dashboard tab */}

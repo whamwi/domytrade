@@ -5719,3 +5719,404 @@ async def api_personality_symbol(ticker: str):
     except Exception as e:
         log.warning('personality/%s fetch error: %s', clean, e)
         return {'ticker': clean, 'current_hour_et': current_hour, 'data': {}, 'error': str(e)}
+
+
+# ── Market Profile helpers ─────────────────────────────────────────────────────
+
+def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
+    """Build a full RTH TPO letter profile from 1-min bars.
+
+    Letters: A = 9:30–10:00, B = 10:00–10:30, … M = 15:30–16:00 (13 periods).
+    Each 30-min period contributes exactly 1 count per tick it touched.
+
+    Returns:
+        profile         – [{price, letters, count}] sorted high→low
+        poc             – price with most period hits
+        vah / val       – 70 % value area boundaries
+        single_prints   – prices touched by exactly 1 period (poor structure)
+        ib_high/ib_low  – Initial Balance range (A + B periods)
+        ib_range        – ib_high - ib_low
+        periods         – number of 30-min periods with at least 1 bar
+        period_ranges   – {letter: {high, low}} for each completed period
+        session_high    – highest high of all RTH bars
+        session_low     – lowest  low  of all RTH bars
+    """
+    from collections import defaultdict
+
+    RTH_START = 9 * 60 + 30   # 570 min since midnight
+
+    price_letters: dict = defaultdict(set)
+    period_ranges: dict = {}
+
+    for b in bars:
+        dt    = datetime.fromtimestamp(b['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        t_min = dt.hour * 60 + dt.minute
+        if not (RTH_START <= t_min < 16 * 60):
+            continue
+        period_idx = (t_min - RTH_START) // 30
+        if not (0 <= period_idx <= 12):
+            continue
+        letter = chr(ord('A') + period_idx)
+
+        lo_t = round(round(b['low']  / tick) * tick, 6)
+        hi_t = round(round(b['high'] / tick) * tick, 6)
+        p = lo_t
+        while p <= hi_t + tick * 0.001:
+            price_letters[round(p, 6)].add(letter)
+            p = round(p + tick, 6)
+
+        if letter not in period_ranges:
+            period_ranges[letter] = {'high': b['high'], 'low': b['low']}
+        else:
+            period_ranges[letter]['high'] = max(period_ranges[letter]['high'], b['high'])
+            period_ranges[letter]['low']  = min(period_ranges[letter]['low'],  b['low'])
+
+    _empty = {
+        'profile': [], 'poc': None, 'vah': None, 'val': None,
+        'single_prints': [], 'ib_high': None, 'ib_low': None, 'ib_range': None,
+        'periods': 0, 'period_ranges': {}, 'session_high': None, 'session_low': None,
+    }
+    if not price_letters:
+        return _empty
+
+    tpo_map: dict[float, int] = {p: len(ls) for p, ls in price_letters.items()}
+    total   = sum(tpo_map.values())
+    target  = total * 0.70
+
+    poc     = max(tpo_map, key=tpo_map.get)
+    prices  = sorted(tpo_map.keys())
+    poc_idx = min(range(len(prices)), key=lambda i: abs(prices[i] - poc))
+
+    va_set  = {prices[poc_idx]}
+    va_tpos = tpo_map[prices[poc_idx]]
+    lo_idx  = poc_idx
+    hi_idx  = poc_idx
+    while va_tpos < target:
+        can_up   = hi_idx + 1 < len(prices)
+        can_down = lo_idx - 1 >= 0
+        if not can_up and not can_down:
+            break
+        up_cnt = tpo_map[prices[hi_idx + 1]] if can_up   else -1
+        dn_cnt = tpo_map[prices[lo_idx - 1]] if can_down else -1
+        if up_cnt >= dn_cnt:
+            hi_idx += 1; va_set.add(prices[hi_idx]); va_tpos += up_cnt
+        else:
+            lo_idx -= 1; va_set.add(prices[lo_idx]); va_tpos += dn_cnt
+
+    # IB: A + B periods
+    ib_high = ib_low = None
+    for ltr in ('A', 'B'):
+        if ltr in period_ranges:
+            pr = period_ranges[ltr]
+            ib_high = pr['high'] if ib_high is None else max(ib_high, pr['high'])
+            ib_low  = pr['low']  if ib_low  is None else min(ib_low,  pr['low'])
+
+    profile = sorted(
+        [{'price': round(p, 2), 'letters': ''.join(sorted(ls)), 'count': len(ls)}
+         for p, ls in price_letters.items()],
+        key=lambda x: x['price'], reverse=True
+    )
+    session_high = max(r['price'] for r in profile) if profile else None
+    session_low  = min(r['price'] for r in profile) if profile else None
+
+    return {
+        'profile':       profile,
+        'poc':           round(poc, 2),
+        'vah':           round(max(va_set), 2),
+        'val':           round(min(va_set), 2),
+        'single_prints': sorted([round(p, 2) for p, c in tpo_map.items() if c == 1], reverse=True),
+        'ib_high':       round(ib_high, 2) if ib_high else None,
+        'ib_low':        round(ib_low,  2) if ib_low  else None,
+        'ib_range':      round(ib_high - ib_low, 2) if ib_high and ib_low else None,
+        'periods':       len(period_ranges),
+        'period_ranges': {k: {'high': v['high'], 'low': v['low']} for k, v in period_ranges.items()},
+        'session_high':  session_high,
+        'session_low':   session_low,
+    }
+
+
+def _classify_opening(open_price: float, a_period: dict | None,
+                      prior_vah: float | None, prior_val: float | None,
+                      prior_poc: float | None, tick: float) -> dict:
+    """Classify opening type: OA / OD / OTD / ORR."""
+    if prior_vah is None or prior_val is None:
+        return {'type': 'UNKNOWN', 'label': 'Unknown',
+                'description': 'No prior session data.', 'inside_prior_va': None}
+
+    inside_va = prior_val <= open_price <= prior_vah
+    above_va  = open_price > prior_vah
+    below_va  = open_price < prior_val
+
+    vs_vah = round(open_price - prior_vah, 2)
+    vs_val = round(open_price - prior_val, 2)
+    vs_poc = round(open_price - prior_poc, 2) if prior_poc else None
+
+    base = {'inside_prior_va': inside_va, 'vs_prior_vah': vs_vah,
+            'vs_prior_val': vs_val, 'vs_prior_poc': vs_poc}
+
+    if a_period is None:
+        # No bars yet — pre-open context only
+        if inside_va:
+            return {**base, 'type': 'OA', 'label': 'Open Auction',
+                    'description': f'Opened inside prior value ({prior_val:.2f}–{prior_vah:.2f}). '
+                                   f'Two-sided auction likely. 80% rule activates if A+B stay inside VA.'}
+        loc = 'above' if above_va else 'below'
+        ref = prior_vah if above_va else prior_val
+        return {**base, 'type': 'PENDING', 'label': f'Outside Value ({loc.capitalize()})',
+                'description': f'Opened {"above VAH" if above_va else "below VAL"} ({ref:.2f}). '
+                               f'Watching A period for OD confirmation or ORR failure.'}
+
+    a_high, a_low = a_period['high'], a_period['low']
+
+    if inside_va:
+        return {**base, 'type': 'OA', 'label': 'Open Auction',
+                'description': f'Opened inside prior value ({prior_val:.2f}–{prior_vah:.2f}). '
+                               f'Two-sided auction. Buy VAL / sell VAH until a clear break.'}
+
+    if above_va:
+        # Tested VAH during A period?
+        if a_low <= prior_vah + 2 * tick:
+            return {**base, 'type': 'OTD', 'label': 'Open Test Drive ↑',
+                    'description': f'Opened above VAH ({prior_vah:.2f}), A period tested it then drove higher. '
+                                   f'Bullish. Buy pullbacks to {prior_vah:.2f}.'}
+        # Reversed back through open?
+        if a_low < open_price - 4 * tick:
+            return {**base, 'type': 'ORR', 'label': 'Open Rejection Reverse ↓',
+                    'description': f'Opened above VAH but reversed back. Bearish. '
+                                   f'Sell rallies to {prior_vah:.2f}, target VAL {prior_val:.2f}.'}
+        return {**base, 'type': 'OD', 'label': 'Open Drive ↑',
+                'description': f'Opened above VAH ({prior_vah:.2f}) and drove higher. '
+                               f'One-timeframe buyers in control — do not fade. Trail stops.'}
+
+    # Below VA
+    if a_high >= prior_val - 2 * tick:
+        return {**base, 'type': 'OTD', 'label': 'Open Test Drive ↓',
+                'description': f'Opened below VAL ({prior_val:.2f}), A period tested it then drove lower. '
+                               f'Bearish. Sell bounces to {prior_val:.2f}.'}
+    if a_high > open_price + 4 * tick:
+        return {**base, 'type': 'ORR', 'label': 'Open Rejection Reverse ↑',
+                'description': f'Opened below VAL but reversed back into value. Bullish. '
+                               f'Buy pullbacks to {prior_val:.2f}, target VAH {prior_vah:.2f}.'}
+    return {**base, 'type': 'OD', 'label': 'Open Drive ↓',
+            'description': f'Opened below VAL ({prior_val:.2f}) and drove lower. '
+                           f'One-timeframe sellers in control — do not fade. Trail shorts.'}
+
+
+def _classify_day_type(today_prof: dict, prior_rth_range: float | None) -> dict:
+    """Classify day type after IB is complete (>=2 periods)."""
+    periods  = today_prof.get('periods', 0)
+    ib_high  = today_prof.get('ib_high')
+    ib_low   = today_prof.get('ib_low')
+    ib_range = today_prof.get('ib_range')
+    s_high   = today_prof.get('session_high')
+    s_low    = today_prof.get('session_low')
+    vah      = today_prof.get('vah')
+    val      = today_prof.get('val')
+
+    if periods < 2 or not ib_high or not ib_low:
+        return {'type': 'DEVELOPING', 'label': 'IB Building',
+                'description': 'Initial Balance not yet complete (10:00–10:30 AM ET). '
+                               'Day type determined after the B period closes.'}
+
+    ext_up   = max(0.0, (s_high or ib_high) - ib_high)
+    ext_down = max(0.0, ib_low - (s_low or ib_low))
+    total_r  = (s_high or ib_high) - (s_low or ib_low)
+
+    typical = prior_rth_range or ib_range or 1
+    ib_ratio = round(ib_range / typical, 2) if typical else 1
+
+    both = ext_up > 0.0 and ext_down > 0.0
+    skew = abs(ext_up - ext_down) > ib_range * 0.35 if ib_range else False
+
+    extra = {'ib_range': ib_range, 'ext_up': round(ext_up, 2),
+             'ext_down': round(ext_down, 2), 'ib_ratio': ib_ratio}
+
+    if total_r > ib_range * 2.5 and (ext_up > ib_range * 1.5 or ext_down > ib_range * 1.5):
+        d = '↑' if ext_up > ext_down else '↓'
+        side = 'buyers' if ext_up > ext_down else 'sellers'
+        return {**extra, 'type': 'TREND', 'label': f'Trend Day {d}',
+                'description': f'Total range {total_r:.2f} vs IB {ib_range:.2f}. '
+                               f'One-timeframe {side} in control. Do NOT fade — trail stops and hold.'}
+    if both and skew:
+        d = '↑' if ext_up > ext_down else '↓'
+        return {**extra, 'type': 'NEUTRAL_EXTREME', 'label': f'Neutral Extreme {d}',
+                'description': f'Extended both directions but closed near {"high" if ext_up > ext_down else "low"}. '
+                               f'Watch close location — hints at tomorrow\'s opening bias.'}
+    if both:
+        return {**extra, 'type': 'NEUTRAL', 'label': 'Neutral Day',
+                'description': f'Extended both above (+{ext_up:.2f}) and below (-{ext_down:.2f}) IB. '
+                               f'No clear edge. Be selective — wait for late-session resolution.'}
+    if ext_up > ib_range * 0.25 and ext_up > ext_down:
+        return {**extra, 'type': 'NORMAL_VAR_UP', 'label': 'Normal Variation ↑',
+                'description': f'IB moderate, extended {ext_up:.2f} above. '
+                               f'Buyers won the IB auction. Buy pullbacks to IB High ({ib_high:.2f}).'}
+    if ext_down > ib_range * 0.25 and ext_down > ext_up:
+        return {**extra, 'type': 'NORMAL_VAR_DOWN', 'label': 'Normal Variation ↓',
+                'description': f'IB moderate, extended {ext_down:.2f} below. '
+                               f'Sellers won the IB auction. Sell rallies to IB Low ({ib_low:.2f}).'}
+    return {**extra, 'type': 'NORMAL', 'label': 'Normal Day',
+            'description': f'Wide IB ({ib_range:.2f}), balanced two-sided auction. '
+                           f'Buy near VAL ({val:.2f if val else "—"}), sell near VAH ({vah:.2f if vah else "—"}).'}
+
+
+def _check_80pct_rule(open_price: float, a_period: dict | None, b_period: dict | None,
+                      prior_vah: float | None, prior_val: float | None,
+                      current_price: float | None) -> dict:
+    """80% rule: open inside prior VA + A+B both inside VA → 80% probability of VA fill."""
+    if prior_vah is None or prior_val is None:
+        return {'triggered': False, 'description': 'Prior session data unavailable.'}
+    inside_va = prior_val <= open_price <= prior_vah
+    if not inside_va:
+        return {'triggered': False,
+                'description': f'Open ({open_price:.2f}) outside prior VA — rule not applicable.'}
+    if a_period is None:
+        return {'triggered': False,
+                'description': 'A period not yet complete. Rule activates if A+B both stay inside prior VA.'}
+    a_inside = a_period['low'] >= prior_val and a_period['high'] <= prior_vah
+    if b_period is None:
+        return {'triggered': False, 'a_inside': a_inside,
+                'description': f'A period {"✓ inside" if a_inside else "✗ outside"} VA. Waiting for B close.'}
+    b_inside = b_period['low'] >= prior_val and b_period['high'] <= prior_vah
+    if not (a_inside and b_inside):
+        reason = 'A' if not a_inside else 'B'
+        return {'triggered': False,
+                'description': f'{reason} period broke outside prior VA — rule NOT triggered.'}
+    # Triggered
+    mid_va    = (prior_vah + prior_val) / 2
+    direction = 'SHORT' if open_price >= mid_va else 'LONG'
+    target    = prior_val if direction == 'SHORT' else prior_vah
+    hit       = (current_price is not None and
+                 ((direction == 'LONG'  and current_price >= target) or
+                  (direction == 'SHORT' and current_price <= target)))
+    label     = f'Target {"REACHED" if hit else "PENDING"}: {target:.2f}'
+    desc      = (f'Rule 80% TRIGGERED {"↓" if direction == "SHORT" else "↑"} — '
+                 f'open in {"upper" if direction == "SHORT" else "lower"} half of VA, '
+                 f'A+B both inside. 80% probability of reaching '
+                 f'{"VAL" if direction == "SHORT" else "VAH"} ({target:.2f}).')
+    if hit:
+        desc += ' Target already reached.'
+    return {'triggered': True, 'direction': direction, 'target': target,
+            'already_hit': hit, 'label': label, 'description': desc}
+
+
+@app.get('/api/market-profile/{symbol:path}')
+async def api_market_profile(symbol: str):
+    """Full Dalton Market Profile for a futures symbol.
+
+    Returns today's developing TPO profile (letters A–M), prior RTH profile,
+    overnight context, opening type, day type classification, and the 80% rule.
+    """
+    symbol = symbol.upper()
+    tick   = _tick_for(symbol)
+    now_et = datetime.now(ET)
+    today  = now_et.date()
+
+    raw_1min = await asyncio.to_thread(get_candles, symbol, 5, 1)
+
+    # Classify bars into RTH and overnight sessions (same logic as /api/levels)
+    rth_by_date: dict = {}
+    on_by_date:  dict = {}
+    for c in raw_1min:
+        dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        d     = dt.date()
+        t_min = dt.hour * 60 + dt.minute
+        wday  = dt.weekday()
+        is_rth      = wday < 5 and (9 * 60 + 30) <= t_min <= 16 * 60
+        is_on_wkday = wday < 5 and t_min < (9 * 60 + 30)
+        is_evening  = wday < 4 and t_min >= 18 * 60
+        is_sunday   = wday == 6
+        if is_rth:
+            rth_by_date.setdefault(d, []).append(c)
+        elif is_on_wkday:
+            on_by_date.setdefault(d, []).append(c)
+        elif is_evening or is_sunday:
+            on_by_date.setdefault(d + timedelta(days=1), []).append(c)
+
+    sorted_rth = sorted(rth_by_date.keys(), reverse=True)
+    prior_dates = [d for d in sorted_rth if d < today]
+
+    # ── Today's developing RTH profile ────────────────────────────────────────
+    today_bars = rth_by_date.get(today, [])
+    today_prof = _build_rth_tpo_profile(today_bars, tick)
+
+    # ── Prior RTH profile (yesterday) ─────────────────────────────────────────
+    prior_prof: dict = {'profile': [], 'poc': None, 'vah': None, 'val': None,
+                        'single_prints': [], 'ib_high': None, 'ib_low': None,
+                        'ib_range': None, 'session_high': None, 'session_low': None,
+                        'date': None, 'close': None}
+    if prior_dates:
+        prior_bars = rth_by_date.get(prior_dates[0], [])
+        prior_prof = {**_build_rth_tpo_profile(prior_bars, tick),
+                      'date': str(prior_dates[0])}
+        if prior_bars:
+            srt = sorted(prior_bars, key=lambda b: b['datetime'])
+            prior_prof['high']  = max(b['high'] for b in prior_bars)
+            prior_prof['low']   = min(b['low']  for b in prior_bars)
+            prior_prof['close'] = srt[-1]['close']
+
+    # Prior RTH range for day-type normalization
+    prior_rth_range = None
+    if prior_prof.get('session_high') and prior_prof.get('session_low'):
+        prior_rth_range = round(prior_prof['session_high'] - prior_prof['session_low'], 2)
+
+    # ── Overnight context ─────────────────────────────────────────────────────
+    on_bars = on_by_date.get(today, [])
+    overnight: dict = {'high': None, 'low': None, 'poc': None, 'vah': None, 'val': None}
+    if on_bars:
+        overnight['high'] = round(max(b['high'] for b in on_bars), 2)
+        overnight['low']  = round(min(b['low']  for b in on_bars), 2)
+        _on_tpo = _compute_tpo_value_area(on_bars, tick)
+        overnight['poc']  = _on_tpo['poc']
+        overnight['vah']  = _on_tpo['vah']
+        overnight['val']  = _on_tpo['val']
+
+    # ── Opening type ──────────────────────────────────────────────────────────
+    open_price = None
+    if today_bars:
+        srt_today = sorted(today_bars, key=lambda b: b['datetime'])
+        open_price = srt_today[0]['open']
+
+    a_period = b_period = None
+    pr = today_prof.get('period_ranges', {})
+    if 'A' in pr:
+        a_period = pr['A']
+    if 'B' in pr:
+        b_period = pr['B']
+
+    opening = _classify_opening(
+        open_price or 0.0, a_period,
+        prior_prof.get('vah'), prior_prof.get('val'), prior_prof.get('poc'), tick,
+    ) if open_price else {'type': 'PREMARKET', 'label': 'Pre-Market',
+                          'description': 'RTH has not started yet.', 'inside_prior_va': None}
+
+    # ── Day type ──────────────────────────────────────────────────────────────
+    day_type = _classify_day_type(today_prof, prior_rth_range)
+
+    # ── 80 % Rule ─────────────────────────────────────────────────────────────
+    current_price = None
+    if today_bars:
+        srt_today = sorted(today_bars, key=lambda b: b['datetime'])
+        current_price = srt_today[-1]['close']
+    elif on_bars:
+        srt_on = sorted(on_bars, key=lambda b: b['datetime'])
+        current_price = srt_on[-1]['close']
+
+    rule_80 = _check_80pct_rule(
+        open_price or 0.0, a_period, b_period,
+        prior_prof.get('vah'), prior_prof.get('val'), current_price,
+    ) if open_price else {'triggered': False, 'description': 'RTH has not started.'}
+
+    computed_at = now_et.strftime('%-I:%M %p ET')
+
+    return {
+        'symbol':        symbol,
+        'tick':          tick,
+        'computed_at':   computed_at,
+        'current_price': current_price,
+        'today':         today_prof,
+        'prior_rth':     prior_prof,
+        'overnight':     overnight,
+        'opening':       opening,
+        'day_type':      day_type,
+        'rule_80':       rule_80,
+    }

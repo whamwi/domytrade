@@ -78,9 +78,9 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
           </svg>
         </button>
 
-        {/* Agent nav item */}
+        {/* Market Profile nav item */}
         <button
-          title="Futures Agent"
+          title="Market Profile"
           className="flex items-center justify-center w-full rounded-lg py-2.5 transition-colors"
           style={{
             background: activeTab === 'agent' ? 'var(--accent-blue-dim)' : 'transparent',
@@ -105,13 +105,10 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
             window.dispatchEvent(new Event('popstate'))
           }}
         >
-          {/* AI chip icon */}
+          {/* Bell-curve / Market Profile icon */}
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="7" y="7" width="10" height="10" rx="1" />
-            <path d="M10 7V4M14 7V4M10 20v-3M14 20v-3M7 10H4M7 14H4M20 10h-3M20 14h-3" />
-            <circle cx="10" cy="11" r="0.8" fill="currentColor" stroke="none" />
-            <circle cx="14" cy="11" r="0.8" fill="currentColor" stroke="none" />
-            <path d="M10 14h4" />
+            <path d="M3 18 Q4 18 5 14 Q6 10 7 8 Q8 5 9 6 Q10 7 11 4 Q12 2 13 4 Q14 7 15 6 Q16 5 17 8 Q18 10 19 14 Q20 18 21 18" />
+            <line x1="3" y1="18" x2="21" y2="18" />
           </svg>
         </button>
 
