@@ -5591,8 +5591,9 @@ def get_stock_profile(ticker: str):
             days_to = (ned - datetime.now(ET).date()).days
         profile = {**profile, 'upside_pct': upside, 'days_to_earnings': days_to}
 
-    # 4. Active VBH signal (Technicals tab)
-    signal = next((s for s in state['signals'] if s['symbol'] == ticker), None)
+    # 4. All VBH signals for this ticker (all models — AGG / CON / WIDE)
+    all_sigs = [s for s in state['signals'] if s['symbol'] == ticker]
+    signal   = all_sigs[0] if all_sigs else None   # backward compat
 
     # 5. Daily closes for 90-day sparkline
     price_history: list[dict] = []
@@ -5606,7 +5607,8 @@ def get_stock_profile(ticker: str):
     return {
         'ticker':        ticker,
         'profile':       profile,
-        'signal':        signal,
+        'signal':        signal,        # first signal — backward compat
+        'signals':       all_sigs,      # all models for this ticker
         'last':          last,
         'price_history': price_history,
     }

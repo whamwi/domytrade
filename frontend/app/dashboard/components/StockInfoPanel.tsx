@@ -70,12 +70,16 @@ interface SignalData {
   signal_state?:  string | null
 }
 
+interface SRLevel  { price: number; touches: number; strength: number; zone_type: string; dist_pct: number }
+interface SRLevels { support: SRLevel[]; resistance: SRLevel[] }
+
 interface PriceBar { date: string; close: number }
 
 interface ProfileResponse {
   ticker:        string
   profile:       StockProfile | null
   signal:        SignalData | null
+  signals:       SignalData[]
   last:          number | null
   price_history: PriceBar[]
 }
@@ -181,42 +185,143 @@ function Chip({ label, value, valueColor }: { label: string; value: string; valu
   )
 }
 
-// ── VBH level chart (Technicals tab) ─────────────────────────────────────────
-function TechnicalsChart({ sig, last }: { sig: SignalData; last: number }) {
-  const levels = [
-    { label: 'L4',     price: sig.l4,     color: '#7c3aed' },
-    { label: 'L3',     price: sig.l3,     color: '#a855f7' },
-    { label: 'Target', price: sig.target,  color: '#4ade80' },
-    { label: 'Entry',  price: sig.entry,   color: '#fbbf24' },
-    { label: 'L2',     price: sig.l2,      color: '#2563eb' },
-    { label: 'L1',     price: sig.l1,      color: '#60a5fa' },
-    { label: 'Stop',   price: sig.stop,    color: '#f87171' },
-  ].filter(l => l.price > 0)
+// ── Model colour map ──────────────────────────────────────────────────────────
+const MODEL_COLOR: Record<string, string> = {
+  AGG:  '#fbbf24',   // amber
+  CON:  '#a5b4fc',   // lavender
+  WIDE: '#2dd4bf',   // teal
+}
+const modelColor = (m: string) => MODEL_COLOR[m] ?? '#94a3b8'
 
-  const prices = [...levels.map(l => l.price), last].filter(Boolean)
-  const minP = Math.min(...prices) * 0.999
-  const maxP = Math.max(...prices) * 1.001
-  const rng  = maxP - minP || 1
+// ── VBH level chart — SVG, all models + S/R ──────────────────────────────────
+function TechnicalsChart({
+  signals, srLevels, last, activeModel,
+}: {
+  signals:     SignalData[]
+  srLevels:    SRLevels | null
+  last:        number
+  activeModel: string | null
+}) {
+  if (!signals.length) return null
 
-  const pctTop = (p: number) => `${((maxP - p) / rng * 100).toFixed(1)}%`
-  const fmt    = (p: number) => p >= 100 ? p.toFixed(2) : p.toFixed(3)
+  // ── Build level list ──────────────────────────────────────────────────────
+  type Lvl = {
+    price: number; label: string; color: string
+    dash: string; sw: number; model: string; role: string
+  }
+  const lvls: Lvl[] = []
+
+  for (const sig of signals) {
+    const mc   = modelColor(sig.model)
+    const bold = !activeModel || activeModel === sig.model
+    const sw   = bold ? 1.6 : 0.8
+    const op   = bold ? '' : '80'   // hex opacity suffix for inactive
+
+    if (sig.entry  > 0) lvls.push({ price: sig.entry,  label: `${sig.model} Entry`,  color: mc + (bold ? '' : '70'),  dash: '',      sw,       model: sig.model, role: 'entry'  })
+    if (sig.stop   > 0) lvls.push({ price: sig.stop,   label: `${sig.model} Stop`,   color: '#f87171' + (bold ? '' : '70'), dash: '5 3',   sw: sw*0.8, model: sig.model, role: 'stop'   })
+    if (sig.target > 0) lvls.push({ price: sig.target, label: `${sig.model} Target`, color: '#4ade80' + (bold ? '' : '70'), dash: '5 3',   sw: sw*0.8, model: sig.model, role: 'target' })
+    if (sig.l1     > 0) lvls.push({ price: sig.l1,     label: `${sig.model} L1`,     color: mc + '60',                    dash: '2 4',   sw: 0.7,    model: sig.model, role: 'l1'     })
+    if (sig.l2     > 0) lvls.push({ price: sig.l2,     label: `${sig.model} L2`,     color: mc + '60',                    dash: '2 4',   sw: 0.7,    model: sig.model, role: 'l2'     })
+  }
+
+  // S/R from backend — top 3 each side
+  const srRes = srLevels?.resistance?.slice(0, 3) ?? []
+  const srSup = srLevels?.support   ?.slice(0, 3) ?? []
+  for (const r of srRes) lvls.push({ price: r.price, label: r.zone_type === 'supply' ? 'Supply' : 'Res',    color: '#f87171AA', dash: '3 4', sw: 0.9, model: '', role: 'sr' })
+  for (const s of srSup) lvls.push({ price: s.price, label: s.zone_type === 'demand' ? 'Demand' : 'Sup',   color: '#4ade80AA', dash: '3 4', sw: 0.9, model: '', role: 'sr' })
+
+  // ── Price range ───────────────────────────────────────────────────────────
+  const allPx = [...lvls.map(l => l.price), last].filter(p => p > 0)
+  if (!allPx.length) return null
+  const minP = Math.min(...allPx)
+  const maxP = Math.max(...allPx)
+  const pad  = Math.max((maxP - minP) * 0.12, maxP * 0.003)
+  const minPP = minP - pad
+  const maxPP = maxP + pad
+  const rng   = maxPP - minPP || 1
+
+  // ── SVG layout ────────────────────────────────────────────────────────────
+  const VW = 480; const VH = 300
+  const PL = 80; const PR = 70          // left/right margins for labels
+
+  const yOf  = (p: number) => VH - ((p - minPP) / rng) * VH
+  const fmt  = (p: number) => `$${p >= 100 ? p.toFixed(2) : p.toFixed(3)}`
+
+  // Sort by Y descending (top = high price)
+  const sorted = [...lvls].sort((a, b) => b.price - a.price)
+
+  // Label collision avoidance — push labels apart with min 13px gap
+  const MIN_GAP = 13
+  const rawY  = sorted.map(l => yOf(l.price))
+  const labelY: number[] = []
+  for (let i = 0; i < rawY.length; i++) {
+    let y = rawY[i]
+    for (let j = i - 1; j >= 0; j--) {
+      if (labelY[j] - y < MIN_GAP) y = labelY[j] - MIN_GAP
+      else break
+    }
+    labelY.push(Math.max(8, Math.min(VH - 4, y)))
+  }
+
+  const lastY = yOf(last)
 
   return (
-    <div style={{ position: 'relative', height: 220, margin: '12px 0 8px' }}>
-      <div style={{ position: 'absolute', left: 52, top: 0, bottom: 0, width: 1, background: 'rgba(255,255,255,0.07)' }} />
-      {levels.map(lvl => (
-        <div key={lvl.label} style={{ position: 'absolute', top: pctTop(lvl.price), left: 0, right: 0, transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 44, textAlign: 'right', fontSize: 10, color: lvl.color, fontWeight: 700 }}>{lvl.label}</span>
-          <div style={{ flex: 1, height: 1, background: lvl.color, opacity: 0.4 }} />
-          <span style={{ fontSize: 10, color: lvl.color, minWidth: 52, textAlign: 'right' }}>${fmt(lvl.price)}</span>
-        </div>
+    <svg
+      viewBox={`0 0 ${VW} ${VH}`}
+      style={{ width: '100%', height: 300, display: 'block', overflow: 'visible' }}
+      preserveAspectRatio="xMidYMid meet"
+    >
+      {/* S/R bands — subtle background */}
+      {srRes.map((r, i) => (
+        <rect key={`sr-r-${i}`} x={PL} y={yOf(r.price) - 3} width={VW - PL - PR} height={6}
+          fill="rgba(248,113,113,0.10)" />
       ))}
-      <div style={{ position: 'absolute', top: pctTop(last), left: 52, right: 0, transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: 4 }}>
-        <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#e2e8f0', flexShrink: 0 }} />
-        <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.25)', borderStyle: 'dashed' }} />
-        <span style={{ fontSize: 10, color: '#e2e8f0', fontWeight: 700, minWidth: 52, textAlign: 'right' }}>${fmt(last)}</span>
-      </div>
-    </div>
+      {srSup.map((s, i) => (
+        <rect key={`sr-s-${i}`} x={PL} y={yOf(s.price) - 3} width={VW - PL - PR} height={6}
+          fill="rgba(74,222,128,0.10)" />
+      ))}
+
+      {/* Price level lines + labels */}
+      {sorted.map((lvl, i) => {
+        const lineY  = yOf(lvl.price)
+        const lbY    = labelY[i]
+        const needTick = Math.abs(lineY - lbY) > 2
+        return (
+          <g key={i}>
+            {/* horizontal price line */}
+            <line x1={PL} y1={lineY} x2={VW - PR} y2={lineY}
+              stroke={lvl.color} strokeWidth={lvl.sw}
+              strokeDasharray={lvl.dash} />
+            {/* connector tick if label shifted */}
+            {needTick && (
+              <line x1={PL - 6} y1={lineY} x2={PL - 6} y2={lbY}
+                stroke={lvl.color} strokeWidth={0.6} opacity={0.5} />
+            )}
+            {/* left label */}
+            <text x={PL - 8} y={lbY + 4}
+              textAnchor="end" fontSize={10.5} fontWeight={lvl.role === 'entry' ? 700 : 400}
+              fill={lvl.color}>
+              {lvl.label}
+            </text>
+            {/* right price */}
+            <text x={VW - PR + 6} y={lbY + 4}
+              fontSize={10.5} fontWeight={lvl.role === 'entry' ? 700 : 400}
+              fill={lvl.color}>
+              {fmt(lvl.price)}
+            </text>
+          </g>
+        )
+      })}
+
+      {/* Current price — bold white dashed */}
+      <line x1={PL} y1={lastY} x2={VW - PR} y2={lastY}
+        stroke="rgba(255,255,255,0.7)" strokeWidth={1.8} strokeDasharray="8 4" />
+      <circle cx={PL} cy={lastY} r={4} fill="#e2e8f0" />
+      <text x={VW - PR + 6} y={lastY + 4}
+        fontSize={11} fontWeight={700} fill="#e2e8f0">
+        {fmt(last)}
+      </text>
+    </svg>
   )
 }
 
@@ -245,17 +350,25 @@ export default function StockInfoPanel({
   onClose:        () => void
   onSectorClick?: (etf: string) => void
 }) {
-  const [tab,     setTab]     = useState<'overview' | 'earnings' | 'technicals'>('overview')
-  const [data,    setData]    = useState<ProfileResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error,   setError]   = useState<string | null>(null)
+  const [tab,          setTab]         = useState<'overview' | 'earnings' | 'technicals'>('overview')
+  const [data,         setData]         = useState<ProfileResponse | null>(null)
+  const [loading,      setLoading]      = useState(true)
+  const [error,        setError]        = useState<string | null>(null)
+  const [srLevels,     setSrLevels]     = useState<SRLevels | null>(null)
+  const [activeModel,  setActiveModel]  = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true); setError(null)
-    fetch(`${API_URL}/api/stock-profile/${info.symbol}`)
-      .then(r => r.json())
-      .then(d  => { setData(d); setLoading(false) })
-      .catch(() => { setError('Failed to load profile'); setLoading(false) })
+    Promise.all([
+      fetch(`${API_URL}/api/stock-profile/${info.symbol}`).then(r => r.json()),
+      fetch(`${API_URL}/api/sr-levels/${info.symbol}?days=5`).then(r => r.json()).catch(() => null),
+    ]).then(([profile, sr]) => {
+      setData(profile)
+      setSrLevels(sr && !sr.error ? sr : null)
+      // default active model to the first signal's model
+      if (profile?.signals?.length) setActiveModel(profile.signals[0].model)
+      setLoading(false)
+    }).catch(() => { setError('Failed to load profile'); setLoading(false) })
   }, [info.symbol])
 
   const p    = data?.profile
@@ -631,61 +744,102 @@ export default function StockInfoPanel({
           )}
 
           {/* ── TECHNICALS ───────────────────────────────────────────────── */}
-          {!loading && !error && tab === 'technicals' && (
-            <div>
-              {sig ? (
-                <>
-                  <div className="flex items-center gap-2 mb-4 flex-wrap">
-                    <span className="rounded px-2 py-0.5 text-xs font-bold"
-                      style={sig.model === 'AGG'  ? { background: 'rgba(251,191,36,0.15)',  color: '#fbbf24' }
-                           : sig.model === 'CON'  ? { background: 'rgba(165,180,252,0.12)', color: '#a5b4fc' }
-                           : sig.model === 'WIDE' ? { background: 'rgba(45,212,191,0.12)',  color: '#2dd4bf' }
-                           :                        { background: 'rgba(168,85,247,0.15)',  color: '#c084fc' }}>
-                      {sig.model}
-                    </span>
-                    <span className="rounded px-2 py-0.5 text-xs font-bold"
-                      style={sig.side === 'LONG'
-                        ? { background: 'rgba(74,222,128,0.12)', color: '#4ade80' }
-                        : { background: 'rgba(248,113,113,0.12)', color: '#f87171' }}>
-                      {sig.side}
-                    </span>
-                    {sig.signal_state && sig.signal_state !== 'NEUTRAL' && (
-                      <span className="rounded px-2 py-0.5 text-xs font-bold"
-                        style={sig.signal_state === 'ENTRY'
-                          ? { background: sig.side === 'LONG' ? 'rgba(74,222,128,0.18)' : 'rgba(248,113,113,0.18)', color: sig.side === 'LONG' ? '#4ade80' : '#f87171' }
-                          : { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' }}>
-                        {sig.signal_state}
-                      </span>
+          {!loading && !error && tab === 'technicals' && (() => {
+            const allSigs = data?.signals ?? (sig ? [sig] : [])
+            const activeSig = allSigs.find(s => s.model === activeModel) ?? allSigs[0] ?? null
+
+            return (
+              <div>
+                {allSigs.length > 0 ? (
+                  <>
+                    {/* ── Model selector tabs + direction badge ── */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                      {allSigs.map(s => {
+                        const mc = modelColor(s.model)
+                        const isActive = s.model === activeModel
+                        return (
+                          <button key={s.model}
+                            onClick={() => setActiveModel(s.model)}
+                            style={{
+                              padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                              cursor: 'pointer', border: `1px solid ${mc}${isActive ? '' : '55'}`,
+                              background: isActive ? `${mc}22` : 'transparent',
+                              color: isActive ? mc : `${mc}99`,
+                              transition: 'all 0.15s',
+                            }}>
+                            {s.model}
+                          </button>
+                        )
+                      })}
+                      {activeSig && (
+                        <span style={{
+                          marginLeft: 4, padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                          background: activeSig.side === 'LONG' ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                          color: activeSig.side === 'LONG' ? '#4ade80' : '#f87171',
+                          border: `1px solid ${activeSig.side === 'LONG' ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
+                        }}>
+                          {activeSig.side}
+                        </span>
+                      )}
+                      {activeSig?.signal_state && activeSig.signal_state !== 'NEUTRAL' && (
+                        <span style={{
+                          padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                          background: activeSig.signal_state === 'ENTRY'
+                            ? (activeSig.side === 'LONG' ? 'rgba(74,222,128,0.18)' : 'rgba(248,113,113,0.18)')
+                            : 'rgba(251,191,36,0.15)',
+                          color: activeSig.signal_state === 'ENTRY'
+                            ? (activeSig.side === 'LONG' ? '#4ade80' : '#f87171')
+                            : '#fbbf24',
+                        }}>
+                          {activeSig.signal_state}
+                        </span>
+                      )}
+                      {srLevels && (
+                        <span style={{ marginLeft: 'auto', fontSize: 10, color: '#475569' }}>
+                          S/R: {(srLevels.support?.length ?? 0) + (srLevels.resistance?.length ?? 0)} zones
+                        </span>
+                      )}
+                    </div>
+
+                    {/* ── Chart — all models + S/R ── */}
+                    <TechnicalsChart
+                      signals={allSigs}
+                      srLevels={srLevels}
+                      last={last}
+                      activeModel={activeModel}
+                    />
+
+                    {/* ── Stats table for selected model ── */}
+                    {activeSig && (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 4, fontSize: 12 }}>
+                        <tbody>
+                          {[
+                            { label: 'Entry',         val: `$${activeSig.entry  >= 100 ? activeSig.entry .toFixed(2) : activeSig.entry .toFixed(3)}`, color: modelColor(activeSig.model) },
+                            { label: 'Stop',          val: `$${activeSig.stop   >= 100 ? activeSig.stop  .toFixed(2) : activeSig.stop  .toFixed(3)}`, color: '#f87171' },
+                            { label: 'Target',        val: `$${activeSig.target >= 100 ? activeSig.target.toFixed(2) : activeSig.target.toFixed(3)}`, color: '#4ade80' },
+                            { label: 'Risk / Reward', val: activeSig.entry && activeSig.stop && activeSig.target
+                                ? `1 : ${Math.abs((activeSig.target - activeSig.entry) / (activeSig.entry - activeSig.stop)).toFixed(1)}`
+                                : '—', color: undefined },
+                            { label: 'Daily Swing',   val: `${activeSig.swing_pct >= 0 ? '+' : ''}${activeSig.swing_pct.toFixed(1)}% of ${activeSig.typical_range.toFixed(2)}`, color: undefined },
+                          ].map(r => (
+                            <tr key={r.label} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                              <td style={{ padding: '6px 0', color: '#64748b', fontSize: 11 }}>{r.label}</td>
+                              <td style={{ padding: '6px 0', textAlign: 'right', fontWeight: 600, fontSize: 12, color: r.color || '#e2e8f0' }}>{r.val}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     )}
+                  </>
+                ) : (
+                  <div style={{ color: '#475569', fontSize: 12, textAlign: 'center', padding: '32px 0' }}>
+                    No active VBH signal for {info.symbol}
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 6 }}>Levels appear when price reaches the signal zone</div>
                   </div>
-
-                  <TechnicalsChart sig={sig} last={last} />
-
-                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8, fontSize: 12 }}>
-                    <tbody>
-                      {[
-                        { label: 'Entry',        val: `$${sig.entry >= 100 ? sig.entry.toFixed(2) : sig.entry.toFixed(3)}`,   color: '#fbbf24' },
-                        { label: 'Stop',         val: `$${sig.stop  >= 100 ? sig.stop.toFixed(2)  : sig.stop.toFixed(3)}`,    color: '#f87171' },
-                        { label: 'Target',       val: `$${sig.target >= 100 ? sig.target.toFixed(2) : sig.target.toFixed(3)}`, color: '#4ade80' },
-                        { label: 'Risk / Reward', val: sig.entry && sig.stop && sig.target ? `1 : ${Math.abs((sig.target - sig.entry) / (sig.entry - sig.stop)).toFixed(1)}` : '—', color: undefined },
-                        { label: 'Daily Swing',   val: `${sig.swing_pct >= 0 ? '+' : ''}${sig.swing_pct.toFixed(1)}% of ${sig.typical_range.toFixed(2)}`, color: undefined },
-                      ].map(r => (
-                        <tr key={r.label} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                          <td style={{ padding: '6px 0', color: '#475569' }}>{r.label}</td>
-                          <td style={{ padding: '6px 0', textAlign: 'right', fontWeight: 600, color: r.color || '#e2e8f0' }}>{r.val}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </>
-              ) : (
-                <div style={{ color: '#475569', fontSize: 12, textAlign: 'center', padding: '32px 0' }}>
-                  No active VBH signal for {info.symbol}
-                  <div style={{ fontSize: 11, color: '#334155', marginTop: 6 }}>Levels appear when price reaches the signal zone</div>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            )
+          })()}
         </div>
 
         {/* ── Footer ─────────────────────────────────────────────────────── */}
