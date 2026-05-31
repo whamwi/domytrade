@@ -413,13 +413,176 @@ function LevelRow({
 
 interface NakedVpoc { date: string; vpoc: number }
 
+// ── Hourly profile types ──────────────────────────────────────────────────────
+interface HourScore {
+  signal_strength: 'STRONG' | 'MODERATE' | 'WEAK' | 'DEAD'
+  direction_bias:  'LONG' | 'SHORT' | 'NEUTRAL' | 'AVOID'
+  win_rate:        number
+  avg_pnl_usd:     number
+  net_pnl_usd:     number
+  total_trades:    number
+  long_win_rate:   number
+  short_win_rate:  number
+  long_net_usd:    number
+  short_net_usd:   number
+  session:         string
+}
+type ProfileData = Record<string, Record<string, HourScore>>   // hour → model → score
+
+const PROFILE_STRENGTH: Record<string, { label: string; bg: string; color: string }> = {
+  STRONG:   { label: 'Hot',     bg: 'rgba(251,146,60,0.22)',  color: '#fb923c' },
+  MODERATE: { label: 'Good',    bg: 'rgba(74,222,128,0.18)',  color: '#4ade80' },
+  WEAK:     { label: 'Neutral', bg: 'rgba(148,163,184,0.10)', color: '#64748b' },
+  DEAD:     { label: 'Avoid',   bg: 'rgba(248,113,113,0.10)', color: '#475569' },
+}
+const BIAS_ARROW: Record<string, string> = { LONG: '↑', SHORT: '↓', NEUTRAL: '', AVOID: '' }
+
+// 9 AM–4 PM RTH hours
+const RTH_HOURS = [9, 10, 11, 12, 13, 14, 15]
+const MODELS    = ['AGG', 'CON', 'WIDE']
+
+function HourLabel(h: number): string {
+  const suffix = h >= 12 ? 'PM' : 'AM'
+  const h12    = h > 12 ? h - 12 : h
+  return `${h12}:00 ${suffix}`
+}
+
+function ProfileCell({ score }: { score?: HourScore }) {
+  if (!score) return <div style={{ textAlign: 'center', color: '#334155', fontSize: '10px' }}>—</div>
+  const cfg = PROFILE_STRENGTH[score.signal_strength]
+  const arr = BIAS_ARROW[score.direction_bias] ?? ''
+  return (
+    <div style={{
+      borderRadius: '5px',
+      padding: '4px 6px',
+      background: cfg.bg,
+      textAlign: 'center',
+    }}>
+      <div style={{ fontSize: '10px', fontWeight: 700, color: cfg.color, lineHeight: 1.3 }}>
+        {cfg.label}{arr ? ` ${arr}` : ''}
+      </div>
+      <div style={{ fontSize: '9px', color: cfg.color, opacity: 0.7, lineHeight: 1.2 }}>
+        {score.win_rate.toFixed(0)}% WR
+      </div>
+    </div>
+  )
+}
+
+function ProfileView({ profileData, currentHour }: { profileData: ProfileData; currentHour: number }) {
+  const hasData = Object.keys(profileData).length > 0
+
+  if (!hasData) {
+    return (
+      <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px' }}>
+        No profile data available for this symbol
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      {/* Legend */}
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+        {Object.entries(PROFILE_STRENGTH).map(([, cfg]) => (
+          <span key={cfg.label} style={{
+            fontSize: '10px', fontWeight: 600, color: cfg.color,
+            background: cfg.bg, borderRadius: '4px', padding: '2px 7px',
+          }}>
+            {cfg.label}
+          </span>
+        ))}
+        <span style={{ fontSize: '10px', color: 'var(--text-dim)', marginLeft: 'auto' }}>
+          RTH 9 AM – 4 PM ET
+        </span>
+      </div>
+
+      {/* Grid: hour rows × model columns */}
+      <div style={{ display: 'grid', gridTemplateColumns: '72px repeat(3, 1fr)', gap: '3px' }}>
+        {/* Header */}
+        <div style={{ fontSize: '9px', color: 'var(--text-dim)', fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: '0.07em', alignSelf: 'center' }}>Hour</div>
+        {MODELS.map(m => (
+          <div key={m} style={{ fontSize: '9px', color: 'var(--text-dim)', fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'center' }}>{m}</div>
+        ))}
+
+        {/* One row per RTH hour */}
+        {RTH_HOURS.map(h => {
+          const hourScores = profileData[String(h)]
+          const isNow = h === currentHour
+          return (
+            <div key={h} style={{ display: 'contents' }}>
+              {/* Hour label */}
+              <div style={{
+                fontSize: '11px', fontWeight: isNow ? 700 : 400,
+                color: isNow ? '#60a5fa' : 'var(--text-muted)',
+                background: isNow ? 'rgba(96,165,250,0.08)' : 'transparent',
+                borderRadius: '5px', padding: '6px 4px', alignSelf: 'center',
+                borderLeft: isNow ? '2px solid #60a5fa' : '2px solid transparent',
+                paddingLeft: isNow ? '6px' : '4px',
+              }}>
+                {HourLabel(h)}
+                {isNow && <span style={{ fontSize: '8px', marginLeft: '4px', color: '#60a5fa' }}>◀</span>}
+              </div>
+              {/* AGG / CON / WIDE cells */}
+              {MODELS.map(m => (
+                <div key={m} style={{
+                  background: isNow ? 'rgba(96,165,250,0.04)' : 'transparent',
+                  borderRadius: '5px', padding: '2px',
+                }}>
+                  <ProfileCell score={hourScores?.[m]} />
+                </div>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Net PnL summary row for each model */}
+      <div style={{ marginTop: '14px', padding: '10px 12px',
+        background: 'rgba(255,255,255,0.03)', borderRadius: '8px',
+        border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ fontSize: '9px', color: 'var(--text-dim)', fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>
+          RTH Net PnL / year (all hours)
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+          {MODELS.map(m => {
+            let net = 0
+            RTH_HOURS.forEach(h => {
+              net += profileData[String(h)]?.[m]?.net_pnl_usd ?? 0
+            })
+            return (
+              <div key={m} style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '9px', color: 'var(--text-dim)', fontWeight: 700,
+                  textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '3px' }}>{m}</div>
+                <div style={{ fontSize: '13px', fontWeight: 700,
+                  color: net >= 0 ? '#4ade80' : '#f87171' }}>
+                  {net >= 0 ? '+' : ''}${Math.round(net).toLocaleString()}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div style={{ marginTop: '8px', fontSize: '9px', color: 'var(--text-dim)', opacity: 0.5, textAlign: 'right' }}>
+        365-day backtest · WR = win rate · ↑↓ = directional bias
+      </div>
+    </div>
+  )
+}
+
 export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
   const { symbol, last, change, changePct } = info
   const panelRef = useRef<HTMLDivElement>(null)
   const [data, setData]             = useState<LevelsResponse | null>(null)
   const [loading, setLoading]       = useState(true)
   const [nakedVpocs, setNakedVpocs] = useState<NakedVpoc[]>([])
-  const [view, setView]             = useState<'list' | 'chart'>('chart')
+  const [view, setView]             = useState<'list' | 'chart' | 'profile'>('chart')
+  const [profileData,    setProfileData]    = useState<ProfileData | null>(null)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [currentHour,    setCurrentHour]    = useState(0)
 
   // Fetch levels + naked VPOCs concurrently
   useEffect(() => {
@@ -438,6 +601,21 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [symbol])
+
+  // Fetch full hourly profile when Profile tab is first opened
+  useEffect(() => {
+    if (view !== 'profile' || profileData !== null) return
+    const encoded = encodeURIComponent(symbol.split(':')[0])
+    setProfileLoading(true)
+    fetch(`${API_URL}/api/personality/${encoded}`, { cache: 'no-store' })
+      .then(r => r.json())
+      .then(res => {
+        setProfileData(res.data ?? {})
+        setCurrentHour(res.current_hour_et ?? new Date().getHours())
+      })
+      .catch(() => setProfileData({}))
+      .finally(() => setProfileLoading(false))
+  }, [view, symbol, profileData])
 
   // Close on outside click
   useEffect(() => {
@@ -585,24 +763,28 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
           {/* Section header */}
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-dim)' }}>
-              Key Levels
+              {view === 'profile' ? 'Hourly Profile' : 'Key Levels'}
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               {/* View toggle */}
-              {['chart', 'list'].map(v => (
-                <button key={v} onClick={() => setView(v as 'list' | 'chart')}
+              {[
+                { key: 'chart',   label: '⟋ Chart'   },
+                { key: 'list',    label: '≡ List'    },
+                { key: 'profile', label: '◑ Profile' },
+              ].map(({ key, label }) => (
+                <button key={key} onClick={() => setView(key as 'list' | 'chart' | 'profile')}
                   style={{
                     fontSize: '10px', fontWeight: 600, padding: '2px 8px',
                     borderRadius: '4px', cursor: 'pointer',
-                    background: view === v ? 'rgba(255,255,255,0.12)' : 'transparent',
-                    color: view === v ? 'var(--text-primary)' : 'var(--text-dim)',
-                    border: `1px solid ${view === v ? 'rgba(255,255,255,0.2)' : 'transparent'}`,
+                    background: view === key ? 'rgba(255,255,255,0.12)' : 'transparent',
+                    color: view === key ? 'var(--text-primary)' : 'var(--text-dim)',
+                    border: `1px solid ${view === key ? 'rgba(255,255,255,0.2)' : 'transparent'}`,
                     transition: 'all 0.15s',
                   }}>
-                  {v === 'list' ? '≡ List' : '⟋ Chart'}
+                  {label}
                 </button>
               ))}
-              {data?.computed_at && (
+              {view !== 'profile' && data?.computed_at && (
                 <span className="text-xs" style={{ color: 'var(--text-dim)', opacity: 0.6 }}>
                   {data.computed_at}
                 </span>
@@ -611,15 +793,27 @@ export default function FuturesPanel({ info, onClose }: FuturesPanelProps) {
           </div>
         </div>
 
-        {/* Levels body */}
+        {/* Levels / Profile body */}
         <div style={{ overflowY: 'auto', padding: '0 20px 20px', flex: 1 }}>
-          {loading && (
+
+          {/* ── Profile view ── */}
+          {view === 'profile' && (
+            profileLoading ? (
+              <div className="py-8 text-center text-xs" style={{ color: 'var(--text-dim)' }}>
+                Loading profile…
+              </div>
+            ) : (
+              <ProfileView profileData={profileData ?? {}} currentHour={currentHour} />
+            )
+          )}
+
+          {view !== 'profile' && loading && (
             <div className="py-8 text-center text-xs" style={{ color: 'var(--text-dim)' }}>
               Loading levels…
             </div>
           )}
 
-          {!loading && levelRows.length === 0 && (
+          {view !== 'profile' && !loading && levelRows.length === 0 && (
             <div className="py-8 text-center text-xs" style={{ color: 'var(--text-dim)' }}>
               No level data available
             </div>
