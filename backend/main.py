@@ -5835,6 +5835,107 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
     }
 
 
+def _build_overnight_tpo_profile(bars: list[dict], tick: float) -> dict:
+    """Build overnight TPO letter profile using lowercase letters + numerals.
+
+    31 thirty-minute periods from 6:00 PM to 9:30 AM ET:
+        a–l  → 6:00 PM – midnight   (period 0–11,  t_min 1080–1440)
+        m–z  → midnight – 7:00 AM   (period 12–25, t_min 0–420)
+        1–5  → 7:00 AM – 9:30 AM   (period 26–30, t_min 420–570)
+
+    Returns same structure as _build_rth_tpo_profile (minus ib_* fields).
+    """
+    from collections import defaultdict
+
+    ON_LETTERS = list('abcdefghijklmnopqrstuvwxyz') + ['1', '2', '3', '4', '5']
+
+    price_letters: dict = defaultdict(set)
+    period_ranges: dict = {}
+
+    for b in bars:
+        dt    = datetime.fromtimestamp(b['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+        t_min = dt.hour * 60 + dt.minute
+
+        if t_min >= 18 * 60:          # evening: 6:00 PM – midnight
+            period_idx = (t_min - 18 * 60) // 30
+        elif t_min < 9 * 60 + 30:     # pre-market: midnight – 9:30 AM
+            period_idx = 12 + t_min // 30
+        else:
+            continue                   # RTH bar — skip
+
+        if not (0 <= period_idx <= 30):
+            continue
+        letter = ON_LETTERS[period_idx]
+
+        lo_t = round(round(b['low']  / tick) * tick, 6)
+        hi_t = round(round(b['high'] / tick) * tick, 6)
+        p = lo_t
+        while p <= hi_t + tick * 0.001:
+            price_letters[round(p, 6)].add(letter)
+            p = round(p + tick, 6)
+
+        if letter not in period_ranges:
+            period_ranges[letter] = {'high': b['high'], 'low': b['low']}
+        else:
+            period_ranges[letter]['high'] = max(period_ranges[letter]['high'], b['high'])
+            period_ranges[letter]['low']  = min(period_ranges[letter]['low'],  b['low'])
+
+    _empty = {
+        'profile': [], 'poc': None, 'vah': None, 'val': None,
+        'single_prints': [], 'periods': 0, 'period_ranges': {},
+        'session_high': None, 'session_low': None,
+    }
+    if not price_letters:
+        return _empty
+
+    tpo_map: dict[float, int] = {p: len(ls) for p, ls in price_letters.items()}
+    total   = sum(tpo_map.values())
+    target  = total * 0.70
+
+    poc     = max(tpo_map, key=tpo_map.get)
+    prices  = sorted(tpo_map.keys())
+    poc_idx = min(range(len(prices)), key=lambda i: abs(prices[i] - poc))
+
+    va_set  = {prices[poc_idx]}
+    va_tpos = tpo_map[prices[poc_idx]]
+    lo_idx  = poc_idx
+    hi_idx  = poc_idx
+    while va_tpos < target:
+        can_up   = hi_idx + 1 < len(prices)
+        can_down = lo_idx - 1 >= 0
+        if not can_up and not can_down:
+            break
+        up_cnt = tpo_map[prices[hi_idx + 1]] if can_up   else -1
+        dn_cnt = tpo_map[prices[lo_idx - 1]] if can_down else -1
+        if up_cnt >= dn_cnt:
+            hi_idx += 1; va_set.add(prices[hi_idx]); va_tpos += up_cnt
+        else:
+            lo_idx -= 1; va_set.add(prices[lo_idx]); va_tpos += dn_cnt
+
+    idx_of = {ltr: i for i, ltr in enumerate(ON_LETTERS)}
+    profile = sorted(
+        [{'price': round(p, 2),
+          'letters': ''.join(sorted(ls, key=lambda x: idx_of.get(x, 99))),
+          'count': len(ls)}
+         for p, ls in price_letters.items()],
+        key=lambda x: x['price'], reverse=True
+    )
+    session_high = max(r['price'] for r in profile) if profile else None
+    session_low  = min(r['price'] for r in profile) if profile else None
+
+    return {
+        'profile':       profile,
+        'poc':           round(poc, 2),
+        'vah':           round(max(va_set), 2),
+        'val':           round(min(va_set), 2),
+        'single_prints': sorted([round(p, 2) for p, c in tpo_map.items() if c == 1], reverse=True),
+        'periods':       len(period_ranges),
+        'period_ranges': {k: {'high': v['high'], 'low': v['low']} for k, v in period_ranges.items()},
+        'session_high':  session_high,
+        'session_low':   session_low,
+    }
+
+
 def _classify_opening(open_price: float, a_period: dict | None,
                       prior_vah: float | None, prior_val: float | None,
                       prior_poc: float | None, tick: float) -> dict:
@@ -6061,7 +6162,11 @@ async def api_market_profile(symbol: str):
 
     # ── Overnight context ─────────────────────────────────────────────────────
     on_bars = on_by_date.get(today, [])
-    overnight: dict = {'high': None, 'low': None, 'poc': None, 'vah': None, 'val': None}
+    overnight: dict = {
+        'high': None, 'low': None, 'poc': None, 'vah': None, 'val': None,
+        'profile': [], 'single_prints': [], 'periods': 0, 'period_ranges': {},
+        'session_high': None, 'session_low': None,
+    }
     if on_bars:
         overnight['high'] = round(max(b['high'] for b in on_bars), 2)
         overnight['low']  = round(min(b['low']  for b in on_bars), 2)
@@ -6069,6 +6174,13 @@ async def api_market_profile(symbol: str):
         overnight['poc']  = _on_tpo['poc']
         overnight['vah']  = _on_tpo['vah']
         overnight['val']  = _on_tpo['val']
+        _on_prof = _build_overnight_tpo_profile(on_bars, tick)
+        overnight['profile']       = _on_prof['profile']
+        overnight['single_prints'] = _on_prof['single_prints']
+        overnight['periods']       = _on_prof['periods']
+        overnight['period_ranges'] = _on_prof['period_ranges']
+        overnight['session_high']  = _on_prof['session_high']
+        overnight['session_low']   = _on_prof['session_low']
 
     # ── Opening type ──────────────────────────────────────────────────────────
     open_price = None

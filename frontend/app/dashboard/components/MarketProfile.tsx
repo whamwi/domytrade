@@ -7,7 +7,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 // ── Futures available in the Market Profile page ───────────────────────────────
 const SYMBOLS = ['/ES', '/NQ', '/YM', '/RTY', '/GC', '/CL', '/SI', '/NG', '/HG', '/ZB', '/BTC']
 
-// ── TPO letter colours – warm progression through the day ────────────────────
+// ── RTH TPO letter colours – warm progression through the day ────────────────
 const LETTER_COLOR: Record<string, string> = {
   A: '#60a5fa', B: '#60a5fa',  // blue  — Initial Balance
   C: '#22d3ee', D: '#22d3ee',  // cyan
@@ -17,6 +17,26 @@ const LETTER_COLOR: Record<string, string> = {
   K: '#f87171', L: '#f87171', M: '#f87171',  // red — late session
 }
 const DEFAULT_LETTER_COLOR = '#94a3b8'
+
+// ── Overnight TPO letter colours – blue (evening) → cyan (pre-market) ────────
+const ON_LETTER_COLOR: Record<string, string> = (() => {
+  const m: Record<string, string> = {}
+  // a–d: 6 PM – 8 PM (deep blue)
+  'abcd'.split('').forEach(c => { m[c] = '#3b82f6' })
+  // e–h: 8 PM – 10 PM (blue)
+  'efgh'.split('').forEach(c => { m[c] = '#6366f1' })
+  // i–l: 10 PM – midnight (indigo)
+  'ijkl'.split('').forEach(c => { m[c] = '#8b5cf6' })
+  // m–p: midnight – 2 AM (purple-blue)
+  'mnop'.split('').forEach(c => { m[c] = '#7c3aed' })
+  // q–t: 2 AM – 4 AM (transition)
+  'qrst'.split('').forEach(c => { m[c] = '#0ea5e9' })
+  // u–z: 4 AM – 7 AM (cyan)
+  'uvwxyz'.split('').forEach(c => { m[c] = '#22d3ee' })
+  // 1–5: 7 AM – 9:30 AM (pre-market, bright cyan)
+  '12345'.split('').forEach(c => { m[c] = '#67e8f9' })
+  return m
+})()
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface ProfileRow   { price: number; letters: string; count: number }
@@ -39,7 +59,16 @@ interface SessionProfile {
   low?:          number
   close?:        number
 }
-interface Overnight { high: number | null; low: number | null; poc: number | null; vah: number | null; val: number | null }
+interface Overnight {
+  high: number | null; low: number | null
+  poc: number | null; vah: number | null; val: number | null
+  profile:       ProfileRow[]
+  single_prints: number[]
+  periods:       number
+  period_ranges: Record<string, PeriodRange>
+  session_high:  number | null
+  session_low:   number | null
+}
 interface Opening   { type: string; label: string; description: string; inside_prior_va: boolean | null; vs_prior_vah?: number; vs_prior_val?: number; vs_prior_poc?: number }
 interface DayType   { type: string; label: string; description: string; ib_range?: number; ext_up?: number; ext_down?: number; ib_ratio?: number }
 interface Rule80    { triggered: boolean; direction?: string; target?: number; already_hit?: boolean; label?: string; description: string }
@@ -113,7 +142,9 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
   currentPrice: number | null
   tick:         number
 }) {
-  if (!today.profile.length && !prior.profile.length) {
+  const hasOn = (overnight.profile?.length ?? 0) > 0
+
+  if (!today.profile.length && !prior.profile.length && !hasOn) {
     return (
       <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px' }}>
         No profile data — market may be closed or pre-market
@@ -121,47 +152,49 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
     )
   }
 
-  // Merge price universe from both profiles
+  // Merge price universe from all three profiles
   const allPrices = new Set<number>()
   today.profile.forEach(r => allPrices.add(r.price))
   prior.profile.forEach(r => allPrices.add(r.price))
+  overnight.profile?.forEach(r => allPrices.add(r.price))
   const sortedPrices = Array.from(allPrices).sort((a, b) => b - a)
 
   // Build lookup maps
   const todayMap  = new Map(today.profile.map(r => [r.price, r]))
   const priorMap  = new Map(prior.profile.map(r => [r.price, r]))
+  const onMap     = new Map((overnight.profile ?? []).map(r => [r.price, r]))
 
-  // Max letters count — for proportional width
+  // Max letter counts — for proportional bar widths
   const maxTodayCount = Math.max(1, ...today.profile.map(r => r.count))
   const maxPriorCount = Math.max(1, ...prior.profile.map(r => r.count))
+  const maxOnCount    = Math.max(1, ...(overnight.profile?.map(r => r.count) ?? [1]))
 
   // Single print lookup
   const todaySP = new Set(today.single_prints)
   const priorSP = new Set(prior.single_prints)
+  const onSP    = new Set(overnight.single_prints ?? [])
 
   const FONT    = "'SF Mono', ui-monospace, monospace"
   const ROW_H   = 16   // px per tick row
   const PRICE_W = 58   // px for price column
-  const SEP     = 10   // px gap between prior and today panels
-  const PRIOR_W = 130  // px prior panel
-  const TODAY_W = 200  // px today panel
-  const TOTAL_W = PRICE_W + SEP + PRIOR_W + SEP + TODAY_W
+  const SEP     = 8    // px gap between panels
+  const PRIOR_W = 120  // px prior RTH panel
+  const ON_W    = hasOn ? 90 : 0   // px overnight panel (0 if no data)
+  const TODAY_W = 190  // px today RTH panel
+  const TOTAL_W = PRICE_W + SEP + PRIOR_W + (hasOn ? SEP + ON_W : 0) + SEP + TODAY_W
   const totalH  = sortedPrices.length * ROW_H + 4
 
-  // Key price sets for highlight
-  const keyPrices = new Set([
-    today.poc, today.vah, today.val, today.ib_high, today.ib_low,
-    prior.poc, prior.vah, prior.val,
-    overnight.vah, overnight.val, overnight.poc,
-    currentPrice,
-  ].filter(Boolean) as number[])
+  // X offsets for each panel
+  const xPrior  = PRICE_W + SEP
+  const xOn     = xPrior + PRIOR_W + SEP
+  const xToday  = xOn + (hasOn ? ON_W + SEP : 0)
 
   // Close enough to be "at" a key level
   const near = (p: number, ref: number | null | undefined) =>
     ref != null && Math.abs(p - ref) < tick * 0.6
 
   return (
-    <div style={{ overflowY: 'auto', overflowX: 'hidden' }}>
+    <div style={{ overflowY: 'auto', overflowX: 'auto' }}>
       {/* Column headers */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: '6px',
         paddingLeft: `${PRICE_W + SEP}px`, gap: `${SEP}px` }}>
@@ -169,9 +202,15 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
           color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
           Prior RTH{prior.date ? ` · ${prior.date}` : ''}
         </div>
+        {hasOn && (
+          <div style={{ width: ON_W, textAlign: 'center', fontSize: '9px', fontWeight: 700,
+            color: '#22d3ee', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+            Overnight · {overnight.periods}p
+          </div>
+        )}
         <div style={{ width: TODAY_W, textAlign: 'center', fontSize: '9px', fontWeight: 700,
           color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-          Today — {today.periods} period{today.periods !== 1 ? 's' : ''} ({today.periods < 13 ? 'developing' : 'complete'})
+          Today — {today.periods}p ({today.periods < 13 ? 'developing' : 'complete'})
         </div>
       </div>
 
@@ -180,103 +219,98 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
         height={totalH}
         style={{ display: 'block', fontFamily: FONT, overflow: 'visible' }}
       >
-        {/* Value area shading — prior (left panel): upper=green, POC=purple, lower=red */}
+        {/* ── Prior RTH value area shading ── */}
         {prior.vah != null && prior.val != null && prior.poc != null && (() => {
           const idxVAH = sortedPrices.findIndex(p => p <= prior.vah!)
           const idxPOC = sortedPrices.findIndex(p => p <= prior.poc!)
           const idxVAL = sortedPrices.findIndex(p => p <= prior.val!)
           if (idxVAH < 0 || idxPOC < 0 || idxVAL < 0) return null
-          const x = PRICE_W + SEP
           const yVAH = idxVAH * ROW_H
           const yPOC = idxPOC * ROW_H
           const yVAL = idxVAL * ROW_H + ROW_H
           return (
             <g>
-              {/* VAH → POC: green (bullish upper zone) */}
-              <rect x={x} y={yVAH} width={PRIOR_W} height={yPOC - yVAH}
+              <rect x={xPrior} y={yVAH} width={PRIOR_W} height={yPOC - yVAH}
                 fill="#4ade80" fillOpacity={0.07} />
-              {/* POC row: purple highlight */}
-              <rect x={x} y={yPOC} width={PRIOR_W} height={ROW_H}
+              <rect x={xPrior} y={yPOC} width={PRIOR_W} height={ROW_H}
                 fill="#a78bfa" fillOpacity={0.18} />
-              {/* POC → VAL: red (bearish lower zone) */}
-              <rect x={x} y={yPOC + ROW_H} width={PRIOR_W} height={yVAL - yPOC - ROW_H}
+              <rect x={xPrior} y={yPOC + ROW_H} width={PRIOR_W} height={yVAL - yPOC - ROW_H}
                 fill="#f87171" fillOpacity={0.07} />
             </g>
           )
         })()}
 
-        {/* Value area shading — today (right panel): upper=green, POC=purple, lower=red */}
-        {today.vah != null && today.val != null && today.poc != null && (() => {
-          const idxVAH = sortedPrices.findIndex(p => p <= today.vah!)
-          const idxPOC = sortedPrices.findIndex(p => p <= today.poc!)
-          const idxVAL = sortedPrices.findIndex(p => p <= today.val!)
+        {/* ── Overnight value area shading ── */}
+        {hasOn && overnight.vah != null && overnight.val != null && overnight.poc != null && (() => {
+          const idxVAH = sortedPrices.findIndex(p => p <= overnight.vah!)
+          const idxPOC = sortedPrices.findIndex(p => p <= overnight.poc!)
+          const idxVAL = sortedPrices.findIndex(p => p <= overnight.val!)
           if (idxVAH < 0 || idxPOC < 0 || idxVAL < 0) return null
-          const x = PRICE_W + SEP + PRIOR_W + SEP
           const yVAH = idxVAH * ROW_H
           const yPOC = idxPOC * ROW_H
           const yVAL = idxVAL * ROW_H + ROW_H
           return (
             <g>
-              {/* VAH → POC: green */}
-              <rect x={x} y={yVAH} width={TODAY_W} height={yPOC - yVAH}
+              <rect x={xOn} y={yVAH} width={ON_W} height={yPOC - yVAH}
+                fill="#22d3ee" fillOpacity={0.05} />
+              <rect x={xOn} y={yPOC} width={ON_W} height={ROW_H}
+                fill="#22d3ee" fillOpacity={0.18} />
+              <rect x={xOn} y={yPOC + ROW_H} width={ON_W} height={yVAL - yPOC - ROW_H}
+                fill="#22d3ee" fillOpacity={0.04} />
+            </g>
+          )
+        })()}
+
+        {/* ── Today RTH value area shading ── */}
+        {today.vah != null && today.val != null && today.poc != null && (() => {
+          const idxVAH = sortedPrices.findIndex(p => p <= today.vah!)
+          const idxPOC = sortedPrices.findIndex(p => p <= today.poc!)
+          const idxVAL = sortedPrices.findIndex(p => p <= today.val!)
+          if (idxVAH < 0 || idxPOC < 0 || idxVAL < 0) return null
+          const yVAH = idxVAH * ROW_H
+          const yPOC = idxPOC * ROW_H
+          const yVAL = idxVAL * ROW_H + ROW_H
+          return (
+            <g>
+              <rect x={xToday} y={yVAH} width={TODAY_W} height={yPOC - yVAH}
                 fill="#4ade80" fillOpacity={0.09} />
-              {/* POC row: purple highlight */}
-              <rect x={x} y={yPOC} width={TODAY_W} height={ROW_H}
+              <rect x={xToday} y={yPOC} width={TODAY_W} height={ROW_H}
                 fill="#a78bfa" fillOpacity={0.22} />
-              {/* POC → VAL: red */}
-              <rect x={x} y={yPOC + ROW_H} width={TODAY_W} height={yVAL - yPOC - ROW_H}
+              <rect x={xToday} y={yPOC + ROW_H} width={TODAY_W} height={yVAL - yPOC - ROW_H}
                 fill="#f87171" fillOpacity={0.09} />
             </g>
           )
         })()}
 
-        {/* Overnight range bracket (right side of today panel) */}
-        {overnight.high != null && overnight.low != null && (() => {
-          const yi = sortedPrices.findIndex(p => p <= overnight.high!)
-          const yj = sortedPrices.findIndex(p => p <= overnight.low!)
-          if (yi < 0 || yj < 0) return null
-          const y1 = yi * ROW_H
-          const y2 = yj * ROW_H + ROW_H
-          const x  = PRICE_W + SEP + PRIOR_W + SEP + TODAY_W + 4
-          return (
-            <g>
-              <line x1={x} y1={y1} x2={x} y2={y2} stroke="#22d3ee" strokeWidth={2} strokeOpacity={0.4} />
-              <line x1={x} y1={y1} x2={x + 4} y2={y1} stroke="#22d3ee" strokeWidth={1.5} strokeOpacity={0.5} />
-              <line x1={x} y1={y2} x2={x + 4} y2={y2} stroke="#22d3ee" strokeWidth={1.5} strokeOpacity={0.5} />
-              <text x={x + 7} y={y1 + 9} fill="#22d3ee" fontSize={8} fontWeight="600" opacity={0.7}>ONH</text>
-              <text x={x + 7} y={y2 - 2} fill="#22d3ee" fontSize={8} fontWeight="600" opacity={0.7}>ONL</text>
-            </g>
-          )
-        })()}
-
-        {/* Price rows */}
+        {/* ── Price rows ── */}
         {sortedPrices.map((price, i) => {
           const y        = i * ROW_H
           const todayRow = todayMap.get(price)
           const priorRow = priorMap.get(price)
-          const isCurrent  = currentPrice != null && Math.abs(price - currentPrice) < tick * 0.6
-          const isTodayPOC = near(price, today.poc)
-          const isPriorPOC = near(price, prior.poc)
-          const isTodayVAH = near(price, today.vah)
-          const isTodayVAL = near(price, today.val)
-          const isPriorVAH = near(price, prior.vah)
-          const isPriorVAL = near(price, prior.val)
-          const isTodayIBH = near(price, today.ib_high)
-          const isTodayIBL = near(price, today.ib_low)
-          const isSPToday  = todaySP.has(price)
-          const isSPPrior  = priorSP.has(price)
+          const onRow    = onMap.get(price)
 
-          // Price label colour
+          const isCurrent    = currentPrice != null && Math.abs(price - currentPrice) < tick * 0.6
+          const isTodayPOC   = near(price, today.poc)
+          const isPriorPOC   = near(price, prior.poc)
+          const isOnPOC      = near(price, overnight.poc)
+          const isTodayVAH   = near(price, today.vah)
+          const isTodayVAL   = near(price, today.val)
+          const isPriorVAH   = near(price, prior.vah)
+          const isPriorVAL   = near(price, prior.val)
+          const isTodayIBH   = near(price, today.ib_high)
+          const isTodayIBL   = near(price, today.ib_low)
+          const isSPToday    = todaySP.has(price)
+          const isSPPrior    = priorSP.has(price)
+          const isSPOn       = onSP.has(price)
+
           const priceColor = isCurrent   ? '#fbbf24'
                            : isTodayPOC  ? '#a78bfa'
                            : isTodayVAH || isTodayVAL ? '#60a5fa'
                            : isPriorPOC  ? '#818cf8'
                            : 'var(--text-dim)'
 
-          // Prior panel — bar width proportional
-          const priorBarW = priorRow ? Math.max(4, Math.round((priorRow.count / maxPriorCount) * PRIOR_W)) : 0
-          // Today panel
-          const todayBarW = todayRow ? Math.max(4, Math.round((todayRow.count / maxTodayCount) * TODAY_W * 0.85)) : 0
+          const priorBarW = priorRow ? Math.max(4, Math.round((priorRow.count / maxPriorCount) * PRIOR_W * 0.9)) : 0
+          const onBarW    = onRow    ? Math.max(4, Math.round((onRow.count    / maxOnCount)    * ON_W    * 0.9)) : 0
 
           return (
             <g key={price}>
@@ -286,7 +320,7 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                   fill="#fbbf24" fillOpacity={0.06} />
               )}
 
-              {/* Price */}
+              {/* Price axis */}
               <text x={PRICE_W - 4} y={y + ROW_H - 4}
                 fill={priceColor} fontSize={9}
                 fontWeight={isCurrent || isTodayPOC ? '700' : '400'}
@@ -297,24 +331,56 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
               {/* Prior RTH letters */}
               {priorRow && (
                 <g>
-                  <rect x={PRICE_W + SEP} y={y + 2} width={priorBarW} height={ROW_H - 4}
+                  <rect x={xPrior} y={y + 2} width={priorBarW} height={ROW_H - 4}
                     fill={isSPPrior ? 'rgba(248,113,113,0.15)' : 'rgba(129,140,248,0.12)'}
                     rx={1} />
-                  <text x={PRICE_W + SEP + 3} y={y + ROW_H - 4}
+                  <text x={xPrior + 3} y={y + ROW_H - 4}
                     fontSize={8.5} fill={isPriorPOC ? '#a78bfa' : isSPPrior ? '#f87171' : '#475569'}
                     fontWeight={isPriorPOC ? '700' : '400'}>
                     {priorRow.letters}
                   </text>
                 </g>
               )}
+              {/* Prior annotations */}
+              {(isPriorPOC || isPriorVAH || isPriorVAL) && (
+                <text x={xPrior + PRIOR_W - 2} y={y + ROW_H - 4}
+                  fontSize={7.5} fontWeight="700" textAnchor="end"
+                  fill={isPriorPOC ? '#a78bfa' : '#818cf8'} opacity={0.65}>
+                  {isPriorPOC ? '◆' : isPriorVAH ? '▲' : '▼'}
+                </text>
+              )}
 
-              {/* Today's letters */}
+              {/* Overnight letters */}
+              {hasOn && onRow && (
+                <g>
+                  <rect x={xOn} y={y + 2} width={onBarW} height={ROW_H - 4}
+                    fill={isSPOn ? 'rgba(34,211,238,0.08)' : 'rgba(34,211,238,0.06)'}
+                    rx={1} />
+                  {onRow.letters.split('').map((ltr, li) => (
+                    <text key={li}
+                      x={xOn + 3 + li * 6.5}
+                      y={y + ROW_H - 4}
+                      fontSize={8} fontWeight={isOnPOC ? '700' : '400'}
+                      fill={ON_LETTER_COLOR[ltr] ?? '#22d3ee'}
+                      opacity={isSPOn ? 0.5 : 0.9}>
+                      {ltr}
+                    </text>
+                  ))}
+                </g>
+              )}
+              {/* Overnight POC annotation */}
+              {hasOn && isOnPOC && (
+                <text x={xOn + ON_W - 2} y={y + ROW_H - 4}
+                  fontSize={7.5} fontWeight="700" textAnchor="end"
+                  fill="#22d3ee" opacity={0.7}>◆</text>
+              )}
+
+              {/* Today RTH letters — letter-by-letter coloring */}
               {todayRow && (
                 <g>
-                  {/* Letter-by-letter coloring */}
                   {todayRow.letters.split('').map((ltr, li) => (
                     <text key={li}
-                      x={PRICE_W + SEP + PRIOR_W + SEP + li * 7}
+                      x={xToday + li * 7}
                       y={y + ROW_H - 4}
                       fontSize={9} fontWeight={isTodayPOC ? '700' : '500'}
                       fill={LETTER_COLOR[ltr] ?? DEFAULT_LETTER_COLOR}
@@ -324,12 +390,9 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                   ))}
                 </g>
               )}
-
-              {/* Key level annotations (right margin) */}
+              {/* Today annotations */}
               {(isTodayPOC || isTodayVAH || isTodayVAL || isTodayIBH || isTodayIBL || isCurrent) && (
-                <text
-                  x={PRICE_W + SEP + PRIOR_W + SEP + TODAY_W - 2}
-                  y={y + ROW_H - 4}
+                <text x={xToday + TODAY_W - 2} y={y + ROW_H - 4}
                   fontSize={7.5} fontWeight="700" textAnchor="end"
                   fill={isTodayPOC ? '#a78bfa' : isCurrent ? '#fbbf24'
                       : isTodayIBH || isTodayIBL ? '#fb923c' : '#60a5fa'}
@@ -338,41 +401,28 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                     : isTodayIBH ? 'IBH' : isTodayIBL ? 'IBL' : ''}
                 </text>
               )}
-
-              {/* Prior POC / VAH / VAL annotations */}
-              {(isPriorPOC || isPriorVAH || isPriorVAL) && (
-                <text
-                  x={PRICE_W + SEP + PRIOR_W - 2}
-                  y={y + ROW_H - 4}
-                  fontSize={7.5} fontWeight="700" textAnchor="end"
-                  fill={isPriorPOC ? '#a78bfa' : '#818cf8'}
-                  opacity={0.65}>
-                  {isPriorPOC ? '◆' : isPriorVAH ? '▲' : '▼'}
-                </text>
-              )}
             </g>
           )
         })}
 
-        {/* Current price horizontal line */}
+        {/* Current price horizontal dashed line */}
         {currentPrice != null && sortedPrices.length > 0 && (() => {
           const idx = sortedPrices.findIndex(p => p <= currentPrice)
           if (idx < 0) return null
           const cy = idx * ROW_H + ROW_H / 2
           return (
-            <line x1={PRICE_W} y1={cy} x2={PRICE_W + SEP + PRIOR_W + SEP + TODAY_W}
-              y2={cy} stroke="#fbbf24" strokeWidth={0.8} strokeDasharray="3,3" strokeOpacity={0.5} />
+            <line x1={PRICE_W} y1={cy} x2={TOTAL_W} y2={cy}
+              stroke="#fbbf24" strokeWidth={0.8} strokeDasharray="3,3" strokeOpacity={0.5} />
           )
         })()}
       </svg>
-
     </div>
   )
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-// ── TPO letter → time mapping ─────────────────────────────────────────────────
-const TPO_LETTERS = [
+// ── TPO letter → time mappings ───────────────────────────────────────────────
+const RTH_LETTERS = [
   { letter: 'A', time: '9:30 – 10:00 AM', note: 'Initial Balance' },
   { letter: 'B', time: '10:00 – 10:30 AM', note: 'Initial Balance' },
   { letter: 'C', time: '10:30 – 11:00 AM', note: '' },
@@ -388,7 +438,42 @@ const TPO_LETTERS = [
   { letter: 'M', time: '3:30 – 4:00 PM',   note: 'Closing period' },
 ]
 
+const ON_LETTERS_MAP = [
+  { letter: 'a', time: '6:00 – 6:30 PM',   note: 'Evening open' },
+  { letter: 'b', time: '6:30 – 7:00 PM',   note: '' },
+  { letter: 'c', time: '7:00 – 7:30 PM',   note: '' },
+  { letter: 'd', time: '7:30 – 8:00 PM',   note: '' },
+  { letter: 'e', time: '8:00 – 8:30 PM',   note: '' },
+  { letter: 'f', time: '8:30 – 9:00 PM',   note: '' },
+  { letter: 'g', time: '9:00 – 9:30 PM',   note: '' },
+  { letter: 'h', time: '9:30 – 10:00 PM',  note: '' },
+  { letter: 'i', time: '10:00 – 10:30 PM', note: '' },
+  { letter: 'j', time: '10:30 – 11:00 PM', note: '' },
+  { letter: 'k', time: '11:00 – 11:30 PM', note: '' },
+  { letter: 'l', time: '11:30 PM – 12:00', note: '' },
+  { letter: 'm', time: '12:00 – 12:30 AM', note: 'Midnight' },
+  { letter: 'n', time: '12:30 – 1:00 AM',  note: '' },
+  { letter: 'o', time: '1:00 – 1:30 AM',   note: '' },
+  { letter: 'p', time: '1:30 – 2:00 AM',   note: '' },
+  { letter: 'q', time: '2:00 – 2:30 AM',   note: '' },
+  { letter: 'r', time: '2:30 – 3:00 AM',   note: '' },
+  { letter: 's', time: '3:00 – 3:30 AM',   note: '' },
+  { letter: 't', time: '3:30 – 4:00 AM',   note: '' },
+  { letter: 'u', time: '4:00 – 4:30 AM',   note: '' },
+  { letter: 'v', time: '4:30 – 5:00 AM',   note: '' },
+  { letter: 'w', time: '5:00 – 5:30 AM',   note: '' },
+  { letter: 'x', time: '5:30 – 6:00 AM',   note: '' },
+  { letter: 'y', time: '6:00 – 6:30 AM',   note: '' },
+  { letter: 'z', time: '6:30 – 7:00 AM',   note: '' },
+  { letter: '1', time: '7:00 – 7:30 AM',   note: 'Pre-market' },
+  { letter: '2', time: '7:30 – 8:00 AM',   note: '' },
+  { letter: '3', time: '8:00 – 8:30 AM',   note: '' },
+  { letter: '4', time: '8:30 – 9:00 AM',   note: '' },
+  { letter: '5', time: '9:00 – 9:30 AM',   note: 'Last pre-market' },
+]
+
 function HelpModal({ onClose }: { onClose: () => void }) {
+  const [tab, setTab] = useState<'rth' | 'on'>('rth')
   return (
     <>
       <div onClick={onClose}
@@ -396,17 +481,19 @@ function HelpModal({ onClose }: { onClose: () => void }) {
       <div style={{
         position: 'fixed', top: '50%', left: '50%',
         transform: 'translate(-50%, -50%)',
-        width: '380px', zIndex: 1100,
+        width: '400px', maxHeight: '80vh', zIndex: 1100,
         background: '#13111d',
         border: '1px solid rgba(255,255,255,0.1)',
         borderRadius: '14px',
         boxShadow: '0 24px 64px rgba(0,0,0,0.7)',
+        display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}>
         {/* Header */}
         <div style={{ padding: '16px 20px 12px',
           borderBottom: '1px solid rgba(255,255,255,0.07)',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          flexShrink: 0 }}>
           <div>
             <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '0.03em' }}>
               TPO Letter Reference
@@ -420,8 +507,24 @@ function HelpModal({ onClose }: { onClose: () => void }) {
               border: 'none', cursor: 'pointer', lineHeight: 1 }}>×</button>
         </div>
 
-        {/* Letter table */}
-        <div style={{ padding: '12px 20px 20px' }}>
+        {/* Tabs */}
+        <div style={{ display: 'flex', gap: '0', borderBottom: '1px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
+          {([['rth', 'RTH  A – M', '#60a5fa'], ['on', 'Overnight  a–z, 1–5', '#22d3ee']] as const).map(([t, label, color]) => (
+            <button key={t} onClick={() => setTab(t)}
+              style={{
+                flex: 1, padding: '9px 0', fontSize: '11px', fontWeight: 700,
+                background: tab === t ? `${color}12` : 'transparent',
+                color: tab === t ? color : 'var(--text-dim)',
+                border: 'none', borderBottom: tab === t ? `2px solid ${color}` : '2px solid transparent',
+                cursor: 'pointer', transition: 'all 0.12s',
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Letter table — scrollable */}
+        <div style={{ padding: '12px 20px 20px', overflowY: 'auto' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr 1fr', gap: '0',
             marginBottom: '6px' }}>
             {['', 'Time (ET)', 'Note'].map(h => (
@@ -430,7 +533,8 @@ function HelpModal({ onClose }: { onClose: () => void }) {
                 borderBottom: '1px solid rgba(255,255,255,0.07)' }}>{h}</div>
             ))}
           </div>
-          {TPO_LETTERS.map(({ letter, time, note }) => {
+
+          {tab === 'rth' && RTH_LETTERS.map(({ letter, time, note }) => {
             const color = LETTER_COLOR[letter] ?? DEFAULT_LETTER_COLOR
             const isIB  = letter === 'A' || letter === 'B'
             return (
@@ -446,29 +550,58 @@ function HelpModal({ onClose }: { onClose: () => void }) {
                   background: `${color}18`, display: 'flex', alignItems: 'center',
                   justifyContent: 'center',
                 }}>{letter}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                  {time}
-                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{time}</div>
                 <div style={{ fontSize: '10px', color: isIB ? '#60a5fa' : 'var(--text-dim)',
-                  fontWeight: isIB ? 600 : 400 }}>
-                  {note}
-                </div>
+                  fontWeight: isIB ? 600 : 400 }}>{note}</div>
+              </div>
+            )
+          })}
+
+          {tab === 'on' && ON_LETTERS_MAP.map(({ letter, time, note }) => {
+            const color = ON_LETTER_COLOR[letter] ?? '#22d3ee'
+            const isNum = !isNaN(Number(letter))
+            const isMid = letter === 'm'
+            return (
+              <div key={letter} style={{
+                display: 'grid', gridTemplateColumns: '28px 1fr 1fr',
+                alignItems: 'center', padding: '4px 0',
+                borderBottom: '1px solid rgba(255,255,255,0.04)',
+                background: isNum ? 'rgba(34,211,238,0.04)' : isMid ? 'rgba(124,58,237,0.04)' : 'transparent',
+              }}>
+                <div style={{
+                  fontFamily: "'SF Mono', monospace", fontSize: '13px', fontWeight: 700,
+                  color, width: '22px', height: '22px', borderRadius: '4px',
+                  background: `${color}18`, display: 'flex', alignItems: 'center',
+                  justifyContent: 'center',
+                }}>{letter}</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{time}</div>
+                <div style={{ fontSize: '10px',
+                  color: isNum ? '#67e8f9' : isMid ? '#8b5cf6' : 'var(--text-dim)',
+                  fontWeight: isNum || isMid ? 600 : 400 }}>{note}</div>
               </div>
             )
           })}
 
           {/* Footer note */}
           <div style={{ marginTop: '12px', padding: '10px 12px',
-            background: 'rgba(167,139,250,0.08)', borderRadius: '8px',
-            border: '1px solid rgba(167,139,250,0.18)' }}>
-            <div style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 700, marginBottom: '4px' }}>
-              How to read the profile
+            background: tab === 'rth' ? 'rgba(167,139,250,0.08)' : 'rgba(34,211,238,0.07)',
+            borderRadius: '8px',
+            border: `1px solid ${tab === 'rth' ? 'rgba(167,139,250,0.18)' : 'rgba(34,211,238,0.15)'}` }}>
+            <div style={{ fontSize: '10px',
+              color: tab === 'rth' ? '#a78bfa' : '#22d3ee',
+              fontWeight: 700, marginBottom: '4px' }}>
+              {tab === 'rth' ? 'How to read the RTH profile' : 'How to read the overnight profile'}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
-              The wider a price row (more letters), the more time was spent there — that is
-              accepted value. A single-letter row is a <strong style={{ color: '#f87171' }}>single
-              print</strong>: price passed through fast and is likely to be revisited.
-              The widest row is the <strong style={{ color: '#a78bfa' }}>POC</strong>.
+              {tab === 'rth'
+                ? <>The wider a price row (more letters), the more time was spent there — accepted value.
+                  A single-letter row is a <strong style={{ color: '#f87171' }}>single print</strong>: price
+                  passed through fast, likely revisited. Widest row = <strong style={{ color: '#a78bfa' }}>POC</strong>.</>
+                : <>Lowercase letters mark overnight activity. <strong style={{ color: '#22d3ee' }}>a–l</strong> = evening
+                  (6 PM–midnight), <strong style={{ color: '#8b5cf6' }}>m–z</strong> = early morning,
+                  <strong style={{ color: '#67e8f9' }}> 1–5</strong> = pre-market (7–9:30 AM).
+                  Overnight value area sets tomorrow's context.</>
+              }
             </div>
           </div>
         </div>
@@ -887,6 +1020,9 @@ export default function MarketProfile() {
                   { color: '#fbbf24', label: 'G – H',   note: 'Midday / lunch' },
                   { color: '#fb923c', label: 'I – J',   note: 'Afternoon' },
                   { color: '#f87171', label: 'K – M',   note: 'Late / closing' },
+                  { color: '#3b82f6', label: 'a – l',   note: 'Overnight evening (6 PM–12 AM)' },
+                  { color: '#8b5cf6', label: 'm – z',   note: 'Overnight night (12 AM–7 AM)' },
+                  { color: '#67e8f9', label: '1 – 5',   note: 'Pre-market (7–9:30 AM)' },
                   { color: '#a78bfa', label: '■ Purple', note: 'POC row' },
                   { color: '#4ade80', label: '■ Green',  note: 'Above POC — VAH zone' },
                   { color: '#f87171', label: '■ Red',    note: 'Below POC — VAL zone' },
