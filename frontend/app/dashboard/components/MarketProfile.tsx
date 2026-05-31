@@ -86,13 +86,14 @@ interface IBSignals {
 }
 interface LiveWatchLevel { price: number; label: string; significance: string }
 interface LiveReadData {
-  active:        boolean
-  status:        string   // BUILDING | IB_BUILDING | INTACT | WEAKENING | CRITICAL | CONFIRMED | INVALIDATED
-  last_period:   string | null
-  last_close:    number | null
-  current_read:  string
-  live_guidance: string
-  watch_level:   LiveWatchLevel | null
+  active:         boolean
+  status:         string   // BUILDING | IB_BUILDING | INTACT | WEAKENING | CRITICAL | CONFIRMED | INVALIDATED
+  last_period:    string | null
+  last_close:     number | null
+  current_read:   string
+  live_guidance:  string
+  watch_level:    LiveWatchLevel | null
+  first_warning?: boolean  // true when status held pending 2nd-period confirmation
 }
 interface MPData {
   symbol:           string
@@ -872,14 +873,24 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
       {/* Header */}
       <div style={{ padding: '11px 16px', background: `${cfg.color}0a`,
         borderBottom: `1px solid ${cfg.border}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
         <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)',
           textTransform: 'uppercase', letterSpacing: '0.08em' }}>Live Read</span>
-        <span style={{ fontSize: '12px', fontWeight: 700, color: cfg.color,
-          background: cfg.bg, border: `1px solid ${cfg.border}`,
-          borderRadius: '5px', padding: '2px 10px' }}>
-          {cfg.label}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {/* Pending-confirmation chip — shown when badge is held pending 2nd period */}
+          {lr.first_warning && (
+            <span style={{ fontSize: '10px', fontWeight: 600, color: '#fbbf24',
+              background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)',
+              borderRadius: '4px', padding: '2px 7px', letterSpacing: '0.04em' }}>
+              ⚠ Watching
+            </span>
+          )}
+          <span style={{ fontSize: '12px', fontWeight: 700, color: cfg.color,
+            background: cfg.bg, border: `1px solid ${cfg.border}`,
+            borderRadius: '5px', padding: '2px 10px' }}>
+            {cfg.label}
+          </span>
+        </div>
       </div>
 
       <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -974,11 +985,14 @@ export default function MarketProfile() {
 
   useEffect(() => { load(symbol) }, [symbol, load])
 
-  // Auto-refresh every 60 s during RTH
+  // Auto-refresh every 60 s during the active trading window.
+  // Dead zone is 4 PM – 6 PM ET (session close → overnight open).
+  // All other hours: RTH (9:30 AM–4 PM) + overnight (6 PM–9:30 AM) are live.
   useEffect(() => {
     const id = setInterval(() => {
       const etH = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).getHours()
-      if (etH >= 9 && etH < 16) load(symbol)
+      const inDeadZone = etH >= 16 && etH < 18   // 4 PM – 6 PM ET
+      if (!inDeadZone) load(symbol)
     }, 60_000)
     return () => clearInterval(id)
   }, [symbol, load])

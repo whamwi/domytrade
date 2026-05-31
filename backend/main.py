@@ -6435,6 +6435,54 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     }
 
 
+def _zone_for_close(close: float, bias: str, on_high, on_low, on_poc,
+                     ib_high, ib_low, straddle_t: float, tick: float) -> str:
+    """Return zone name for a single period close given the IB bias.
+
+    Zones (bullish): CONFIRMED > INTACT > WEAKENING > CRITICAL > INVALIDATED
+    Zones (bearish): mirror of bullish
+    Zones (neutral): CONFIRMED (outside ON range) or INTACT (inside ON range)
+    """
+    if bias in ('BULLISH', 'BULLISH_LEAN'):
+        if ib_high and close > ib_high + tick:
+            return 'CONFIRMED'
+        if on_high and close >= on_high - straddle_t:
+            return 'INTACT'
+        if on_poc and close > on_poc + straddle_t:
+            return 'WEAKENING'
+        if on_poc and close >= on_poc - straddle_t:
+            return 'CRITICAL'
+        return 'INVALIDATED'
+    elif bias in ('BEARISH', 'BEARISH_LEAN'):
+        if ib_low and close < ib_low - tick:
+            return 'CONFIRMED'
+        if on_low and close <= on_low + straddle_t:
+            return 'INTACT'
+        if on_poc and close < on_poc - straddle_t:
+            return 'WEAKENING'
+        if on_poc and close <= on_poc + straddle_t:
+            return 'CRITICAL'
+        return 'INVALIDATED'
+    else:
+        # NEUTRAL / OA
+        if on_high and close > on_high + straddle_t:
+            return 'CONFIRMED'
+        if on_low and close < on_low - straddle_t:
+            return 'CONFIRMED'
+        return 'INTACT'
+
+
+# Zone severity order — higher index = worse/further from original signal
+_ZONE_SEVERITY = ['CONFIRMED', 'INTACT', 'WEAKENING', 'CRITICAL', 'INVALIDATED']
+
+def _is_downgrade(prev_zone: str, curr_zone: str) -> bool:
+    """Return True if curr_zone is a deterioration vs prev_zone."""
+    try:
+        return _ZONE_SEVERITY.index(curr_zone) > _ZONE_SEVERITY.index(prev_zone)
+    except ValueError:
+        return False
+
+
 def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                          now_et, tick: float) -> dict:
     """Evaluate the live market read based on the most recently CLOSED TPO period.
@@ -6448,6 +6496,11 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
       WEAKENING  — period closed below ONH but above ON POC (OA two-sided active)
       CRITICAL   — period closed at ON POC ± 3 ticks (last defence)
       INVALIDATED— period closed below ON POC (signal proven wrong)
+
+    Consecutive confirmation rule: downgrade zones (e.g., INTACT → WEAKENING)
+    require TWO consecutive period closes in the new zone.  A single-period dip
+    keeps the prior status while flagging a "⚠ First warning" in the narrative.
+    Upgrades (improving zones) and CONFIRMED always take effect immediately.
     """
     RTH_START = 9 * 60 + 30
     t_min     = now_et.hour * 60 + now_et.minute
@@ -6532,124 +6585,225 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
 
     bias       = ib_signals.get('bias', 'NEUTRAL')
     straddle_t = 3 * tick
-    status     = 'INTACT'
-    read       = ''
-    guidance   = ''
-    watch      = None
 
-    period_label = f'{last_letter} period'
-    # Human-readable time for each RTH letter (A=9:30-10, B=10-10:30, etc.)
-    period_idx = ord(last_letter) - ord('A')
-    h = 9 + (period_idx + 1) // 2
-    m_start = 30 if period_idx % 2 == 1 else 0
-    h_end   = 9 + (period_idx + 2) // 2
-    m_end   = 30 if (period_idx + 1) % 2 == 1 else 0
-    period_label = f'{last_letter}  ({h}:{m_start:02d}–{h_end}:{m_end:02d})'
+    # Helper: period label with human-readable time
+    def _plabel(letter: str) -> str:
+        idx    = ord(letter) - ord('A')
+        h_s    = 9 + idx // 2
+        m_s    = 30 if idx % 2 == 1 else 0
+        h_e    = 9 + (idx + 1) // 2
+        m_e    = 30 if (idx) % 2 == 0 else 0
+        return f'{letter}  ({h_s}:{m_s:02d}–{h_e}:{m_e:02d})'
+
+    period_label = _plabel(last_letter)
+
+    # ── Zone classification for last & previous period ────────────────────────
+    curr_zone = _zone_for_close(last_close, bias, on_high, on_low, on_poc,
+                                 ib_high, ib_low, straddle_t, tick)
+
+    prev_zone: str | None = None
+    prev_close: float | None = None
+    if last_complete_idx > 0:           # there is a previous period
+        prev_letter = chr(ord('A') + last_complete_idx - 1)
+        prev_data   = pr.get(prev_letter, {})
+        prev_close  = prev_data.get('close')
+        if prev_close is not None:
+            prev_zone = _zone_for_close(prev_close, bias, on_high, on_low, on_poc,
+                                         ib_high, ib_low, straddle_t, tick)
+
+    # ── Consecutive-period confirmation rule ──────────────────────────────────
+    # Downgrades require two consecutive closes in the new zone.
+    # First-period dip: keep prior status, warn in narrative.
+    # Upgrades and CONFIRMED are immediate.
+    first_warning = False
+    if (prev_zone is not None
+            and curr_zone != 'CONFIRMED'
+            and _is_downgrade(prev_zone, curr_zone)):
+        first_warning = True   # single period dip — hold prior status for badge
+        effective_zone = prev_zone
+    else:
+        effective_zone = curr_zone
+
+    status   = effective_zone
+    read     = ''
+    guidance = ''
+    watch    = None
 
     if bias in ('BULLISH', 'BULLISH_LEAN'):
         if on_high is None or on_poc is None:
             return _building
-        if ib_high and last_close > ib_high + tick:
-            status  = 'CONFIRMED'
-            excess  = round(last_close - ib_high, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts above '
-                       f'IB High ({ib_high:.2f}). Buyers accelerating — trend day developing.')
+
+        if curr_zone == 'CONFIRMED':
+            excess   = round(last_close - (ib_high or on_high), 2)
+            ib_ref   = f'{ib_high:.2f}' if ib_high else on_high_s
+            read     = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts above '
+                        f'IB High ({ib_ref}). Buyers accelerating — trend day developing.')
             guidance = (f'Ride longs. Trail stop below ONH ({on_high_s}). '
                         f'Do not fade — let price show exhaustion before reducing.')
-            watch   = {'price': on_high, 'label': 'ONH — trail stop', 'significance': 'close below → reduce position'}
-        elif last_close >= on_high - straddle_t:
-            status  = 'INTACT'
-            pts     = round(last_close - on_high, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, '
-                       f'{"above" if pts >= 0 else "at"} ONH ({on_high_s}) '
-                       f'by {abs(pts)} pts. IB bullish excess intact — '
-                       f'buyers defending ONH as support.')
-            guidance = f'Buy dips to ONH ({on_high_s}). Stop below ON POC ({on_poc_s}).'
-            watch   = {'price': on_high, 'label': 'ONH', 'significance': 'close below → weakening'}
-        elif last_close > on_poc + straddle_t:
-            status  = 'WEAKENING'
+            watch    = {'price': on_high, 'label': 'ONH — trail stop', 'significance': 'close below → reduce position'}
+
+        elif effective_zone == 'INTACT':
+            pts = round(last_close - on_high, 2)
+            if first_warning:
+                # Current period dipped below ONH — keep INTACT badge, add warning
+                pts_below = round(on_high - last_close, 2)
+                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_below} pts below ONH ({on_high_s}) — '
+                        f'first dip below support. One period is noise; watching for confirmation. '
+                        f'Previous period held above ONH.')
+                guidance = (f'Hold plan. If next period also closes below ONH, '
+                            f'status downgrades to Weakening. '
+                            f'Stop below ON POC ({on_poc_s}).')
+                watch = {'price': on_high, 'label': 'ONH — watching', 'significance': 'second close below → weakening'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f}, '
+                        f'{"above" if pts >= 0 else "at"} ONH ({on_high_s}) '
+                        f'by {abs(pts)} pts. IB bullish excess intact — '
+                        f'buyers defending ONH as support.')
+                guidance = f'Buy dips to ONH ({on_high_s}). Stop below ON POC ({on_poc_s}).'
+                watch = {'price': on_high, 'label': 'ONH', 'significance': 'close below → weakening'}
+
+        elif effective_zone == 'WEAKENING':
             pts_gap = round(on_high - last_close, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}). '
-                       f'ONH failed as support. Market returned inside overnight range — '
-                       f'OA two-sided behaviour now active between ON POC and ONH.')
-            guidance = (f'Fade rallies to ONH ({on_high_s}). '
-                        f'Buy tests of ON POC ({on_poc_s}). '
-                        f'No net directional bias until ONH reclaimed.')
-            watch   = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
-        elif last_close >= on_poc - straddle_t:
-            status  = 'CRITICAL'
-            read    = (f'{period_label} closed at {last_close:.2f} — at ON POC ({on_poc_s}). '
-                       f'Last support for the bullish IB signal. '
-                       f'A period close below ON POC invalidates the setup completely.')
-            guidance = f'No new longs. One close below ON POC ({on_poc_s}) = signal invalidated.'
-            watch   = {'price': on_poc, 'label': 'ON POC — critical', 'significance': 'close below → invalidated'}
-        else:
-            status  = 'INVALIDATED'
+            if first_warning:
+                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}) — '
+                        f'first test of ONH as resistance. One period is noise. '
+                        f'ON POC ({on_poc_s}) is the next key level to watch.')
+                guidance = (f'Hold plan for now. '
+                            f'If next period also closes below ONH, OA two-sided behaviour is confirmed. '
+                            f'Hard stop on close below ON POC ({on_poc_s}).')
+                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}). '
+                        f'Two consecutive closes below ONH confirmed — ONH failed as support. '
+                        f'Market returned inside overnight range; OA two-sided behaviour active.')
+                guidance = (f'Fade rallies to ONH ({on_high_s}). '
+                            f'Buy tests of ON POC ({on_poc_s}). '
+                            f'No net directional bias until ONH reclaimed.')
+                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
+
+        elif effective_zone == 'CRITICAL':
+            if first_warning:
+                read = (f'⚠ {period_label} closed at {last_close:.2f} — first touch of ON POC ({on_poc_s}). '
+                        f'Buyers must defend this level immediately. '
+                        f'A second close at or below ON POC confirms breakdown.')
+                guidance = (f'No new longs. Reduce existing longs by 50%. '
+                            f'One more close below ON POC ({on_poc_s}) = full signal invalidated.')
+                watch = {'price': on_poc, 'label': 'ON POC — first touch', 'significance': 'second close below → invalidated'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f} — at ON POC ({on_poc_s}). '
+                        f'Two consecutive closes at last support for the bullish IB signal. '
+                        f'A period close below ON POC invalidates the setup completely.')
+                guidance = f'No new longs. One close below ON POC ({on_poc_s}) = signal invalidated.'
+                watch = {'price': on_poc, 'label': 'ON POC — critical', 'significance': 'close below → invalidated'}
+
+        else:  # INVALIDATED
             pts_below = round(on_poc - last_close, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, {pts_below} pts below ON POC ({on_poc_s}). '
-                       f'Bullish IB signal invalidated. Overnight sellers reasserted control — '
-                       f'ON POC is now resistance. The IB excess was rejected.')
-            guidance = (f'Reverse plan. Sell rallies to ON POC ({on_poc_s}) — now resistance. '
-                        f'Target overnight VAL ({on_val_s}).')
-            watch   = {'price': on_poc, 'label': 'ON POC — now resistance', 'significance': 'close above → re-evaluate'}
+            if first_warning:
+                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_below} pts below ON POC ({on_poc_s}) — '
+                        f'first close below the last line of defence. '
+                        f'One more period here confirms full invalidation.')
+                guidance = (f'Exit longs or cut to minimum size. '
+                            f'If next period also closes below ON POC, reverse plan: sell rallies to ON POC.')
+                watch = {'price': on_poc, 'label': 'ON POC — broken', 'significance': 'second close below → fully invalidated'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f}, {pts_below} pts below ON POC ({on_poc_s}). '
+                        f'Bullish IB signal invalidated — two consecutive closes below ON POC. '
+                        f'Overnight sellers reasserted control; ON POC is now resistance.')
+                guidance = (f'Reverse plan. Sell rallies to ON POC ({on_poc_s}) — now resistance. '
+                            f'Target overnight VAL ({on_val_s}).')
+                watch = {'price': on_poc, 'label': 'ON POC — now resistance', 'significance': 'close above → re-evaluate'}
 
     elif bias in ('BEARISH', 'BEARISH_LEAN'):
         if on_low is None or on_poc is None:
             return _building
-        if ib_low and last_close < ib_low - tick:
-            status  = 'CONFIRMED'
-            excess  = round(ib_low - last_close, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts below '
-                       f'IB Low ({ib_low:.2f}). Sellers accelerating — trend day developing.')
+
+        if curr_zone == 'CONFIRMED':
+            excess   = round((ib_low or on_low) - last_close, 2)
+            ib_ref   = f'{ib_low:.2f}' if ib_low else on_low_s
+            read     = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts below '
+                        f'IB Low ({ib_ref}). Sellers accelerating — trend day developing.')
             guidance = (f'Ride shorts. Trail stop above ONL ({on_low_s}). '
                         f'Do not fade — let price show exhaustion.')
-            watch   = {'price': on_low, 'label': 'ONL — trail stop', 'significance': 'close above → reduce position'}
-        elif last_close <= on_low + straddle_t:
-            status  = 'INTACT'
-            pts     = round(on_low - last_close, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, '
-                       f'below ONL ({on_low_s}) by {abs(pts)} pts. '
-                       f'IB bearish excess intact — sellers defending ONL as resistance.')
-            guidance = f'Sell rallies to ONL ({on_low_s}). Stop above ON POC ({on_poc_s}).'
-            watch   = {'price': on_low, 'label': 'ONL', 'significance': 'close above → weakening'}
-        elif last_close < on_poc - straddle_t:
-            status  = 'WEAKENING'
+            watch    = {'price': on_low, 'label': 'ONL — trail stop', 'significance': 'close above → reduce position'}
+
+        elif effective_zone == 'INTACT':
+            pts = round(on_low - last_close, 2)
+            if first_warning:
+                pts_above = round(last_close - on_low, 2)
+                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_above} pts above ONL ({on_low_s}) — '
+                        f'first recovery above resistance. One period is noise; watching for confirmation. '
+                        f'Previous period held below ONL.')
+                guidance = (f'Hold shorts. If next period also closes above ONL, '
+                            f'status downgrades to Weakening. '
+                            f'Stop above ON POC ({on_poc_s}).')
+                watch = {'price': on_low, 'label': 'ONL — watching', 'significance': 'second close above → weakening'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f}, '
+                        f'below ONL ({on_low_s}) by {abs(pts)} pts. '
+                        f'IB bearish excess intact — sellers defending ONL as resistance.')
+                guidance = f'Sell rallies to ONL ({on_low_s}). Stop above ON POC ({on_poc_s}).'
+                watch = {'price': on_low, 'label': 'ONL', 'significance': 'close above → weakening'}
+
+        elif effective_zone == 'WEAKENING':
             pts_gap = round(last_close - on_low, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}). '
-                       f'ONL failed as resistance. Market returned inside overnight range — '
-                       f'OA two-sided behaviour now active between ONL and ON POC.')
-            guidance = (f'Buy tests of ONL ({on_low_s}). '
-                        f'Sell near ON POC ({on_poc_s}). '
-                        f'No net directional bias until ONL reclaimed.')
-            watch   = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
-        elif last_close <= on_poc + straddle_t:
-            status  = 'CRITICAL'
-            read    = (f'{period_label} closed at {last_close:.2f} — at ON POC ({on_poc_s}). '
-                       f'Last resistance for the bearish IB signal. '
-                       f'A period close above ON POC invalidates the setup completely.')
-            guidance = f'No new shorts. One close above ON POC ({on_poc_s}) = signal invalidated.'
-            watch   = {'price': on_poc, 'label': 'ON POC — critical', 'significance': 'close above → invalidated'}
-        else:
-            status  = 'INVALIDATED'
+            if first_warning:
+                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}) — '
+                        f'first test of ONL as support. One period is noise. '
+                        f'ON POC ({on_poc_s}) is the next key level to watch.')
+                guidance = (f'Hold plan for now. '
+                            f'If next period also closes above ONL, OA two-sided behaviour is confirmed. '
+                            f'Hard stop on close above ON POC ({on_poc_s}).')
+                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}). '
+                        f'Two consecutive closes above ONL confirmed — ONL failed as resistance. '
+                        f'Market returned inside overnight range; OA two-sided behaviour active.')
+                guidance = (f'Buy tests of ONL ({on_low_s}). '
+                            f'Sell near ON POC ({on_poc_s}). '
+                            f'No net directional bias until ONL reclaimed.')
+                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
+
+        elif effective_zone == 'CRITICAL':
+            if first_warning:
+                read = (f'⚠ {period_label} closed at {last_close:.2f} — first touch of ON POC ({on_poc_s}). '
+                        f'Sellers must hold this level as resistance. '
+                        f'A second close at or above ON POC confirms breakdown.')
+                guidance = (f'No new shorts. Reduce existing shorts by 50%. '
+                            f'One more close above ON POC ({on_poc_s}) = full signal invalidated.')
+                watch = {'price': on_poc, 'label': 'ON POC — first touch', 'significance': 'second close above → invalidated'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f} — at ON POC ({on_poc_s}). '
+                        f'Two consecutive closes at last resistance for the bearish IB signal. '
+                        f'A period close above ON POC invalidates the setup completely.')
+                guidance = f'No new shorts. One close above ON POC ({on_poc_s}) = signal invalidated.'
+                watch = {'price': on_poc, 'label': 'ON POC — critical', 'significance': 'close above → invalidated'}
+
+        else:  # INVALIDATED
             pts_above = round(last_close - on_poc, 2)
-            read    = (f'{period_label} closed at {last_close:.2f}, {pts_above} pts above ON POC ({on_poc_s}). '
-                       f'Bearish IB signal invalidated. Overnight buyers reasserted control — '
-                       f'ON POC is now support. The IB excess was rejected.')
-            guidance = (f'Reverse plan. Buy dips to ON POC ({on_poc_s}) — now support. '
-                        f'Target overnight VAH ({on_vah_s}).')
-            watch   = {'price': on_poc, 'label': 'ON POC — now support', 'significance': 'close below → re-evaluate'}
+            if first_warning:
+                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_above} pts above ON POC ({on_poc_s}) — '
+                        f'first close above the last line of defence. '
+                        f'One more period here confirms full invalidation.')
+                guidance = (f'Exit shorts or cut to minimum size. '
+                            f'If next period also closes above ON POC, reverse plan: buy dips to ON POC.')
+                watch = {'price': on_poc, 'label': 'ON POC — broken', 'significance': 'second close above → fully invalidated'}
+            else:
+                read = (f'{period_label} closed at {last_close:.2f}, {pts_above} pts above ON POC ({on_poc_s}). '
+                        f'Bearish IB signal invalidated — two consecutive closes above ON POC. '
+                        f'Overnight buyers reasserted control; ON POC is now support.')
+                guidance = (f'Reverse plan. Buy dips to ON POC ({on_poc_s}) — now support. '
+                            f'Target overnight VAH ({on_vah_s}).')
+                watch = {'price': on_poc, 'label': 'ON POC — now support', 'significance': 'close below → re-evaluate'}
 
     else:
         # NEUTRAL / OA day
         if on_high and on_low and on_poc:
-            if last_close > on_high + straddle_t:
-                status  = 'CONFIRMED'
+            if curr_zone == 'CONFIRMED' and last_close > on_high:
                 read    = (f'{period_label} closed at {last_close:.2f}, above ONH ({on_high_s}). '
                            f'OA resolved bullish — buyers broke above the overnight range.')
                 guidance = f'Buy pullbacks to ONH ({on_high_s}) now support.'
                 watch   = {'price': on_high, 'label': 'ONH — now support', 'significance': 'close below → OA resumes'}
-            elif last_close < on_low - straddle_t:
-                status  = 'CONFIRMED'
+            elif curr_zone == 'CONFIRMED' and last_close < on_low:
                 read    = (f'{period_label} closed at {last_close:.2f}, below ONL ({on_low_s}). '
                            f'OA resolved bearish — sellers broke below the overnight range.')
                 guidance = f'Sell rallies to ONL ({on_low_s}) now resistance.'
@@ -6668,13 +6822,14 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
             return _building
 
     return {
-        'active':       True,
-        'status':       status,
-        'last_period':  last_letter,
-        'last_close':   last_close,
-        'current_read': read,
+        'active':        True,
+        'status':        status,
+        'last_period':   last_letter,
+        'last_close':    last_close,
+        'current_read':  read,
         'live_guidance': guidance,
-        'watch_level':  watch,
+        'watch_level':   watch,
+        'first_warning': first_warning,   # frontend can show subtle indicator
     }
 
 
