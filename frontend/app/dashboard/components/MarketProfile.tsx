@@ -366,26 +366,6 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
         })()}
       </svg>
 
-      {/* Legend */}
-      <div style={{ display: 'flex', gap: '14px', marginTop: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
-        {[
-          { color: '#60a5fa',  label: 'A–B  Initial Balance' },
-          { color: '#4ade80',  label: 'E–F  Morning' },
-          { color: '#fbbf24',  label: 'G–H  Midday' },
-          { color: '#f87171',  label: 'K–M  Close' },
-          { color: '#a78bfa',  label: '■ POC (purple)' },
-          { color: '#4ade80',  label: '■ Above POC — VAH zone' },
-          { color: '#f87171',  label: '■ Below POC — VAL zone' },
-          { color: '#fb923c',  label: 'IBH / IBL' },
-          { color: '#f87171',  label: 'Single print (1 period)' },
-        ].map(({ color, label }) => (
-          <span key={label} style={{ display: 'flex', alignItems: 'center', gap: '5px',
-            fontSize: '9px', color: 'var(--text-dim)' }}>
-            <span style={{ width: 8, height: 8, background: color, borderRadius: 2, display: 'inline-block' }} />
-            {label}
-          </span>
-        ))}
-      </div>
     </div>
   )
 }
@@ -892,6 +872,37 @@ export default function MarketProfile() {
                 </div>
               </div>
             )}
+
+            {/* Legend */}
+            <div style={{ padding: '14px 16px', background: 'var(--bg-panel)',
+              border: '1px solid var(--border)', borderRadius: '10px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+                textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+                Chart Legend
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {[
+                  { color: '#60a5fa', label: 'A – B',   note: 'Initial Balance (first hour)' },
+                  { color: '#4ade80', label: 'C – F',   note: 'Morning session' },
+                  { color: '#fbbf24', label: 'G – H',   note: 'Midday / lunch' },
+                  { color: '#fb923c', label: 'I – J',   note: 'Afternoon' },
+                  { color: '#f87171', label: 'K – M',   note: 'Late / closing' },
+                  { color: '#a78bfa', label: '■ Purple', note: 'POC row' },
+                  { color: '#4ade80', label: '■ Green',  note: 'Above POC — VAH zone' },
+                  { color: '#f87171', label: '■ Red',    note: 'Below POC — VAL zone' },
+                  { color: '#fb923c', label: 'IBH / IBL', note: 'Initial Balance extremes' },
+                  { color: '#f87171', label: '1 letter',  note: 'Single print — poor structure' },
+                ].map(({ color, label, note }) => (
+                  <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ width: 8, height: 8, background: color, borderRadius: 2,
+                      display: 'inline-block', flexShrink: 0 }} />
+                    <span style={{ fontSize: '11px', fontWeight: 600, color,
+                      minWidth: '52px', fontFamily: "'SF Mono', monospace" }}>{label}</span>
+                    <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{note}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
 
           </div>
         </div>
