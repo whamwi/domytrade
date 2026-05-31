@@ -58,8 +58,9 @@ interface SignalData {
   model:          string
   entry:          number
   stop:           number
-  target:         number
-  l1:             number
+  t1:             number   // 1:1 R/R target (T1)
+  target:         number   // T2 statistical target
+  l1:             number   // raw distance in pts — NOT an absolute price
   l2:             number
   l3:             number
   l4:             number
@@ -204,24 +205,25 @@ function TechnicalsChart({
 }) {
   if (!signals.length) return null
 
-  // ── Build level list ──────────────────────────────────────────────────────
+  // Only draw the selected model (or first if none chosen)
+  const displayModel = activeModel ?? signals[0]?.model
+  const activeSigs   = signals.filter(s => s.model === displayModel)
+
+  // ── Build level list (entry / stop / T1 / T2 — all absolute prices) ──────
   type Lvl = {
     price: number; label: string; color: string
     dash: string; sw: number; model: string; role: string
   }
   const lvls: Lvl[] = []
 
-  for (const sig of signals) {
-    const mc   = modelColor(sig.model)
-    const bold = !activeModel || activeModel === sig.model
-    const sw   = bold ? 1.6 : 0.8
-    const op   = bold ? '' : '80'   // hex opacity suffix for inactive
-
-    if (sig.entry  > 0) lvls.push({ price: sig.entry,  label: `${sig.model} Entry`,  color: mc + (bold ? '' : '70'),  dash: '',      sw,       model: sig.model, role: 'entry'  })
-    if (sig.stop   > 0) lvls.push({ price: sig.stop,   label: `${sig.model} Stop`,   color: '#f87171' + (bold ? '' : '70'), dash: '5 3',   sw: sw*0.8, model: sig.model, role: 'stop'   })
-    if (sig.target > 0) lvls.push({ price: sig.target, label: `${sig.model} Target`, color: '#4ade80' + (bold ? '' : '70'), dash: '5 3',   sw: sw*0.8, model: sig.model, role: 'target' })
-    if (sig.l1     > 0) lvls.push({ price: sig.l1,     label: `${sig.model} L1`,     color: mc + '60',                    dash: '2 4',   sw: 0.7,    model: sig.model, role: 'l1'     })
-    if (sig.l2     > 0) lvls.push({ price: sig.l2,     label: `${sig.model} L2`,     color: mc + '60',                    dash: '2 4',   sw: 0.7,    model: sig.model, role: 'l2'     })
+  for (const sig of activeSigs) {
+    const mc = modelColor(sig.model)
+    // entry, stop, t1, target are real absolute price levels from the backend
+    if (sig.entry  > 0) lvls.push({ price: sig.entry,  label: 'Entry', color: mc,        dash: '',    sw: 2.0, model: sig.model, role: 'entry'  })
+    if (sig.stop   > 0) lvls.push({ price: sig.stop,   label: 'Stop',  color: '#f87171', dash: '5 3', sw: 1.4, model: sig.model, role: 'stop'   })
+    if (sig.t1     > 0) lvls.push({ price: sig.t1,     label: 'T1',    color: '#86efac', dash: '4 3', sw: 1.0, model: sig.model, role: 't1'     })
+    if (sig.target > 0) lvls.push({ price: sig.target, label: 'T2',    color: '#4ade80', dash: '5 3', sw: 1.4, model: sig.model, role: 'target' })
+    // Note: l1/l2/l3/l4 are raw statistical distances (pts), NOT absolute prices — do not plot
   }
 
   // S/R from backend — top 3 each side
@@ -815,26 +817,33 @@ export default function StockInfoPanel({
                     />
 
                     {/* ── Stats table for selected model ── */}
-                    {activeSig && (
-                      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 4, fontSize: 12 }}>
-                        <tbody>
-                          {[
-                            { label: 'Entry',         val: `$${activeSig.entry  >= 100 ? activeSig.entry .toFixed(2) : activeSig.entry .toFixed(3)}`, color: modelColor(activeSig.model) },
-                            { label: 'Stop',          val: `$${activeSig.stop   >= 100 ? activeSig.stop  .toFixed(2) : activeSig.stop  .toFixed(3)}`, color: '#f87171' },
-                            { label: 'Target',        val: `$${activeSig.target >= 100 ? activeSig.target.toFixed(2) : activeSig.target.toFixed(3)}`, color: '#4ade80' },
-                            { label: 'Risk / Reward', val: activeSig.entry && activeSig.stop && activeSig.target
-                                ? `1 : ${Math.abs((activeSig.target - activeSig.entry) / (activeSig.entry - activeSig.stop)).toFixed(1)}`
-                                : '—', color: undefined },
-                            { label: 'Daily Swing',   val: `${activeSig.swing_pct >= 0 ? '+' : ''}${activeSig.swing_pct.toFixed(1)}% of ${activeSig.typical_range.toFixed(2)}`, color: undefined },
-                          ].map(r => (
-                            <tr key={r.label} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                              <td style={{ padding: '6px 0', color: '#64748b', fontSize: 11 }}>{r.label}</td>
-                              <td style={{ padding: '6px 0', textAlign: 'right', fontWeight: 600, fontSize: 12, color: r.color || '#e2e8f0' }}>{r.val}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
+                    {activeSig && (() => {
+                      const fmtPx = (p: number) => `$${p >= 100 ? p.toFixed(2) : p.toFixed(3)}`
+                      const risk  = Math.abs(activeSig.entry - activeSig.stop)
+                      const rwT1  = activeSig.t1 > 0 && risk > 0 ? Math.abs(activeSig.t1  - activeSig.entry) / risk : null
+                      const rwT2  = activeSig.target > 0 && risk > 0 ? Math.abs(activeSig.target - activeSig.entry) / risk : null
+                      const rows = [
+                        { label: 'Entry',      val: fmtPx(activeSig.entry),  color: modelColor(activeSig.model) },
+                        { label: 'Stop',       val: fmtPx(activeSig.stop),   color: '#f87171' },
+                        { label: 'T1 (1:1)',   val: activeSig.t1 > 0 ? fmtPx(activeSig.t1) : '—', color: '#86efac' },
+                        { label: 'T2 target',  val: activeSig.target > 0 ? fmtPx(activeSig.target) : '—', color: '#4ade80' },
+                        { label: 'R/R to T1',  val: rwT1 != null ? `1 : ${rwT1.toFixed(1)}` : '—', color: undefined },
+                        { label: 'R/R to T2',  val: rwT2 != null ? `1 : ${rwT2.toFixed(1)}` : '—', color: undefined },
+                        { label: 'Daily Swing', val: `${activeSig.swing_pct >= 0 ? '+' : ''}${activeSig.swing_pct.toFixed(1)}% of ${activeSig.typical_range.toFixed(2)} pts`, color: undefined },
+                      ]
+                      return (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 4, fontSize: 12 }}>
+                          <tbody>
+                            {rows.map(r => (
+                              <tr key={r.label} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                                <td style={{ padding: '6px 0', color: '#64748b', fontSize: 11 }}>{r.label}</td>
+                                <td style={{ padding: '6px 0', textAlign: 'right', fontWeight: 600, fontSize: 12, color: r.color || '#e2e8f0' }}>{r.val}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )
+                    })()}
                   </>
                 ) : (
                   <div style={{ color: '#475569', fontSize: 12, textAlign: 'center', padding: '32px 0' }}>
