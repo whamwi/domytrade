@@ -6277,14 +6277,16 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                 key_levels.append({'level': on_high, 'label': 'ONH → Support (confirmed)', 'role': 'support', 'color': 'green'})
             else:
                 # B closed back inside the overnight range — probe only, conviction absent.
+                # Overnight sellers held their ground → reverts to two-sided OA context.
                 bias_score += 1
-                signals.append({'type': 'BULLISH', 'signal': 'IB probed above ONH — B closed back inside (OA)',
+                signals.append({'type': 'NEUTRAL', 'signal': 'IB probed above ONH — B closed back inside (OA)',
                     'detail': (f'IB High ({ib_high:.2f}) extended {round(ib_high - on_high, 2)} pts above '
                                f'ONH ({on_high:.2f}), but B period closed at '
                                f'{f"{b_close:.2f}" if b_close is not None else "n/a"} — back inside the overnight range. '
-                               f'The probe was rejected; overnight traders held their ground. '
-                               f'Watch C period: a close above ONH ({on_high:.2f}) confirms belated acceptance. '
-                               f'Until then, fade ONH and buy overnight VAL ({val_s}).')})
+                               f'The probe was rejected: overnight sellers held their high. '
+                               f'Overnight traders are still in control — treat as two-sided OA: '
+                               f'buy overnight VAL ({val_s}), sell overnight VAH ({vah_s}). '
+                               f'Watch C period: a close above ONH ({on_high:.2f}) would confirm belated acceptance.')})
                 key_levels.append({'level': on_high, 'label': 'ONH — watch for C close above', 'role': 'pivot', 'color': 'amber'})
         else:
             # Open already above ONH → clean directional excess, no ambiguity.
@@ -6312,14 +6314,16 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                 key_levels.append({'level': on_low, 'label': 'ONL → Resistance (confirmed)', 'role': 'resistance', 'color': 'red'})
             else:
                 # B closed back inside — probe only.
+                # Overnight buyers held their ground → reverts to two-sided OA context.
                 bias_score -= 1
-                signals.append({'type': 'BEARISH', 'signal': 'IB probed below ONL — B closed back inside (OA)',
+                signals.append({'type': 'NEUTRAL', 'signal': 'IB probed below ONL — B closed back inside (OA)',
                     'detail': (f'IB Low ({ib_low:.2f}) dropped {round(on_low - ib_low, 2)} pts below '
                                f'ONL ({on_low:.2f}), but B period closed at '
                                f'{f"{b_close:.2f}" if b_close is not None else "n/a"} — back inside the overnight range. '
-                               f'The probe was rejected; overnight traders held their ground. '
-                               f'Watch C period: a close below ONL ({on_low:.2f}) confirms belated acceptance. '
-                               f'Until then, buy ONL and sell overnight VAH ({vah_s}).')})
+                               f'The probe was rejected: overnight buyers held their low. '
+                               f'Overnight traders are still in control — treat as two-sided OA: '
+                               f'buy overnight VAL ({val_s}), sell overnight VAH ({vah_s}). '
+                               f'Watch C period: a close below ONL ({on_low:.2f}) would confirm belated acceptance.')})
                 key_levels.append({'level': on_low, 'label': 'ONL — watch for C close below', 'role': 'pivot', 'color': 'amber'})
         else:
             bias_score -= 2
