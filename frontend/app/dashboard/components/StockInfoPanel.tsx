@@ -250,17 +250,22 @@ function TechnicalsChart({
   // Sort by Y descending (top = high price)
   const sorted = [...lvls].sort((a, b) => b.price - a.price)
 
-  // Label collision avoidance — push labels apart with min 13px gap
-  const MIN_GAP = 13
+  // Label collision avoidance — anchor bottom label, spread upward
+  const MIN_GAP = 14
   const rawY  = sorted.map(l => yOf(l.price))
-  const labelY: number[] = []
-  for (let i = 0; i < rawY.length; i++) {
-    let y = rawY[i]
-    for (let j = i - 1; j >= 0; j--) {
-      if (labelY[j] - y < MIN_GAP) y = labelY[j] - MIN_GAP
-      else break
+  let labelY  = rawY.map(y => Math.max(8, Math.min(VH - 4, y)))
+
+  // Pass 1 — bottom to top: when label above is too close to the one below, push it up
+  for (let i = labelY.length - 2; i >= 0; i--) {
+    if (labelY[i + 1] - labelY[i] < MIN_GAP) {
+      labelY[i] = Math.max(8, labelY[i + 1] - MIN_GAP)
     }
-    labelY.push(Math.max(8, Math.min(VH - 4, y)))
+  }
+  // Pass 2 — top to bottom: if top-clamping caused overlap, push down to recover
+  for (let i = 1; i < labelY.length; i++) {
+    if (labelY[i] - labelY[i - 1] < MIN_GAP) {
+      labelY[i] = Math.min(VH - 4, labelY[i - 1] + MIN_GAP)
+    }
   }
 
   const lastY = yOf(last)
