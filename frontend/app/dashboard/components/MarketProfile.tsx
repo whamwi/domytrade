@@ -9,7 +9,7 @@ const SYMBOLS = ['/ES', '/NQ', '/YM', '/RTY', '/GC', '/CL', '/SI', '/NG', '/HG',
 
 // ── RTH TPO letter colours – warm progression through the day ────────────────
 const LETTER_COLOR: Record<string, string> = {
-  A: '#60a5fa', B: '#60a5fa',  // blue  — Initial Balance
+  A: '#ffffff', B: '#ffffff',  // WHITE — Initial Balance (distinct key reference)
   C: '#22d3ee', D: '#22d3ee',  // cyan
   E: '#4ade80', F: '#4ade80',  // green
   G: '#fbbf24', H: '#fbbf24',  // amber — midday
@@ -72,18 +72,32 @@ interface Overnight {
 interface Opening   { type: string; label: string; description: string; inside_prior_va: boolean | null; vs_prior_vah?: number; vs_prior_val?: number; vs_prior_poc?: number }
 interface DayType   { type: string; label: string; description: string; ib_range?: number; ext_up?: number; ext_down?: number; ib_ratio?: number }
 interface Rule80    { triggered: boolean; direction?: string; target?: number; already_hit?: boolean; label?: string; description: string }
+interface IBSignalItem { type: string; signal: string; detail: string }
+interface IBKeyLevel   { level: number; label: string; role: string; color: string }
+interface IBSignals {
+  ready:         boolean
+  bias?:         string
+  bias_label?:   string
+  signals?:      IBSignalItem[]
+  key_levels?:   IBKeyLevel[]
+  day_context?:  string
+  trade_plan?:   string
+  description?:  string
+}
 interface MPData {
-  symbol:          string
-  tick:            number
-  computed_at:     string
-  current_price:   number | null
-  today:           SessionProfile
-  prior_rth:       SessionProfile
-  prior_overnight: Overnight
-  overnight:       Overnight
-  opening:         Opening
-  day_type:        DayType
-  rule_80:         Rule80
+  symbol:           string
+  tick:             number
+  computed_at:      string
+  current_price:    number | null
+  today:            SessionProfile
+  prior_rth:        SessionProfile
+  prior_overnight:  Overnight
+  overnight:        Overnight
+  opening:          Opening
+  day_type:         DayType
+  rule_80:          Rule80
+  ib_signals:       IBSignals
+  prior_ib_signals: IBSignals
 }
 
 // ── Opening type badge config ─────────────────────────────────────────────────
@@ -678,6 +692,132 @@ function HelpModal({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ── IB Signal bias colours ────────────────────────────────────────────────────
+const BIAS_CFG: Record<string, { bg: string; color: string; border: string; icon: string }> = {
+  BULLISH:      { bg: 'rgba(74,222,128,0.12)',  color: '#4ade80', border: 'rgba(74,222,128,0.3)',  icon: '▲' },
+  BULLISH_LEAN: { bg: 'rgba(74,222,128,0.07)',  color: '#86efac', border: 'rgba(74,222,128,0.2)',  icon: '↑' },
+  BEARISH:      { bg: 'rgba(248,113,113,0.12)', color: '#f87171', border: 'rgba(248,113,113,0.3)', icon: '▼' },
+  BEARISH_LEAN: { bg: 'rgba(248,113,113,0.07)', color: '#fca5a5', border: 'rgba(248,113,113,0.2)', icon: '↓' },
+  NEUTRAL:      { bg: 'rgba(251,191,36,0.10)',  color: '#fbbf24', border: 'rgba(251,191,36,0.25)', icon: '↔' },
+}
+const SIGNAL_CFG: Record<string, { color: string; dot: string }> = {
+  BULLISH:  { color: '#4ade80', dot: '#4ade80' },
+  BEARISH:  { color: '#f87171', dot: '#f87171' },
+  CAUTION:  { color: '#fbbf24', dot: '#fbbf24' },
+  NEUTRAL:  { color: '#94a3b8', dot: '#94a3b8' },
+}
+
+function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
+  const [open, setOpen] = useState(true)
+  if (!signals.ready) {
+    return (
+      <div style={{ padding: '12px 16px', background: 'var(--bg-panel)',
+        border: '1px solid var(--border)', borderRadius: '10px' }}>
+        <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+          textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>{title}</div>
+        <p style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{signals.description}</p>
+      </div>
+    )
+  }
+
+  const bias = signals.bias ?? 'NEUTRAL'
+  const bcfg = BIAS_CFG[bias] ?? BIAS_CFG.NEUTRAL
+
+  return (
+    <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)',
+      borderRadius: '10px', overflow: 'hidden' }}>
+      {/* Header — click to collapse */}
+      <button onClick={() => setOpen(o => !o)}
+        style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none',
+          cursor: 'pointer', display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between' }}>
+        <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+          textTransform: 'uppercase', letterSpacing: '0.08em' }}>{title}</span>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: bcfg.color,
+          background: bcfg.bg, border: `1px solid ${bcfg.border}`,
+          borderRadius: '5px', padding: '2px 10px' }}>
+          {bcfg.icon} {signals.bias_label}
+        </span>
+      </button>
+
+      {open && (
+        <div style={{ padding: '0 16px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+
+          {/* Signal items */}
+          {signals.signals?.map((s, i) => {
+            const sc = SIGNAL_CFG[s.type] ?? SIGNAL_CFG.NEUTRAL
+            return (
+              <div key={i} style={{ paddingLeft: '10px',
+                borderLeft: `2px solid ${sc.dot}` }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: sc.color,
+                  marginBottom: '2px' }}>{s.signal}</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                  {s.detail}
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Trade plan */}
+          {signals.trade_plan && (
+            <div style={{ padding: '8px 10px', background: `${bcfg.color}0d`,
+              border: `1px solid ${bcfg.border}`, borderRadius: '7px' }}>
+              <div style={{ fontSize: '9px', fontWeight: 700, color: bcfg.color,
+                textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
+                Trade Plan
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                {signals.trade_plan}
+              </div>
+            </div>
+          )}
+
+          {/* Day context */}
+          {signals.day_context && (
+            <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.4,
+              fontStyle: 'italic' }}>
+              {signals.day_context}
+            </div>
+          )}
+
+          {/* Key levels */}
+          {signals.key_levels && signals.key_levels.length > 0 && (
+            <div>
+              <div style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)',
+                textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>
+                Key Levels
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                {signals.key_levels.map((kl, i) => {
+                  const lc = kl.color === 'green'  ? '#4ade80'
+                           : kl.color === 'red'    ? '#f87171'
+                           : kl.color === 'cyan'   ? '#22d3ee'
+                           : kl.color === 'purple' ? '#a78bfa'
+                           : kl.color === 'amber'  ? '#fbbf24'
+                           : '#94a3b8'
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'center', padding: '3px 0',
+                      borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                      <span style={{ fontSize: '10px', color: lc, fontWeight: 600 }}>
+                        {kl.label}
+                      </span>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: lc,
+                        fontFamily: 'monospace' }}>
+                        {kl.level.toFixed(2)}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function MarketProfile() {
   const [symbol,   setSymbol]   = useState('/ES')
   const [data,     setData]     = useState<MPData | null>(null)
@@ -1014,6 +1154,16 @@ export default function MarketProfile() {
               )}
             </InfoCard>
 
+            {/* IB Signals — current session (after B period) */}
+            {data.ib_signals && (
+              <IBAnalysis signals={data.ib_signals} title="IB Analysis — Today" />
+            )}
+
+            {/* IB Signals — prior session (Thu overnight → Fri RTH) */}
+            {data.prior_ib_signals && (
+              <IBAnalysis signals={data.prior_ib_signals} title="IB Analysis — Prior Session" />
+            )}
+
             {/* IB & session stats */}
             <div style={{ padding: '14px 16px', background: 'var(--bg-panel)',
               border: '1px solid var(--border)', borderRadius: '10px' }}>
@@ -1084,7 +1234,7 @@ export default function MarketProfile() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {[
-                  { color: '#60a5fa', label: 'A – B',   note: 'Initial Balance (first hour)' },
+                  { color: '#ffffff', label: 'A – B',   note: 'Initial Balance (first hour)' },
                   { color: '#4ade80', label: 'C – F',   note: 'Morning session' },
                   { color: '#fbbf24', label: 'G – H',   note: 'Midday / lunch' },
                   { color: '#fb923c', label: 'I – J',   note: 'Afternoon' },
