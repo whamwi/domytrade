@@ -6195,40 +6195,76 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     ib_in_on     = (on_high is not None and on_low is not None
                     and ib_high <= on_high + tick and ib_low >= on_low - tick)
 
+    b_close = session_prof.get('period_ranges', {}).get('B', {}).get('close')
+
     if ib_above_onh and not ib_below_onl:
         if open_inside_on:
-            # OA open + IB probe above ONH → buyers showed up but overnight context limits conviction
-            bias_score += 1
-            signals.append({'type': 'BULLISH', 'signal': 'IB probed above ONH — OA open',
-                'detail': (f'IB High ({ib_high:.2f}) extended {ib_high - on_high:.2f} pts above '
-                           f'ONH ({on_high:.2f}), but the open ({open_px:.2f}) was inside the '
-                           f'overnight range — overnight traders were in control at the bell. '
-                           f'A/B acceptance above ONH confirms buyers took over; failure to hold '
-                           f'ONH reverts to two-sided OA (sell VAH {vah_s}, buy VAL {val_s}).')})
-            key_levels.append({'level': on_high, 'label': 'ONH — must hold for bulls', 'role': 'support', 'color': 'green'})
+            # OA open + IB pushed above ONH.
+            # Key question: did B *close* above ONH (acceptance) or back inside (probe)?
+            b_accepted_above_onh = b_close is not None and b_close > on_high + tick
+            if b_accepted_above_onh:
+                # B closed above ONH → buyers proved themselves despite OA open context.
+                # Treat as confirmed excess: same weight as a directional open.
+                bias_score += 2
+                excess_pts = round(b_close - on_high, 2)
+                signals.append({'type': 'BULLISH', 'signal': 'IB accepted above ONH — OA open confirmed',
+                    'detail': (f'Open ({open_px:.2f}) was inside the overnight range (OA), but '
+                               f'buyers pushed the IB High to {ib_high:.2f} and — critically — B period '
+                               f'closed at {b_close:.2f}, {excess_pts} pts above ONH ({on_high:.2f}). '
+                               f'Acceptance is confirmed: overnight sellers could not hold their high. '
+                               f'ONH ({on_high:.2f}) is now support — buy pullbacks there. '
+                               f'Stop below ON POC ({on_poc_s}).')})
+                key_levels.append({'level': on_high, 'label': 'ONH → Support (confirmed)', 'role': 'support', 'color': 'green'})
+            else:
+                # B closed back inside the overnight range — probe only, conviction absent.
+                bias_score += 1
+                signals.append({'type': 'BULLISH', 'signal': 'IB probed above ONH — B closed back inside (OA)',
+                    'detail': (f'IB High ({ib_high:.2f}) extended {round(ib_high - on_high, 2)} pts above '
+                               f'ONH ({on_high:.2f}), but B period closed at '
+                               f'{f"{b_close:.2f}" if b_close is not None else "n/a"} — back inside the overnight range. '
+                               f'The probe was rejected; overnight traders held their ground. '
+                               f'Watch C period: a close above ONH ({on_high:.2f}) confirms belated acceptance. '
+                               f'Until then, fade ONH and buy overnight VAL ({val_s}).')})
+                key_levels.append({'level': on_high, 'label': 'ONH — watch for C close above', 'role': 'pivot', 'color': 'amber'})
         else:
-            # Open already above ONH or well-established directional open → full excess
+            # Open already above ONH → clean directional excess, no ambiguity.
             bias_score += 2
             signals.append({'type': 'BULLISH', 'signal': 'IB excess above ONH',
-                'detail': (f'IB High ({ib_high:.2f}) extended {ib_high - on_high:.2f} pts above '
+                'detail': (f'IB High ({ib_high:.2f}) extended {round(ib_high - on_high, 2)} pts above '
                            f'Overnight High ({on_high:.2f}). Day-session buyers rejected overnight sellers. '
                            f'ONH ({on_high:.2f}) flips to first support — buy pullbacks there.')})
             key_levels.append({'level': on_high, 'label': 'ONH → Support', 'role': 'support', 'color': 'green'})
 
     elif ib_below_onl and not ib_above_onh:
         if open_inside_on:
-            bias_score -= 1
-            signals.append({'type': 'BEARISH', 'signal': 'IB probed below ONL — OA open',
-                'detail': (f'IB Low ({ib_low:.2f}) dropped {on_low - ib_low:.2f} pts below '
-                           f'ONL ({on_low:.2f}), but the open ({open_px:.2f}) was inside the '
-                           f'overnight range. A/B acceptance below ONL confirms sellers took over; '
-                           f'failure to hold below ONL reverts to two-sided OA '
-                           f'(buy VAL {val_s}, sell VAH {vah_s}).')})
-            key_levels.append({'level': on_low, 'label': 'ONL — must hold for bears', 'role': 'resistance', 'color': 'red'})
+            b_accepted_below_onl = b_close is not None and b_close < on_low - tick
+            if b_accepted_below_onl:
+                # B closed below ONL → sellers confirmed control from OA open.
+                bias_score -= 2
+                pts_below = round(on_low - b_close, 2)
+                signals.append({'type': 'BEARISH', 'signal': 'IB accepted below ONL — OA open confirmed',
+                    'detail': (f'Open ({open_px:.2f}) was inside the overnight range (OA), but '
+                               f'sellers pushed the IB Low to {ib_low:.2f} and B period '
+                               f'closed at {b_close:.2f}, {pts_below} pts below ONL ({on_low:.2f}). '
+                               f'Acceptance is confirmed: overnight buyers could not hold their low. '
+                               f'ONL ({on_low:.2f}) is now resistance — sell rallies there. '
+                               f'Stop above ON POC ({on_poc_s}).')})
+                key_levels.append({'level': on_low, 'label': 'ONL → Resistance (confirmed)', 'role': 'resistance', 'color': 'red'})
+            else:
+                # B closed back inside — probe only.
+                bias_score -= 1
+                signals.append({'type': 'BEARISH', 'signal': 'IB probed below ONL — B closed back inside (OA)',
+                    'detail': (f'IB Low ({ib_low:.2f}) dropped {round(on_low - ib_low, 2)} pts below '
+                               f'ONL ({on_low:.2f}), but B period closed at '
+                               f'{f"{b_close:.2f}" if b_close is not None else "n/a"} — back inside the overnight range. '
+                               f'The probe was rejected; overnight traders held their ground. '
+                               f'Watch C period: a close below ONL ({on_low:.2f}) confirms belated acceptance. '
+                               f'Until then, buy ONL and sell overnight VAH ({vah_s}).')})
+                key_levels.append({'level': on_low, 'label': 'ONL — watch for C close below', 'role': 'pivot', 'color': 'amber'})
         else:
             bias_score -= 2
             signals.append({'type': 'BEARISH', 'signal': 'IB excess below ONL',
-                'detail': (f'IB Low ({ib_low:.2f}) extended {on_low - ib_low:.2f} pts below '
+                'detail': (f'IB Low ({ib_low:.2f}) extended {round(on_low - ib_low, 2)} pts below '
                            f'Overnight Low ({on_low:.2f}). Day-session sellers rejected overnight buyers. '
                            f'ONL ({on_low:.2f}) flips to first resistance — sell rallies there.')})
             key_levels.append({'level': on_low, 'label': 'ONL → Resistance', 'role': 'resistance', 'color': 'red'})
@@ -6254,7 +6290,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     #   • ON POC acting as support (IB touched it but B closed well above) → bullish
     #   • ON POC acting as resistance (IB touched it but B closed well below) → bearish
     #   • Genuine straddle (B closed near ON POC — true indecision)
-    b_close = session_prof.get('period_ranges', {}).get('B', {}).get('close')
+    # (b_close already defined above)
     straddle_thresh = 3 * tick   # within 3 ticks = genuine indecision
 
     if on_poc is not None:
