@@ -38,7 +38,7 @@ export interface Signal {
   lower_gray: number
   upper_gray: number
   near_gray?: boolean          // legacy — kept for compatibility
-  signal_state?: 'NEAR' | 'ENTRY'
+  signal_state?: 'NEAR' | 'ENTRY' | 'TRENDING'
   entry_alert?: boolean        // true only on NEAR→ENTRY transition
   daily_bias?: 'LONG' | 'SHORT' | null
   last: number
@@ -110,7 +110,7 @@ const COLS = [
   { label: 'LAST',        align: 'right'  },
   { label: 'CHG',         align: 'right'  },
   { label: 'MODEL',       align: 'left'   },  // active signal model
-  { label: 'SCORE',       align: 'center' },  // hour personality: AGG · CON · WIDE
+  { label: 'PROFILE',     align: 'center' },  // hour personality: AGG · CON · WIDE
   { label: 'SIDE',        align: 'left'   },
   { label: 'ALERT',       align: 'left'   },
   { label: 'ENTRY',       align: 'right'  },
@@ -809,9 +809,21 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
         </span>
       </td>
 
-      {/* ALERT — NEAR or ENTRY state */}
+      {/* ALERT — TRENDING / NEAR / ENTRY state */}
       <td className="px-3 py-2.5">
-        {sig.signal_state === 'ENTRY' ? (
+        {sig.signal_state === 'TRENDING' ? (
+          <span
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold tracking-wider"
+            style={{
+              background: sig.side === 'LONG' ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)',
+              color:      sig.side === 'LONG' ? '#4ade80'                : '#f87171',
+              animation: 'pulse 2s infinite',
+            }}
+          >
+            <span style={{ fontSize: 8 }}>●</span>
+            {sig.side === 'LONG' ? 'Buy Dips' : 'Sell Rallies'}
+          </span>
+        ) : sig.signal_state === 'ENTRY' ? (
           <span
             className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
             style={{
@@ -1039,7 +1051,7 @@ export default function SignalTable({ signals, allSymbols, loading, error, onRet
 
   // Backend already delivers ENTRY → NEAR → NEUTRAL, swing_pct desc.
   // Frontend only overrides within the same state tier for sector ETFs (YTD sort).
-  const STATE_RANK: Record<string, number> = { ENTRY: 0, NEAR: 1 }
+  const STATE_RANK: Record<string, number> = { ENTRY: 0, NEAR: 1, TRENDING: 1 }
   const sortedSignals = [...signals].sort((a, b) => {
     const aRank = STATE_RANK[a.signal_state ?? ''] ?? 2
     const bRank = STATE_RANK[b.signal_state ?? ''] ?? 2
