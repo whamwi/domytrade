@@ -6294,7 +6294,8 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             signals.append({'type': 'BULLISH', 'signal': 'IB excess above ONH',
                 'detail': (f'IB High ({ib_high:.2f}) extended {round(ib_high - on_high, 2)} pts above '
                            f'Overnight High ({on_high:.2f}). Day-session buyers rejected overnight sellers. '
-                           f'ONH ({on_high:.2f}) flips to first support — buy pullbacks there.')})
+                           f'ONH ({on_high:.2f}) flips to first support — buy pullbacks there. '
+                           f'Stop below ON POC ({on_poc_s}).')})
             key_levels.append({'level': on_high, 'label': 'ONH → Support', 'role': 'support', 'color': 'green'})
 
     elif ib_below_onl and not ib_above_onh:
@@ -6525,10 +6526,11 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     # ── LONG-only regime ──────────────────────────────────────────────────────
     # Backtest (183 days, Sep 2025 → May 2026) shows SHORT IB signals have
     # no edge in the current bull-trending environment.
-    # When the IB bias is bearish: suppress actionable SHORT guidance,
-    # downgrade BEARISH signal chips to INFO (grey), and override trade plan
-    # to "stand aside."  All context text is preserved for awareness.
-    if bias_score < 0:
+    # Two tiers:
+    #   bias ≤ −2 : confirmed bearish acceptance → full suppression, stand aside
+    #   bias == −1: probe rejected / minor signal → two-sided OA still valid
+    #               buying VAL is a LONG trade; no directional short taken
+    if bias_score <= -2:
         for s in signals:
             if s['type'] in ('BEARISH', 'BEARISH_LEAN'):
                 s['type'] = 'INFO'
@@ -6538,6 +6540,21 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             'SHORT signals are not taken in the current regime (LONG-only). '
             'Bearish IB context noted for awareness — no trade. '
             'Stand aside and wait for a bullish OA + IB acceptance signal.'
+        )
+    elif bias_score == -1:
+        # Probe rejected or minor bearish signal — overnight sellers/buyers held.
+        # Reverts to two-sided OA: buying VAL is valid (LONG trade).
+        # No directional short entries.
+        for s in signals:
+            if s['type'] in ('BEARISH', 'BEARISH_LEAN'):
+                s['type'] = 'INFO'
+        bias       = 'NEUTRAL'
+        bias_label = 'OA Two-Sided'
+        trade_plan = (
+            f'No directional edge (LONG regime — no short entries). '
+            f'Overnight traders still in control: '
+            f'buy overnight VAL ({val_s}), sell overnight VAH ({vah_s}) for range trades. '
+            f'Wait for a decisive close outside the overnight range before committing direction.'
         )
 
     key_levels_out = sorted(key_levels, key=lambda x: x['level'], reverse=True)
