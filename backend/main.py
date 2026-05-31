@@ -5747,6 +5747,8 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
 
     price_letters: dict = defaultdict(set)
     period_ranges: dict = {}
+    open_price: float | None = None
+    open_dt:    int   | None = None
 
     for b in bars:
         dt    = datetime.fromtimestamp(b['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
@@ -5757,6 +5759,10 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
         if not (0 <= period_idx <= 12):
             continue
         letter = chr(ord('A') + period_idx)
+        # Track opening price (first RTH bar chronologically)
+        if open_dt is None or b['datetime'] < open_dt:
+            open_dt    = b['datetime']
+            open_price = b['open']
 
         lo_t = round(round(b['low']  / tick) * tick, 6)
         hi_t = round(round(b['high'] / tick) * tick, 6)
@@ -5775,6 +5781,7 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
         'profile': [], 'poc': None, 'vah': None, 'val': None,
         'single_prints': [], 'ib_high': None, 'ib_low': None, 'ib_range': None,
         'periods': 0, 'period_ranges': {}, 'session_high': None, 'session_low': None,
+        'open_price': None,
     }
     if not price_letters:
         return _empty
@@ -5832,6 +5839,7 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
         'period_ranges': {k: {'high': v['high'], 'low': v['low']} for k, v in period_ranges.items()},
         'session_high':  session_high,
         'session_low':   session_low,
+        'open_price':    round(open_price, 2) if open_price is not None else None,
     }
 
 
@@ -6106,11 +6114,21 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
 
     Reads Thursday overnight → Friday IB (or any ON → RTH pair) and applies Dalton's
     framework to produce a bias, trade plan, and ranked key levels.
+
+    Dalton Open Types incorporated:
+      Open Auction (OA)   — open INSIDE overnight range; overnight traders in control.
+                            Two-sided expected: buy VAL / sell VAH until clear break.
+      Open above ONH      — day-session participants already extended; directional from bell.
+      Open below ONL      — same logic, bearish direction.
+
+    IB excess from an OA open is treated as a "probe" (+1) rather than a confirmed
+    extension (+2). Both signals must align for a high-conviction directional call.
     """
     periods  = session_prof.get('periods', 0)
     ib_high  = session_prof.get('ib_high')
     ib_low   = session_prof.get('ib_low')
     ib_range = session_prof.get('ib_range')
+    open_px  = session_prof.get('open_price')   # first RTH bar open
 
     if periods < 2 or not ib_high or not ib_low:
         return {'ready': False,
@@ -6133,26 +6151,82 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     key_levels: list[dict] = []
     bias_score = 0   # +ve = bullish, -ve = bearish
 
+    # Convenience strings for optional levels
+    vah_s = f'{on_vah:.2f}' if on_vah is not None else 'n/a'
+    val_s = f'{on_val:.2f}' if on_val is not None else 'n/a'
+
+    # ── 0. Opening context vs overnight range ─────────────────────────────────
+    # This is the foundational Dalton Open Type classification.
+    open_inside_on = (open_px is not None and on_low is not None and on_high is not None
+                      and on_low - tick <= open_px <= on_high + tick)
+    open_above_onh = (open_px is not None and on_high is not None
+                      and open_px > on_high + tick)
+    open_below_onl = (open_px is not None and on_low is not None
+                      and open_px < on_low - tick)
+
+    if open_inside_on:
+        signals.append({'type': 'NEUTRAL', 'signal': 'OA open — overnight traders in control',
+            'detail': (f'Open ({open_px:.2f}) was inside the overnight range '
+                       f'({on_low:.2f}–{on_high:.2f}). Overnight traders still positioned — '
+                       f'two-sided auction expected. Buy overnight VAL ({val_s}), '
+                       f'sell overnight VAH ({vah_s}) until a decisive break occurs.')})
+    elif open_above_onh and on_high is not None:
+        bias_score += 1
+        signals.append({'type': 'BULLISH', 'signal': 'Open above overnight range',
+            'detail': (f'Open ({open_px:.2f}) gapped {open_px - on_high:.2f} pts above '
+                       f'ONH ({on_high:.2f}). Day-session participants in control from the open — '
+                       f'directional bullish context established before the IB forms.')})
+    elif open_below_onl and on_low is not None:
+        bias_score -= 1
+        signals.append({'type': 'BEARISH', 'signal': 'Open below overnight range',
+            'detail': (f'Open ({open_px:.2f}) gapped {on_low - open_px:.2f} pts below '
+                       f'ONL ({on_low:.2f}). Day-session sellers in control from the open — '
+                       f'directional bearish context established before the IB forms.')})
+
     # ── 1. IB vs Overnight Range ──────────────────────────────────────────────
     ib_above_onh = on_high is not None and ib_high > on_high + tick
     ib_below_onl = on_low  is not None and ib_low  < on_low  - tick
-    ib_in_on     = on_high is not None and on_low is not None \
-                   and ib_high <= on_high + tick and ib_low >= on_low - tick
+    ib_in_on     = (on_high is not None and on_low is not None
+                    and ib_high <= on_high + tick and ib_low >= on_low - tick)
 
     if ib_above_onh and not ib_below_onl:
-        bias_score += 2
-        signals.append({'type': 'BULLISH', 'signal': 'IB excess above ONH',
-            'detail': (f'IB High ({ib_high:.2f}) extended {ib_high - on_high:.2f} pts above '
-                       f'Overnight High ({on_high:.2f}). Day-session buyers rejected overnight sellers. '
-                       f'ONH ({on_high:.2f}) flips to first support — buy pullbacks there.')})
-        key_levels.append({'level': on_high, 'label': 'ONH → Support', 'role': 'support', 'color': 'green'})
+        if open_inside_on:
+            # OA open + IB probe above ONH → buyers showed up but overnight context limits conviction
+            bias_score += 1
+            signals.append({'type': 'BULLISH', 'signal': 'IB probed above ONH — OA open',
+                'detail': (f'IB High ({ib_high:.2f}) extended {ib_high - on_high:.2f} pts above '
+                           f'ONH ({on_high:.2f}), but the open ({open_px:.2f}) was inside the '
+                           f'overnight range — overnight traders were in control at the bell. '
+                           f'A/B acceptance above ONH confirms buyers took over; failure to hold '
+                           f'ONH reverts to two-sided OA (sell VAH {vah_s}, buy VAL {val_s}).')})
+            key_levels.append({'level': on_high, 'label': 'ONH — must hold for bulls', 'role': 'support', 'color': 'green'})
+        else:
+            # Open already above ONH or well-established directional open → full excess
+            bias_score += 2
+            signals.append({'type': 'BULLISH', 'signal': 'IB excess above ONH',
+                'detail': (f'IB High ({ib_high:.2f}) extended {ib_high - on_high:.2f} pts above '
+                           f'Overnight High ({on_high:.2f}). Day-session buyers rejected overnight sellers. '
+                           f'ONH ({on_high:.2f}) flips to first support — buy pullbacks there.')})
+            key_levels.append({'level': on_high, 'label': 'ONH → Support', 'role': 'support', 'color': 'green'})
+
     elif ib_below_onl and not ib_above_onh:
-        bias_score -= 2
-        signals.append({'type': 'BEARISH', 'signal': 'IB excess below ONL',
-            'detail': (f'IB Low ({ib_low:.2f}) extended {on_low - ib_low:.2f} pts below '
-                       f'Overnight Low ({on_low:.2f}). Day-session sellers rejected overnight buyers. '
-                       f'ONL ({on_low:.2f}) flips to first resistance — sell rallies there.')})
-        key_levels.append({'level': on_low, 'label': 'ONL → Resistance', 'role': 'resistance', 'color': 'red'})
+        if open_inside_on:
+            bias_score -= 1
+            signals.append({'type': 'BEARISH', 'signal': 'IB probed below ONL — OA open',
+                'detail': (f'IB Low ({ib_low:.2f}) dropped {on_low - ib_low:.2f} pts below '
+                           f'ONL ({on_low:.2f}), but the open ({open_px:.2f}) was inside the '
+                           f'overnight range. A/B acceptance below ONL confirms sellers took over; '
+                           f'failure to hold below ONL reverts to two-sided OA '
+                           f'(buy VAL {val_s}, sell VAH {vah_s}).')})
+            key_levels.append({'level': on_low, 'label': 'ONL — must hold for bears', 'role': 'resistance', 'color': 'red'})
+        else:
+            bias_score -= 2
+            signals.append({'type': 'BEARISH', 'signal': 'IB excess below ONL',
+                'detail': (f'IB Low ({ib_low:.2f}) extended {on_low - ib_low:.2f} pts below '
+                           f'Overnight Low ({on_low:.2f}). Day-session sellers rejected overnight buyers. '
+                           f'ONL ({on_low:.2f}) flips to first resistance — sell rallies there.')})
+            key_levels.append({'level': on_low, 'label': 'ONL → Resistance', 'role': 'resistance', 'color': 'red'})
+
     elif ib_above_onh and ib_below_onl:
         signals.append({'type': 'NEUTRAL', 'signal': 'IB contains entire overnight range',
             'detail': (f'IB ({ib_low:.2f}–{ib_high:.2f}) absorbed the full overnight range '
@@ -6160,11 +6234,12 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                        f'Neutral day likely — rotate within IB until a late close outside.')})
         key_levels.append({'level': on_high, 'label': 'ONH',  'role': 'pivot', 'color': 'amber'})
         key_levels.append({'level': on_low,  'label': 'ONL',  'role': 'pivot', 'color': 'amber'})
+
     elif ib_in_on:
         signals.append({'type': 'NEUTRAL', 'signal': 'IB contained within overnight range',
             'detail': (f'IB ({ib_low:.2f}–{ib_high:.2f}) stays inside the overnight range '
                        f'({on_low:.2f}–{on_high:.2f}). RTH accepting overnight prices — rotational day. '
-                       f'Sell near ONH, buy near ONL until a clear breakout.')})
+                       f'Sell near ONH ({on_high:.2f}), buy near ONL ({on_low:.2f}) until a clear breakout.')})
         key_levels.append({'level': on_high, 'label': 'ONH Target ↑', 'role': 'target_up',   'color': 'cyan'})
         key_levels.append({'level': on_low,  'label': 'ONL Target ↓', 'role': 'target_down', 'color': 'cyan'})
 
@@ -6187,7 +6262,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
         else:
             signals.append({'type': 'NEUTRAL', 'signal': 'IB straddles overnight POC',
                 'detail': (f'Overnight POC ({on_poc:.2f}) sits inside the IB — neither side winning value. '
-                           f'Wait for a decisive A/B close above or below ON POC before committing.')})
+                           f'Wait for a decisive close above or below ON POC before committing.')})
 
     # ── 3. Overnight inventory alignment ─────────────────────────────────────
     ON_LETTERS = list('abcdefghijklmnopqrstuvwxyz') + ['1', '2', '3', '4', '5']
@@ -6198,7 +6273,6 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
         on_mid_open  = (fr['high'] + fr['low']) / 2
         on_mid_close = (lr['high'] + lr['low']) / 2
         on_bullish   = on_mid_close > on_mid_open
-        inv_word     = 'bullish' if on_bullish else 'bearish'
         if on_bullish and on_poc and ib_low > on_poc:
             bias_score += 1
             signals.append({'type': 'BULLISH', 'signal': 'Overnight inventory aligned bullish',
@@ -6249,34 +6323,59 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                            f'Bias determined by IB location vs overnight POC.')
 
     # ── 6. Trade plan ──────────────────────────────────────────────────────────
+    onh_s = f'{on_high:.2f}' if on_high is not None else 'ONH'
+    onl_s = f'{on_low:.2f}'  if on_low  is not None else 'ONL'
+    poc_s = f'{on_poc:.2f}'  if on_poc  is not None else 'ON POC'
+
     if bias_score >= 2:
         bias = 'BULLISH'; bias_label = 'Bullish'
-        trade_plan = (f'Buy pullbacks to ONH ({on_high:.2f})' if on_high else 'Buy dips')
+        trade_plan = f'Buy pullbacks to ONH ({onh_s})'
         if on_poc and ib_low > on_poc:
-            trade_plan += f' and ON POC ({on_poc:.2f}). '
+            trade_plan += f' and ON POC ({poc_s}). '
         else:
             trade_plan += '. '
         if p_vah:
             trade_plan += f'Target Prior VAH {p_vah:.2f}. Do not short against the trend.'
     elif bias_score <= -2:
         bias = 'BEARISH'; bias_label = 'Bearish'
-        trade_plan = (f'Sell rallies to ONL ({on_low:.2f})' if on_low else 'Sell rallies')
+        trade_plan = f'Sell rallies to ONL ({onl_s})'
         if on_poc and ib_high < on_poc:
-            trade_plan += f' and ON POC ({on_poc:.2f}). '
+            trade_plan += f' and ON POC ({poc_s}). '
         else:
             trade_plan += '. '
         if p_val:
             trade_plan += f'Target Prior VAL {p_val:.2f}. Do not buy against the trend.'
     elif bias_score == 1:
         bias = 'BULLISH_LEAN'; bias_label = 'Bullish Lean'
-        trade_plan = 'Slight bullish edge but no excess — await confirmation. Look for failure below IB Low as invalidation.'
+        if open_inside_on and ib_above_onh:
+            trade_plan = (f'OA open with bullish IB probe above ONH ({onh_s}). '
+                          f'If price accepts and holds above ONH, buy pullbacks targeting '
+                          f'overnight VAH ({vah_s}) and beyond. '
+                          f'If ONH fails, two-sided OA: sell overnight VAH ({vah_s}), '
+                          f'buy overnight VAL ({val_s}).')
+        else:
+            trade_plan = (f'Slight bullish edge — await confirmation. '
+                          f'Buy IB Low ({ib_low:.2f}) on tests; look for failure to hold below as invalidation.')
     elif bias_score == -1:
         bias = 'BEARISH_LEAN'; bias_label = 'Bearish Lean'
-        trade_plan = 'Slight bearish edge but no excess — await confirmation. Look for failure above IB High as invalidation.'
+        if open_inside_on and ib_below_onl:
+            trade_plan = (f'OA open with bearish IB probe below ONL ({onl_s}). '
+                          f'If price accepts and holds below ONL, sell rallies targeting '
+                          f'overnight VAL ({val_s}) and beyond. '
+                          f'If ONL holds, two-sided OA: buy overnight VAL ({val_s}), '
+                          f'sell overnight VAH ({vah_s}).')
+        else:
+            trade_plan = (f'Slight bearish edge — await confirmation. '
+                          f'Sell IB High ({ib_high:.2f}) on tests; look for failure to hold above as invalidation.')
     else:
         bias = 'NEUTRAL'; bias_label = 'Neutral'
-        trade_plan = (f'No directional edge. Buy IB Low ({ib_low:.2f}), sell IB High ({ib_high:.2f}). '
-                      f'Late-session close outside IB sets tomorrow\'s opening bias.')
+        if open_inside_on and ib_in_on:
+            trade_plan = (f'Classic OA day — overnight traders in control. '
+                          f'Buy overnight VAL ({val_s}), sell overnight VAH ({vah_s}). '
+                          f'Watch for decisive break of the overnight range to set directional bias.')
+        else:
+            trade_plan = (f'No directional edge. Buy IB Low ({ib_low:.2f}), sell IB High ({ib_high:.2f}). '
+                          f'Late-session close outside IB sets tomorrow\'s opening bias.')
 
     key_levels_out = sorted(key_levels, key=lambda x: x['level'], reverse=True)
 
