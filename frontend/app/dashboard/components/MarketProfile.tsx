@@ -417,26 +417,34 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
               {/* Prior RTH letters — per-letter so A & B render white */}
               {priorRow && (
                 <g>
-                  <rect x={xPrior} y={y + 2} width={priorBarW} height={ROW_H - 4}
-                    fill={isSPPrior ? 'rgba(248,113,113,0.15)' : 'rgba(129,140,248,0.12)'}
-                    rx={1} />
-                  {priorRow.letters.split('').map((ltr, li) => {
-                    const isIB = ltr === 'A' || ltr === 'B'
-                    const lc   = isIB         ? '#ffffff'
-                               : isPriorPOC   ? '#a78bfa'
-                               : isSPPrior    ? '#f87171'
-                               : '#475569'
+                  {(() => {
+                    // IB single print (row is solely A or B) — keep IB styling, skip orange
+                    const isIBSP = priorRow.letters === 'A' || priorRow.letters === 'B'
                     return (
-                      <text key={li}
-                        x={xPrior + 3 + li * 6}
-                        y={y + ROW_H - 4}
-                        fontSize={8.5}
-                        fontWeight={isIB || isPriorPOC ? '700' : '400'}
-                        fill={lc}>
-                        {ltr}
-                      </text>
+                      <>
+                        <rect x={xPrior} y={y + 2} width={priorBarW} height={ROW_H - 4}
+                          fill={isSPPrior && !isIBSP ? 'rgba(248,113,113,0.15)' : 'rgba(129,140,248,0.12)'}
+                          rx={1} />
+                        {priorRow.letters.split('').map((ltr, li) => {
+                          const isIB = ltr === 'A' || ltr === 'B'
+                          const lc   = isIB         ? '#ffffff'
+                                     : isPriorPOC   ? '#a78bfa'
+                                     : isSPPrior    ? '#f87171'
+                                     : '#475569'
+                          return (
+                            <text key={li}
+                              x={xPrior + 3 + li * 6}
+                              y={y + ROW_H - 4}
+                              fontSize={8.5}
+                              fontWeight={isIB || isPriorPOC ? '700' : '400'}
+                              fill={lc}>
+                              {ltr}
+                            </text>
+                          )
+                        })}
+                      </>
                     )
-                  })}
+                  })()}
                 </g>
               )}
               {(isPriorPOC || isPriorVAH || isPriorVAL) && (
@@ -473,16 +481,19 @@ function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick 
               {/* Today RTH letters */}
               {todayRow && (
                 <g>
-                  {todayRow.letters.split('').map((ltr, li) => (
-                    <text key={li}
-                      x={xToday + li * 7}
-                      y={y + ROW_H - 4}
-                      fontSize={9} fontWeight={isTodayPOC ? '700' : '500'}
-                      fill={LETTER_COLOR[ltr] ?? DEFAULT_LETTER_COLOR}
-                      opacity={isSPToday ? 0.6 : 1}>
-                      {ltr}
-                    </text>
-                  ))}
+                  {todayRow.letters.split('').map((ltr, li) => {
+                    const isIBLtr = ltr === 'A' || ltr === 'B'
+                    return (
+                      <text key={li}
+                        x={xToday + li * 7}
+                        y={y + ROW_H - 4}
+                        fontSize={9} fontWeight={isTodayPOC ? '700' : '500'}
+                        fill={LETTER_COLOR[ltr] ?? DEFAULT_LETTER_COLOR}
+                        opacity={isSPToday && !isIBLtr ? 0.6 : 1}>
+                        {ltr}
+                      </text>
+                    )
+                  })}
                 </g>
               )}
               {(isTodayPOC || isTodayVAH || isTodayVAL || isTodayIBH || isTodayIBL || isCurrent) && (
