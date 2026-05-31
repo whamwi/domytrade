@@ -6518,6 +6518,24 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             trade_plan = (f'No directional edge. Buy IB Low ({ib_low:.2f}), sell IB High ({ib_high:.2f}). '
                           f'Late-session close outside IB sets tomorrow\'s opening bias.')
 
+    # ── LONG-only regime ──────────────────────────────────────────────────────
+    # Backtest (183 days, Sep 2025 → May 2026) shows SHORT IB signals have
+    # no edge in the current bull-trending environment.
+    # When the IB bias is bearish: suppress actionable SHORT guidance,
+    # downgrade BEARISH signal chips to INFO (grey), and override trade plan
+    # to "stand aside."  All context text is preserved for awareness.
+    if bias_score < 0:
+        for s in signals:
+            if s['type'] in ('BEARISH', 'BEARISH_LEAN'):
+                s['type'] = 'INFO'
+        bias       = 'NEUTRAL'
+        bias_label = 'No Trade — LONG regime'
+        trade_plan = (
+            'SHORT signals are not taken in the current regime (LONG-only). '
+            'Bearish IB context noted for awareness — no trade. '
+            'Stand aside and wait for a bullish OA + IB acceptance signal.'
+        )
+
     key_levels_out = sorted(key_levels, key=lambda x: x['level'], reverse=True)
 
     return {

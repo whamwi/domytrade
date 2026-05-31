@@ -734,12 +734,15 @@ const BIAS_CFG: Record<string, { bg: string; color: string; border: string; icon
   BEARISH:      { bg: 'rgba(248,113,113,0.12)', color: '#f87171', border: 'rgba(248,113,113,0.3)', icon: '▼' },
   BEARISH_LEAN: { bg: 'rgba(248,113,113,0.07)', color: '#fca5a5', border: 'rgba(248,113,113,0.2)', icon: '↓' },
   NEUTRAL:      { bg: 'rgba(251,191,36,0.10)',  color: '#fbbf24', border: 'rgba(251,191,36,0.25)', icon: '↔' },
+  // Bearish IB context suppressed — LONG-only regime active
+  'No Trade — LONG regime': { bg: 'rgba(100,116,139,0.10)', color: '#94a3b8', border: 'rgba(100,116,139,0.25)', icon: '—' },
 }
 const SIGNAL_CFG: Record<string, { color: string; dot: string }> = {
   BULLISH:  { color: '#4ade80', dot: '#4ade80' },
   BEARISH:  { color: '#f87171', dot: '#f87171' },
   CAUTION:  { color: '#fbbf24', dot: '#fbbf24' },
   NEUTRAL:  { color: '#94a3b8', dot: '#94a3b8' },
+  INFO:     { color: '#64748b', dot: '#475569' },   // grey — informational, no action
 }
 
 function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
