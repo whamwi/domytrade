@@ -6217,8 +6217,9 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     bias_score = 0   # +ve = bullish, -ve = bearish
 
     # Convenience strings for optional levels
-    vah_s = f'{on_vah:.2f}' if on_vah is not None else 'n/a'
-    val_s = f'{on_val:.2f}' if on_val is not None else 'n/a'
+    vah_s   = f'{on_vah:.2f}' if on_vah is not None else 'n/a'
+    val_s   = f'{on_val:.2f}' if on_val is not None else 'n/a'
+    on_poc_s= f'{on_poc:.2f}' if on_poc is not None else 'n/a'
 
     # ── 0. Opening context vs overnight range ─────────────────────────────────
     # This is the foundational Dalton Open Type classification.
