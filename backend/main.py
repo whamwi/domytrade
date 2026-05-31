@@ -6114,24 +6114,31 @@ async def api_market_profile(symbol: str):
 
     raw_1min = await asyncio.to_thread(get_candles, symbol, 5, 1)
 
-    # Classify bars into RTH and overnight sessions (same logic as /api/levels)
+    # Classify bars into RTH and overnight sessions.
+    # Evening bars are keyed to d+1 (the next calendar day's overnight bucket).
+    # Weekend bars (Sat/Sun) are keyed to the following Monday.
     rth_by_date: dict = {}
     on_by_date:  dict = {}
     for c in raw_1min:
         dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
         d     = dt.date()
         t_min = dt.hour * 60 + dt.minute
-        wday  = dt.weekday()
-        is_rth      = wday < 5 and (9 * 60 + 30) <= t_min <= 16 * 60
+        wday  = dt.weekday()          # Mon=0 … Sat=5 … Sun=6
+        is_rth      = wday < 5 and (9 * 60 + 30) <= t_min < 16 * 60
         is_on_wkday = wday < 5 and t_min < (9 * 60 + 30)
-        is_evening  = wday < 4 and t_min >= 18 * 60
-        is_sunday   = wday == 6
+        is_evening  = wday < 5 and t_min >= 18 * 60   # Mon–Fri evenings (includes Friday)
+        is_weekend  = wday >= 5                        # Saturday / Sunday Globex
         if is_rth:
             rth_by_date.setdefault(d, []).append(c)
         elif is_on_wkday:
             on_by_date.setdefault(d, []).append(c)
-        elif is_evening or is_sunday:
+        elif is_evening:
+            # Map to next calendar day; Fri evening → Sat bucket (part of Mon's overnight)
             on_by_date.setdefault(d + timedelta(days=1), []).append(c)
+        elif is_weekend:
+            # Saturday → Monday (+2), Sunday → Monday (+1)
+            days_to_mon = 2 if wday == 5 else 1
+            on_by_date.setdefault(d + timedelta(days=days_to_mon), []).append(c)
 
     sorted_rth = sorted(rth_by_date.keys(), reverse=True)
     prior_dates = [d for d in sorted_rth if d < today]
@@ -6161,7 +6168,14 @@ async def api_market_profile(symbol: str):
         prior_rth_range = round(prior_prof['session_high'] - prior_prof['session_low'], 2)
 
     # ── Overnight context ─────────────────────────────────────────────────────
+    # Prefer today's overnight (pre-market, or developing during session).
+    # Fall back to the prior RTH date's overnight when today has none — covers
+    # weekends and the case where the most informative context is last night's.
+    on_date = today
     on_bars = on_by_date.get(today, [])
+    if not on_bars and prior_dates:
+        on_date = prior_dates[0]
+        on_bars = on_by_date.get(on_date, [])
     overnight: dict = {
         'high': None, 'low': None, 'poc': None, 'vah': None, 'val': None,
         'profile': [], 'single_prints': [], 'periods': 0, 'period_ranges': {},
