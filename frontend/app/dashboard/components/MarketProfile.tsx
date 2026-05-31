@@ -180,29 +180,53 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
         height={totalH}
         style={{ display: 'block', fontFamily: FONT, overflow: 'visible' }}
       >
-        {/* Value area shading — prior (left panel) */}
-        {prior.vah != null && prior.val != null && (() => {
-          const yTop = sortedPrices.indexOf(
-            sortedPrices.find(p => p <= prior.vah!)!) * ROW_H
-          const yBot = sortedPrices.indexOf(
-            sortedPrices.find(p => p <= prior.val!)!) * ROW_H + ROW_H
+        {/* Value area shading — prior (left panel): upper=green, POC=purple, lower=red */}
+        {prior.vah != null && prior.val != null && prior.poc != null && (() => {
+          const idxVAH = sortedPrices.findIndex(p => p <= prior.vah!)
+          const idxPOC = sortedPrices.findIndex(p => p <= prior.poc!)
+          const idxVAL = sortedPrices.findIndex(p => p <= prior.val!)
+          if (idxVAH < 0 || idxPOC < 0 || idxVAL < 0) return null
           const x = PRICE_W + SEP
+          const yVAH = idxVAH * ROW_H
+          const yPOC = idxPOC * ROW_H
+          const yVAL = idxVAL * ROW_H + ROW_H
           return (
-            <rect x={x} y={yTop} width={PRIOR_W} height={yBot - yTop}
-              fill="#818cf8" fillOpacity={0.07} />
+            <g>
+              {/* VAH → POC: green (bullish upper zone) */}
+              <rect x={x} y={yVAH} width={PRIOR_W} height={yPOC - yVAH}
+                fill="#4ade80" fillOpacity={0.07} />
+              {/* POC row: purple highlight */}
+              <rect x={x} y={yPOC} width={PRIOR_W} height={ROW_H}
+                fill="#a78bfa" fillOpacity={0.18} />
+              {/* POC → VAL: red (bearish lower zone) */}
+              <rect x={x} y={yPOC + ROW_H} width={PRIOR_W} height={yVAL - yPOC - ROW_H}
+                fill="#f87171" fillOpacity={0.07} />
+            </g>
           )
         })()}
 
-        {/* Value area shading — today (right panel) */}
-        {today.vah != null && today.val != null && (() => {
-          const yTop = sortedPrices.indexOf(
-            sortedPrices.find(p => p <= today.vah!)!) * ROW_H
-          const yBot = sortedPrices.indexOf(
-            sortedPrices.find(p => p <= today.val!)!) * ROW_H + ROW_H
+        {/* Value area shading — today (right panel): upper=green, POC=purple, lower=red */}
+        {today.vah != null && today.val != null && today.poc != null && (() => {
+          const idxVAH = sortedPrices.findIndex(p => p <= today.vah!)
+          const idxPOC = sortedPrices.findIndex(p => p <= today.poc!)
+          const idxVAL = sortedPrices.findIndex(p => p <= today.val!)
+          if (idxVAH < 0 || idxPOC < 0 || idxVAL < 0) return null
           const x = PRICE_W + SEP + PRIOR_W + SEP
+          const yVAH = idxVAH * ROW_H
+          const yPOC = idxPOC * ROW_H
+          const yVAL = idxVAL * ROW_H + ROW_H
           return (
-            <rect x={x} y={yTop} width={TODAY_W} height={yBot - yTop}
-              fill="#60a5fa" fillOpacity={0.07} />
+            <g>
+              {/* VAH → POC: green */}
+              <rect x={x} y={yVAH} width={TODAY_W} height={yPOC - yVAH}
+                fill="#4ade80" fillOpacity={0.09} />
+              {/* POC row: purple highlight */}
+              <rect x={x} y={yPOC} width={TODAY_W} height={ROW_H}
+                fill="#a78bfa" fillOpacity={0.22} />
+              {/* POC → VAL: red */}
+              <rect x={x} y={yPOC + ROW_H} width={TODAY_W} height={yVAL - yPOC - ROW_H}
+                fill="#f87171" fillOpacity={0.09} />
+            </g>
           )
         })()}
 
@@ -349,9 +373,10 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
           { color: '#4ade80',  label: 'E–F  Morning' },
           { color: '#fbbf24',  label: 'G–H  Midday' },
           { color: '#f87171',  label: 'K–M  Close' },
-          { color: '#a78bfa',  label: '◆ POC' },
-          { color: '#60a5fa',  label: '▲▼ Value Area' },
-          { color: '#fb923c',  label: 'IBH/IBL' },
+          { color: '#a78bfa',  label: '■ POC (purple)' },
+          { color: '#4ade80',  label: '■ Above POC — VAH zone' },
+          { color: '#f87171',  label: '■ Below POC — VAL zone' },
+          { color: '#fb923c',  label: 'IBH / IBL' },
           { color: '#f87171',  label: 'Single print (1 period)' },
         ].map(({ color, label }) => (
           <span key={label} style={{ display: 'flex', alignItems: 'center', gap: '5px',
