@@ -391,11 +391,118 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
+// ── TPO letter → time mapping ─────────────────────────────────────────────────
+const TPO_LETTERS = [
+  { letter: 'A', time: '9:30 – 10:00 AM', note: 'Initial Balance' },
+  { letter: 'B', time: '10:00 – 10:30 AM', note: 'Initial Balance' },
+  { letter: 'C', time: '10:30 – 11:00 AM', note: '' },
+  { letter: 'D', time: '11:00 – 11:30 AM', note: '' },
+  { letter: 'E', time: '11:30 – 12:00 PM', note: '' },
+  { letter: 'F', time: '12:00 – 12:30 PM', note: '' },
+  { letter: 'G', time: '12:30 – 1:00 PM',  note: 'Lunch lull' },
+  { letter: 'H', time: '1:00 – 1:30 PM',   note: '' },
+  { letter: 'I', time: '1:30 – 2:00 PM',   note: '' },
+  { letter: 'J', time: '2:00 – 2:30 PM',   note: '' },
+  { letter: 'K', time: '2:30 – 3:00 PM',   note: '' },
+  { letter: 'L', time: '3:00 – 3:30 PM',   note: 'Late session' },
+  { letter: 'M', time: '3:30 – 4:00 PM',   note: 'Closing period' },
+]
+
+function HelpModal({ onClose }: { onClose: () => void }) {
+  return (
+    <>
+      <div onClick={onClose}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1090 }} />
+      <div style={{
+        position: 'fixed', top: '50%', left: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: '380px', zIndex: 1100,
+        background: '#13111d',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: '14px',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.7)',
+        overflow: 'hidden',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '16px 20px 12px',
+          borderBottom: '1px solid rgba(255,255,255,0.07)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '0.03em' }}>
+              TPO Letter Reference
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '2px' }}>
+              Each letter = one 30-min period · All times ET
+            </div>
+          </div>
+          <button onClick={onClose}
+            style={{ fontSize: '18px', color: 'var(--text-dim)', background: 'none',
+              border: 'none', cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* Letter table */}
+        <div style={{ padding: '12px 20px 20px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr 1fr', gap: '0',
+            marginBottom: '6px' }}>
+            {['', 'Time (ET)', 'Note'].map(h => (
+              <div key={h} style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)',
+                textTransform: 'uppercase', letterSpacing: '0.07em', paddingBottom: '6px',
+                borderBottom: '1px solid rgba(255,255,255,0.07)' }}>{h}</div>
+            ))}
+          </div>
+          {TPO_LETTERS.map(({ letter, time, note }) => {
+            const color = LETTER_COLOR[letter] ?? DEFAULT_LETTER_COLOR
+            const isIB  = letter === 'A' || letter === 'B'
+            return (
+              <div key={letter} style={{
+                display: 'grid', gridTemplateColumns: '28px 1fr 1fr',
+                alignItems: 'center', padding: '5px 0',
+                borderBottom: '1px solid rgba(255,255,255,0.04)',
+                background: isIB ? 'rgba(96,165,250,0.04)' : 'transparent',
+              }}>
+                <div style={{
+                  fontFamily: "'SF Mono', monospace", fontSize: '13px', fontWeight: 700,
+                  color, width: '22px', height: '22px', borderRadius: '4px',
+                  background: `${color}18`, display: 'flex', alignItems: 'center',
+                  justifyContent: 'center',
+                }}>{letter}</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                  {time}
+                </div>
+                <div style={{ fontSize: '10px', color: isIB ? '#60a5fa' : 'var(--text-dim)',
+                  fontWeight: isIB ? 600 : 400 }}>
+                  {note}
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Footer note */}
+          <div style={{ marginTop: '12px', padding: '10px 12px',
+            background: 'rgba(167,139,250,0.08)', borderRadius: '8px',
+            border: '1px solid rgba(167,139,250,0.18)' }}>
+            <div style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 700, marginBottom: '4px' }}>
+              How to read the profile
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              The wider a price row (more letters), the more time was spent there — that is
+              accepted value. A single-letter row is a <strong style={{ color: '#f87171' }}>single
+              print</strong>: price passed through fast and is likely to be revisited.
+              The widest row is the <strong style={{ color: '#a78bfa' }}>POC</strong>.
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
 export default function MarketProfile() {
   const [symbol,   setSymbol]   = useState('/ES')
   const [data,     setData]     = useState<MPData | null>(null)
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
+  const [showHelp, setShowHelp] = useState(false)
 
   const load = useCallback(async (sym: string) => {
     setLoading(true)
@@ -475,38 +582,126 @@ export default function MarketProfile() {
         </div>
       </div>
 
-      {/* Current price bar */}
+      {/* ── Key Levels Strip ── */}
       {data && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '20px',
-          padding: '12px 16px', background: 'var(--bg-panel)',
-          border: '1px solid var(--border)', borderRadius: '10px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
-            {fmt(data.current_price)}
-          </span>
+        <div style={{
+          display: 'flex', alignItems: 'stretch', marginBottom: '20px',
+          background: 'var(--bg-panel)', border: '1px solid var(--border)',
+          borderRadius: '12px', overflow: 'hidden',
+        }}>
+          {/* Current Price */}
+          <div style={{ padding: '12px 20px', display: 'flex', alignItems: 'center',
+            borderRight: '1px solid var(--border)', flexShrink: 0 }}>
+            <div>
+              <div style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)',
+                textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '3px' }}>
+                {data.symbol}
+              </div>
+              <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-primary)',
+                fontFamily: "'SF Mono', monospace", lineHeight: 1 }}>
+                {fmt(data.current_price)}
+              </div>
+            </div>
+          </div>
 
-          {/* Key levels quick-view */}
+          {/* Grouped level sections */}
           {[
-            { label: 'P·POC', value: data.prior_rth.poc,  color: '#a78bfa' },
-            { label: 'P·VAH', value: data.prior_rth.vah,  color: '#818cf8' },
-            { label: 'P·VAL', value: data.prior_rth.val,  color: '#818cf8' },
-            { label: 'ONH',   value: data.overnight.high, color: '#22d3ee' },
-            { label: 'ONL',   value: data.overnight.low,  color: '#22d3ee' },
-            { label: 'IB·H',  value: data.today.ib_high,  color: '#fb923c' },
-            { label: 'IB·L',  value: data.today.ib_low,   color: '#fb923c' },
-            { label: 'D·POC', value: data.today.poc,      color: '#c084fc' },
-            { label: 'D·VAH', value: data.today.vah,      color: '#60a5fa' },
-            { label: 'D·VAL', value: data.today.val,      color: '#60a5fa' },
-          ].map(({ label, value, color }) => value != null && (
-            <div key={label} style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '8px', color: 'var(--text-dim)', fontWeight: 700,
-                textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
-              <div style={{ fontSize: '11px', fontWeight: 600, color, fontFamily: 'monospace' }}>
-                {fmt(value)}
+            {
+              label: 'Prior RTH',
+              color: '#a78bfa',
+              bg:    'rgba(167,139,250,0.05)',
+              items: [
+                { key: 'POC', value: data.prior_rth.poc, color: '#a78bfa' },
+                { key: 'VAH', value: data.prior_rth.vah, color: '#818cf8' },
+                { key: 'VAL', value: data.prior_rth.val, color: '#818cf8' },
+              ],
+            },
+            {
+              label: 'Overnight',
+              color: '#22d3ee',
+              bg:    'rgba(34,211,238,0.04)',
+              items: [
+                { key: 'ONH', value: data.overnight.high, color: '#22d3ee' },
+                { key: 'ONL', value: data.overnight.low,  color: '#22d3ee' },
+              ],
+            },
+            {
+              label: 'Initial Balance',
+              color: '#fb923c',
+              bg:    'rgba(251,146,60,0.05)',
+              items: [
+                { key: 'IB High', value: data.today.ib_high, color: '#fb923c' },
+                { key: 'IB Low',  value: data.today.ib_low,  color: '#fb923c' },
+              ],
+            },
+            {
+              label: 'Developing',
+              color: '#60a5fa',
+              bg:    'rgba(96,165,250,0.05)',
+              items: [
+                { key: 'POC', value: data.today.poc, color: '#c084fc' },
+                { key: 'VAH', value: data.today.vah, color: '#60a5fa' },
+                { key: 'VAL', value: data.today.val, color: '#60a5fa' },
+              ],
+            },
+          ].map(({ label, color, bg, items }) => (
+            <div key={label} style={{
+              padding: '10px 16px', background: bg,
+              borderRight: '1px solid var(--border)',
+              display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '6px',
+            }}>
+              {/* Section label */}
+              <div style={{ fontSize: '9px', fontWeight: 700, color,
+                textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                {label}
+              </div>
+              {/* Items in a row */}
+              <div style={{ display: 'flex', gap: '14px' }}>
+                {items.map(({ key, value, color: c }) => value != null && (
+                  <div key={key}>
+                    <div style={{ fontSize: '9px', color: 'var(--text-dim)', fontWeight: 600,
+                      letterSpacing: '0.05em', marginBottom: '1px' }}>{key}</div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: c,
+                      fontFamily: "'SF Mono', monospace" }}>
+                      {fmt(value)}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
+
+          {/* Help button — right edge */}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', padding: '0 16px' }}>
+            <button
+              onClick={() => setShowHelp(true)}
+              title="TPO letter reference"
+              style={{
+                fontSize: '11px', fontWeight: 700, padding: '6px 14px',
+                borderRadius: '7px', cursor: 'pointer',
+                background: 'rgba(167,139,250,0.10)',
+                color: '#a78bfa',
+                border: '1px solid rgba(167,139,250,0.25)',
+                letterSpacing: '0.04em',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = 'rgba(167,139,250,0.2)'
+                e.currentTarget.style.borderColor = 'rgba(167,139,250,0.5)'
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = 'rgba(167,139,250,0.10)'
+                e.currentTarget.style.borderColor = 'rgba(167,139,250,0.25)'
+              }}
+            >
+              ? Help
+            </button>
+          </div>
         </div>
       )}
+
+      {/* Help modal */}
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
 
       {/* Loading / Error states */}
       {loading && (
