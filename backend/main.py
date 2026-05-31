@@ -5649,3 +5649,73 @@ async def api_personality():
     except Exception as e:
         log.warning('personality fetch error: %s', e)
         return {'hour_et': et_hour, 'session': session, 'data': {}, 'error': str(e)}
+
+
+@app.get('/api/personality/{ticker}')
+async def api_personality_symbol(ticker: str):
+    """
+    Returns all-hours asset personality data for a single ticker.
+    Used by the Futures Panel "Profile" tab to display the full
+    hourly trading profile across RTH and overnight sessions.
+
+    Response shape:
+      {
+        ticker: "/ES",
+        current_hour_et: 14,
+        data: {
+          "9":  { "AGG": {...}, "CON": {...}, "WIDE": {...} },
+          "10": { "AGG": {...}, "CON": {...}, "WIDE": {...} },
+          ...
+        }
+      }
+    """
+    # Strip mini-contract suffix so /MES → /ES lookups work
+    clean = ticker.replace('%2F', '/').split(':')[0]
+
+    et_now       = datetime.now(ET)
+    current_hour = et_now.hour
+
+    def _fetch():
+        from db import get_db
+        db = get_db()
+
+        # Find symbol_id for this ticker (try exact, then strip leading /)
+        sym_row = db.table('symbols').select('id,ticker').eq('ticker', clean).execute()
+        if not sym_row.data:
+            return {}
+
+        sid = sym_row.data[0]['id']
+
+        rows = (db.table('asset_personality')
+                  .select('hour_et,model,signal_strength,direction_bias,'
+                          'win_rate,avg_pnl_usd,net_pnl_usd,total_trades,'
+                          'long_win_rate,short_win_rate,long_net_usd,short_net_usd,session')
+                  .eq('symbol_id', sid)
+                  .execute())
+
+        result: dict = {}
+        for row in rows.data:
+            h = str(row['hour_et'])
+            if h not in result:
+                result[h] = {}
+            result[h][row['model']] = {
+                'signal_strength': row['signal_strength'],
+                'direction_bias':  row['direction_bias'],
+                'win_rate':        row['win_rate'],
+                'avg_pnl_usd':     row['avg_pnl_usd'],
+                'net_pnl_usd':     row['net_pnl_usd'],
+                'total_trades':    row['total_trades'],
+                'long_win_rate':   row['long_win_rate'],
+                'short_win_rate':  row['short_win_rate'],
+                'long_net_usd':    row['long_net_usd'],
+                'short_net_usd':   row['short_net_usd'],
+                'session':         row['session'],
+            }
+        return result
+
+    try:
+        data = await asyncio.to_thread(_fetch)
+        return {'ticker': clean, 'current_hour_et': current_hour, 'data': data}
+    except Exception as e:
+        log.warning('personality/%s fetch error: %s', clean, e)
+        return {'ticker': clean, 'current_hour_et': current_hour, 'data': {}, 'error': str(e)}
