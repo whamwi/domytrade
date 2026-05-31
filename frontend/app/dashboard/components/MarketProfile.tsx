@@ -84,6 +84,16 @@ interface IBSignals {
   trade_plan?:   string
   description?:  string
 }
+interface LiveWatchLevel { price: number; label: string; significance: string }
+interface LiveReadData {
+  active:        boolean
+  status:        string   // BUILDING | IB_BUILDING | INTACT | WEAKENING | CRITICAL | CONFIRMED | INVALIDATED
+  last_period:   string | null
+  last_close:    number | null
+  current_read:  string
+  live_guidance: string
+  watch_level:   LiveWatchLevel | null
+}
 interface MPData {
   symbol:           string
   tick:             number
@@ -98,6 +108,7 @@ interface MPData {
   rule_80:          Rule80
   ib_signals:       IBSignals
   prior_ib_signals: IBSignals
+  live_read:        LiveReadData
 }
 
 // ── Opening type badge config ─────────────────────────────────────────────────
@@ -841,6 +852,102 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
   )
 }
 
+// ── Live Read status config ───────────────────────────────────────────────────
+const LIVE_STATUS_CFG: Record<string, { color: string; bg: string; border: string; label: string }> = {
+  BUILDING:    { color: '#94a3b8', bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.25)', label: 'Pre-Market'  },
+  IB_BUILDING: { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)',  border: 'rgba(96,165,250,0.30)',  label: 'IB Building' },
+  INTACT:      { color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.30)',  label: 'Intact'      },
+  CONFIRMED:   { color: '#34d399', bg: 'rgba(52,211,153,0.14)',  border: 'rgba(52,211,153,0.35)',  label: 'Confirmed'   },
+  WEAKENING:   { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)',  border: 'rgba(251,191,36,0.30)',  label: 'Weakening'   },
+  CRITICAL:    { color: '#f97316', bg: 'rgba(249,115,22,0.12)',  border: 'rgba(249,115,22,0.30)',  label: 'Critical'    },
+  INVALIDATED: { color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.30)', label: 'Invalidated' },
+}
+
+function LiveRead({ lr }: { lr: LiveReadData }) {
+  const cfg = LIVE_STATUS_CFG[lr.status] ?? LIVE_STATUS_CFG['BUILDING']
+  return (
+    <div style={{ background: 'var(--bg-panel)', border: `1px solid ${cfg.border}`,
+      borderRadius: '10px', overflow: 'hidden' }}>
+
+      {/* Header */}
+      <div style={{ padding: '11px 16px', background: `${cfg.color}0a`,
+        borderBottom: `1px solid ${cfg.border}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)',
+          textTransform: 'uppercase', letterSpacing: '0.08em' }}>Live Read</span>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: cfg.color,
+          background: cfg.bg, border: `1px solid ${cfg.border}`,
+          borderRadius: '5px', padding: '2px 10px' }}>
+          {cfg.label}
+        </span>
+      </div>
+
+      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+
+        {/* Last period chip */}
+        {lr.last_period && lr.last_close != null && (
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+            <span style={{
+              fontFamily: 'monospace', fontSize: '14px', fontWeight: 700,
+              color: LETTER_COLOR[lr.last_period] ?? cfg.color,
+              background: `${LETTER_COLOR[lr.last_period] ?? cfg.color}18`,
+              borderRadius: '4px', padding: '1px 6px',
+            }}>{lr.last_period}</span>
+            <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>closed at</span>
+            <span style={{ fontSize: '14px', fontWeight: 700, fontFamily: 'monospace',
+              color: 'var(--text-primary)' }}>{lr.last_close.toFixed(2)}</span>
+          </div>
+        )}
+
+        {/* Narrative */}
+        {lr.current_read && (
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
+            {lr.current_read}
+          </p>
+        )}
+
+        {/* Guidance box */}
+        {lr.live_guidance && (
+          <div style={{ padding: '8px 12px', background: cfg.bg,
+            border: `1px solid ${cfg.border}`, borderRadius: '7px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: cfg.color,
+              textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
+              Guidance
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.55 }}>
+              {lr.live_guidance}
+            </div>
+          </div>
+        )}
+
+        {/* Watch level */}
+        {lr.watch_level && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '8px 12px', background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.06)', borderRadius: '7px' }}>
+            <div>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+                textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '2px' }}>
+                Watch
+              </div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: cfg.color }}>
+                {lr.watch_level.label}
+              </div>
+              <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '2px', lineHeight: 1.4 }}>
+                {lr.watch_level.significance}
+              </div>
+            </div>
+            <div style={{ fontSize: '16px', fontWeight: 700, fontFamily: 'monospace',
+              color: cfg.color, marginLeft: '12px' }}>
+              {lr.watch_level.price.toFixed(2)}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function MarketProfile() {
   const [symbol,   setSymbol]   = useState('/ES')
   const [data,     setData]     = useState<MPData | null>(null)
@@ -1094,88 +1201,8 @@ export default function MarketProfile() {
           {/* ── Right panel: context cards ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-            {/* Opening type */}
-            <InfoCard
-              title="Opening Type"
-              badge={data.opening.label}
-              badgeColor={openCfg.color}
-              badgeBg={openCfg.bg}
-              badgeBorder={openCfg.border}
-              description={data.opening.description}
-            >
-              {data.opening.vs_prior_vah != null && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-                  gap: '6px', marginTop: '2px' }}>
-                  {[
-                    { label: 'vs VAH', val: data.opening.vs_prior_vah },
-                    { label: 'vs VAL', val: data.opening.vs_prior_val },
-                    { label: 'vs POC', val: data.opening.vs_prior_poc },
-                  ].map(({ label, val }) => val != null && (
-                    <div key={label} style={{ textAlign: 'center', padding: '6px 4px',
-                      background: 'rgba(255,255,255,0.03)', borderRadius: '6px',
-                      border: '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ fontSize: '8px', color: 'var(--text-dim)',
-                        textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
-                      <div style={{ fontSize: '12px', fontWeight: 700, fontFamily: 'monospace',
-                        color: val >= 0 ? '#4ade80' : '#f87171' }}>
-                        {val >= 0 ? '+' : ''}{fmt(val)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </InfoCard>
-
-            {/* Day type */}
-            <InfoCard
-              title="Day Type"
-              badge={data.day_type.label}
-              badgeColor={dayCfg.color}
-              badgeBg={dayCfg.bg}
-              badgeBorder={dayCfg.bg.replace('0.12', '0.35').replace('0.15', '0.35').replace('0.08', '0.2')}
-              description={data.day_type.description}
-            >
-              {data.day_type.ib_range != null && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
-                  {[
-                    { label: 'IB Range', val: fmt(data.day_type.ib_range) },
-                    { label: 'Ext ↑',   val: `+${fmt(data.day_type.ext_up)}` },
-                    { label: 'Ext ↓',   val: `-${fmt(data.day_type.ext_down)}` },
-                  ].map(({ label, val }) => (
-                    <div key={label} style={{ textAlign: 'center', padding: '6px 4px',
-                      background: 'rgba(255,255,255,0.03)', borderRadius: '6px',
-                      border: '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ fontSize: '8px', color: 'var(--text-dim)',
-                        textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
-                      <div style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'monospace',
-                        color: 'var(--text-primary)' }}>{val}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </InfoCard>
-
-            {/* 80% rule */}
-            <InfoCard
-              title="80% Rule"
-              badge={data.rule_80.triggered
-                ? (data.rule_80.already_hit ? '✓ Target Reached' : `Active ${data.rule_80.direction === 'LONG' ? '↑' : '↓'}`)
-                : 'Not Triggered'}
-              badgeColor={rule80c.color}
-              badgeBg={rule80c.bg}
-              badgeBorder={rule80c.border}
-              description={data.rule_80.description}
-            >
-              {data.rule_80.triggered && data.rule_80.target != null && (
-                <div style={{ padding: '8px 12px', background: rule80c.bg,
-                  border: `1px solid ${rule80c.border}`, borderRadius: '7px', textAlign: 'center' }}>
-                  <div style={{ fontSize: '9px', color: rule80c.color, fontWeight: 700,
-                    textTransform: 'uppercase', letterSpacing: '0.06em' }}>Target</div>
-                  <div style={{ fontSize: '18px', fontWeight: 700, color: rule80c.color,
-                    fontFamily: 'monospace' }}>{fmt(data.rule_80.target)}</div>
-                </div>
-              )}
-            </InfoCard>
+            {/* Live Read — dynamic per-period market read */}
+            {data.live_read && <LiveRead lr={data.live_read} />}
 
             {/* IB Signals — current session (after B period) */}
             {data.ib_signals && (
