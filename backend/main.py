@@ -5651,7 +5651,7 @@ async def api_personality():
         return {'hour_et': et_hour, 'session': session, 'data': {}, 'error': str(e)}
 
 
-@app.get('/api/personality/{ticker}')
+@app.get('/api/personality/{ticker:path}')
 async def api_personality_symbol(ticker: str):
     """
     Returns all-hours asset personality data for a single ticker.
