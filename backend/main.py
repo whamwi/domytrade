@@ -5747,6 +5747,7 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
 
     price_letters: dict = defaultdict(set)
     period_ranges: dict = {}
+    period_last_dt: dict = {}          # letter → latest bar datetime (for close tracking)
     open_price: float | None = None
     open_dt:    int   | None = None
 
@@ -5772,10 +5773,14 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
             p = round(p + tick, 6)
 
         if letter not in period_ranges:
-            period_ranges[letter] = {'high': b['high'], 'low': b['low']}
+            period_ranges[letter]  = {'high': b['high'], 'low': b['low'], 'close': b['close']}
+            period_last_dt[letter] = b['datetime']
         else:
             period_ranges[letter]['high'] = max(period_ranges[letter]['high'], b['high'])
             period_ranges[letter]['low']  = min(period_ranges[letter]['low'],  b['low'])
+            if b['datetime'] > period_last_dt.get(letter, 0):
+                period_ranges[letter]['close'] = b['close']
+                period_last_dt[letter]         = b['datetime']
 
     _empty = {
         'profile': [], 'poc': None, 'vah': None, 'val': None,
@@ -5836,7 +5841,8 @@ def _build_rth_tpo_profile(bars: list[dict], tick: float) -> dict:
         'ib_low':        round(ib_low,  2) if ib_low  else None,
         'ib_range':      round(ib_high - ib_low, 2) if ib_high and ib_low else None,
         'periods':       len(period_ranges),
-        'period_ranges': {k: {'high': v['high'], 'low': v['low']} for k, v in period_ranges.items()},
+        'period_ranges': {k: {'high': v['high'], 'low': v['low'], 'close': v.get('close')}
+                          for k, v in period_ranges.items()},
         'session_high':  session_high,
         'session_low':   session_low,
         'open_price':    round(open_price, 2) if open_price is not None else None,
@@ -6244,8 +6250,16 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
         key_levels.append({'level': on_low,  'label': 'ONL Target ↓', 'role': 'target_down', 'color': 'cyan'})
 
     # ── 2. IB vs Overnight POC ────────────────────────────────────────────────
+    # Use B period close (last bar of 10:00–10:30 window) to distinguish between:
+    #   • ON POC acting as support (IB touched it but B closed well above) → bullish
+    #   • ON POC acting as resistance (IB touched it but B closed well below) → bearish
+    #   • Genuine straddle (B closed near ON POC — true indecision)
+    b_close = session_prof.get('period_ranges', {}).get('B', {}).get('close')
+    straddle_thresh = 3 * tick   # within 3 ticks = genuine indecision
+
     if on_poc is not None:
         if ib_low > on_poc + tick:
+            # Entire IB above ON POC
             bias_score += 1
             signals.append({'type': 'BULLISH', 'signal': 'IB entirely above overnight POC',
                 'detail': (f'Entire IB sits above overnight POC ({on_poc:.2f}). '
@@ -6253,13 +6267,44 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                            f'is the first buy opportunity against longs.')})
             key_levels.append({'level': on_poc, 'label': 'ON POC → Buy zone', 'role': 'support', 'color': 'cyan'})
         elif ib_high < on_poc - tick:
+            # Entire IB below ON POC
             bias_score -= 1
             signals.append({'type': 'BEARISH', 'signal': 'IB entirely below overnight POC',
                 'detail': (f'Entire IB sits below overnight POC ({on_poc:.2f}). '
                            f'Day-session sellers winning value. Rally to ON POC ({on_poc:.2f}) '
                            f'is the first short opportunity.')})
             key_levels.append({'level': on_poc, 'label': 'ON POC → Sell zone', 'role': 'resistance', 'color': 'cyan'})
+        elif b_close is not None:
+            # IB range crosses ON POC — use B period close to determine structure
+            if b_close > on_poc + straddle_thresh:
+                # B closed well above ON POC → ON POC was offered, tested, and refused as support
+                bias_score += 1
+                pts_above = round(b_close - on_poc, 2)
+                signals.append({'type': 'BULLISH', 'signal': 'ON POC held as support during IB',
+                    'detail': (f'IB briefly tested overnight POC ({on_poc:.2f}) but B period '
+                               f'closed at {b_close:.2f} — {pts_above} pts above. '
+                               f'ON POC was offered and refused; buyers defended it. '
+                               f'ON POC is confirmed as a buy-zone floor beneath the IB.')})
+                key_levels.append({'level': on_poc, 'label': 'ON POC → Support / Buy zone', 'role': 'support', 'color': 'cyan'})
+            elif b_close < on_poc - straddle_thresh:
+                # B closed well below ON POC → ON POC acted as a ceiling that sellers defended
+                bias_score -= 1
+                pts_below = round(on_poc - b_close, 2)
+                signals.append({'type': 'BEARISH', 'signal': 'ON POC acted as resistance during IB',
+                    'detail': (f'IB briefly tested overnight POC ({on_poc:.2f}) from below but B period '
+                               f'closed at {b_close:.2f} — {pts_below} pts below. '
+                               f'Sellers defended ON POC as a ceiling. '
+                               f'ON POC is confirmed as a sell-zone resistance above the IB.')})
+                key_levels.append({'level': on_poc, 'label': 'ON POC → Resistance / Sell zone', 'role': 'resistance', 'color': 'cyan'})
+            else:
+                # B close within 3 ticks of ON POC — genuine straddle, neither side committed
+                signals.append({'type': 'NEUTRAL', 'signal': 'IB straddles overnight POC',
+                    'detail': (f'Overnight POC ({on_poc:.2f}) sits inside the IB and B period '
+                               f'closed at {b_close:.2f} — within {straddle_thresh:.2f} pts. '
+                               f'Neither side has won the value argument. '
+                               f'Wait for C period to close decisively above or below ON POC.')})
         else:
+            # No B period close available (only A period complete)
             signals.append({'type': 'NEUTRAL', 'signal': 'IB straddles overnight POC',
                 'detail': (f'Overnight POC ({on_poc:.2f}) sits inside the IB — neither side winning value. '
                            f'Wait for a decisive close above or below ON POC before committing.')})
