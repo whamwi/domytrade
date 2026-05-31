@@ -6171,6 +6171,27 @@ async def api_market_profile(symbol: str):
     if prior_prof.get('session_high') and prior_prof.get('session_low'):
         prior_rth_range = round(prior_prof['session_high'] - prior_prof['session_low'], 2)
 
+    # ── Prior Overnight (overnight that led INTO the prior RTH session) ───────
+    _empty_on: dict = {
+        'high': None, 'low': None, 'poc': None, 'vah': None, 'val': None,
+        'profile': [], 'single_prints': [], 'periods': 0, 'period_ranges': {},
+        'session_high': None, 'session_low': None,
+    }
+    prior_overnight: dict = dict(_empty_on)
+    if prior_dates:
+        _p_on_bars = on_by_date.get(prior_dates[0], [])
+        if _p_on_bars:
+            prior_overnight['high'] = round(max(b['high'] for b in _p_on_bars), 2)
+            prior_overnight['low']  = round(min(b['low']  for b in _p_on_bars), 2)
+            _p_on_tpo = _compute_tpo_value_area(_p_on_bars, tick)
+            prior_overnight['poc'] = _p_on_tpo['poc']
+            prior_overnight['vah'] = _p_on_tpo['vah']
+            prior_overnight['val'] = _p_on_tpo['val']
+            _p_on_prof = _build_overnight_tpo_profile(_p_on_bars, tick)
+            prior_overnight.update({k: _p_on_prof[k] for k in
+                ('profile', 'single_prints', 'periods', 'period_ranges',
+                 'session_high', 'session_low')})
+
     # ── Overnight context ─────────────────────────────────────────────────────
     # The overnight to display is the session bridging the prior RTH to the
     # next/developing RTH.  During an active RTH session that is today; on
@@ -6246,14 +6267,15 @@ async def api_market_profile(symbol: str):
     computed_at = now_et.strftime('%-I:%M %p ET')
 
     return {
-        'symbol':        symbol,
-        'tick':          tick,
-        'computed_at':   computed_at,
-        'current_price': current_price,
-        'today':         today_prof,
-        'prior_rth':     prior_prof,
-        'overnight':     overnight,
-        'opening':       opening,
-        'day_type':      day_type,
-        'rule_80':       rule_80,
+        'symbol':          symbol,
+        'tick':            tick,
+        'computed_at':     computed_at,
+        'current_price':   current_price,
+        'today':           today_prof,
+        'prior_rth':       prior_prof,
+        'prior_overnight': prior_overnight,
+        'overnight':       overnight,
+        'opening':         opening,
+        'day_type':        day_type,
+        'rule_80':         rule_80,
     }

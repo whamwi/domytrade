@@ -73,16 +73,17 @@ interface Opening   { type: string; label: string; description: string; inside_p
 interface DayType   { type: string; label: string; description: string; ib_range?: number; ext_up?: number; ext_down?: number; ib_ratio?: number }
 interface Rule80    { triggered: boolean; direction?: string; target?: number; already_hit?: boolean; label?: string; description: string }
 interface MPData {
-  symbol:        string
-  tick:          number
-  computed_at:   string
-  current_price: number | null
-  today:         SessionProfile
-  prior_rth:     SessionProfile
-  overnight:     Overnight
-  opening:       Opening
-  day_type:      DayType
-  rule_80:       Rule80
+  symbol:          string
+  tick:            number
+  computed_at:     string
+  current_price:   number | null
+  today:           SessionProfile
+  prior_rth:       SessionProfile
+  prior_overnight: Overnight
+  overnight:       Overnight
+  opening:         Opening
+  day_type:        DayType
+  rule_80:         Rule80
 }
 
 // ── Opening type badge config ─────────────────────────────────────────────────
@@ -135,16 +136,18 @@ function InfoCard({ title, badge, badgeColor, badgeBg, badgeBorder, description,
 }
 
 // ── TPO Profile visual ────────────────────────────────────────────────────────
-function TpoChart({ today, prior, overnight, currentPrice, tick }: {
-  today:        SessionProfile
-  prior:        SessionProfile
-  overnight:    Overnight
-  currentPrice: number | null
-  tick:         number
+function TpoChart({ today, prior, priorOvernight, overnight, currentPrice, tick }: {
+  today:         SessionProfile
+  prior:         SessionProfile
+  priorOvernight:Overnight
+  overnight:     Overnight
+  currentPrice:  number | null
+  tick:          number
 }) {
-  const hasOn = (overnight.profile?.length ?? 0) > 0
+  const hasPriorOn = (priorOvernight.profile?.length ?? 0) > 0
+  const hasOn      = (overnight.profile?.length ?? 0) > 0
 
-  if (!today.profile.length && !prior.profile.length && !hasOn) {
+  if (!today.profile.length && !prior.profile.length && !hasOn && !hasPriorOn) {
     return (
       <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px' }}>
         No profile data — market may be closed or pre-market
@@ -152,44 +155,53 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
     )
   }
 
-  // Merge price universe from all three profiles
+  // Merge price universe from all four profiles
   const allPrices = new Set<number>()
   today.profile.forEach(r => allPrices.add(r.price))
   prior.profile.forEach(r => allPrices.add(r.price))
   overnight.profile?.forEach(r => allPrices.add(r.price))
+  priorOvernight.profile?.forEach(r => allPrices.add(r.price))
   const sortedPrices = Array.from(allPrices).sort((a, b) => b - a)
 
   // Build lookup maps
-  const todayMap  = new Map(today.profile.map(r => [r.price, r]))
-  const priorMap  = new Map(prior.profile.map(r => [r.price, r]))
-  const onMap     = new Map((overnight.profile ?? []).map(r => [r.price, r]))
+  const todayMap    = new Map(today.profile.map(r => [r.price, r]))
+  const priorMap    = new Map(prior.profile.map(r => [r.price, r]))
+  const onMap       = new Map((overnight.profile ?? []).map(r => [r.price, r]))
+  const priorOnMap  = new Map((priorOvernight.profile ?? []).map(r => [r.price, r]))
 
   // Max letter counts — for proportional bar widths
-  const maxTodayCount = Math.max(1, ...today.profile.map(r => r.count))
-  const maxPriorCount = Math.max(1, ...prior.profile.map(r => r.count))
-  const maxOnCount    = Math.max(1, ...(overnight.profile?.map(r => r.count) ?? [1]))
+  const maxTodayCount   = Math.max(1, ...today.profile.map(r => r.count))
+  const maxPriorCount   = Math.max(1, ...prior.profile.map(r => r.count))
+  const maxOnCount      = Math.max(1, ...(overnight.profile?.map(r => r.count) ?? [1]))
+  const maxPriorOnCount = Math.max(1, ...(priorOvernight.profile?.map(r => r.count) ?? [1]))
 
-  // Single print lookup
-  const todaySP = new Set(today.single_prints)
-  const priorSP = new Set(prior.single_prints)
-  const onSP    = new Set(overnight.single_prints ?? [])
+  // Single print sets
+  const todaySP   = new Set(today.single_prints)
+  const priorSP   = new Set(prior.single_prints)
+  const onSP      = new Set(overnight.single_prints ?? [])
+  const priorOnSP = new Set(priorOvernight.single_prints ?? [])
 
-  const FONT    = "'SF Mono', ui-monospace, monospace"
-  const ROW_H   = 16   // px per tick row
-  const PRICE_W = 58   // px for price column
-  const SEP     = 8    // px gap between panels
-  const PRIOR_W = 120  // px prior RTH panel
-  const ON_W    = hasOn ? 90 : 0   // px overnight panel (0 if no data)
-  const TODAY_W = 190  // px today RTH panel
-  const TOTAL_W = PRICE_W + SEP + PRIOR_W + (hasOn ? SEP + ON_W : 0) + SEP + TODAY_W
-  const totalH  = sortedPrices.length * ROW_H + 4
+  const FONT       = "'SF Mono', ui-monospace, monospace"
+  const ROW_H      = 16
+  const PRICE_W    = 58
+  const SEP        = 6
+  const PRIOR_ON_W = hasPriorOn ? 80 : 0
+  const PRIOR_W    = 110
+  const ON_W       = hasOn ? 85 : 0
+  const TODAY_W    = 175
+  const TOTAL_W    = PRICE_W + SEP
+    + (hasPriorOn ? PRIOR_ON_W + SEP : 0)
+    + PRIOR_W + SEP
+    + (hasOn ? ON_W + SEP : 0)
+    + TODAY_W
+  const totalH = sortedPrices.length * ROW_H + 4
 
-  // X offsets for each panel
-  const xPrior  = PRICE_W + SEP
-  const xOn     = xPrior + PRIOR_W + SEP
-  const xToday  = xOn + (hasOn ? ON_W + SEP : 0)
+  // X offsets for each panel (left-to-right time order)
+  const xPriorOn = PRICE_W + SEP
+  const xPrior   = xPriorOn + (hasPriorOn ? PRIOR_ON_W + SEP : 0)
+  const xOn      = xPrior + PRIOR_W + SEP
+  const xToday   = xOn + (hasOn ? ON_W + SEP : 0)
 
-  // Close enough to be "at" a key level
   const near = (p: number, ref: number | null | undefined) =>
     ref != null && Math.abs(p - ref) < tick * 0.6
 
@@ -198,6 +210,12 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
       {/* Column headers */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: '6px',
         paddingLeft: `${PRICE_W + SEP}px`, gap: `${SEP}px` }}>
+        {hasPriorOn && (
+          <div style={{ width: PRIOR_ON_W, textAlign: 'center', fontSize: '9px', fontWeight: 700,
+            color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+            Prior ON · {priorOvernight.periods}p
+          </div>
+        )}
         <div style={{ width: PRIOR_W, textAlign: 'center', fontSize: '9px', fontWeight: 700,
           color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
           Prior RTH{prior.date ? ` · ${prior.date}` : ''}
@@ -219,6 +237,27 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
         height={totalH}
         style={{ display: 'block', fontFamily: FONT, overflow: 'visible' }}
       >
+        {/* ── Prior Overnight value area shading ── */}
+        {hasPriorOn && priorOvernight.vah != null && priorOvernight.val != null && priorOvernight.poc != null && (() => {
+          const idxVAH = sortedPrices.findIndex(p => p <= priorOvernight.vah!)
+          const idxPOC = sortedPrices.findIndex(p => p <= priorOvernight.poc!)
+          const idxVAL = sortedPrices.findIndex(p => p <= priorOvernight.val!)
+          if (idxVAH < 0 || idxPOC < 0 || idxVAL < 0) return null
+          const yVAH = idxVAH * ROW_H
+          const yPOC = idxPOC * ROW_H
+          const yVAL = idxVAL * ROW_H + ROW_H
+          return (
+            <g>
+              <rect x={xPriorOn} y={yVAH} width={PRIOR_ON_W} height={yPOC - yVAH}
+                fill="#6366f1" fillOpacity={0.05} />
+              <rect x={xPriorOn} y={yPOC} width={PRIOR_ON_W} height={ROW_H}
+                fill="#6366f1" fillOpacity={0.15} />
+              <rect x={xPriorOn} y={yPOC + ROW_H} width={PRIOR_ON_W} height={yVAL - yPOC - ROW_H}
+                fill="#6366f1" fillOpacity={0.04} />
+            </g>
+          )
+        })()}
+
         {/* ── Prior RTH value area shading ── */}
         {prior.vah != null && prior.val != null && prior.poc != null && (() => {
           const idxVAH = sortedPrices.findIndex(p => p <= prior.vah!)
@@ -240,7 +279,7 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
           )
         })()}
 
-        {/* ── Overnight value area shading ── */}
+        {/* ── Current Overnight value area shading ── */}
         {hasOn && overnight.vah != null && overnight.val != null && overnight.poc != null && (() => {
           const idxVAH = sortedPrices.findIndex(p => p <= overnight.vah!)
           const idxPOC = sortedPrices.findIndex(p => p <= overnight.poc!)
@@ -284,24 +323,27 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
 
         {/* ── Price rows ── */}
         {sortedPrices.map((price, i) => {
-          const y        = i * ROW_H
-          const todayRow = todayMap.get(price)
-          const priorRow = priorMap.get(price)
-          const onRow    = onMap.get(price)
+          const y          = i * ROW_H
+          const todayRow   = todayMap.get(price)
+          const priorRow   = priorMap.get(price)
+          const onRow      = onMap.get(price)
+          const priorOnRow = priorOnMap.get(price)
 
-          const isCurrent    = currentPrice != null && Math.abs(price - currentPrice) < tick * 0.6
-          const isTodayPOC   = near(price, today.poc)
-          const isPriorPOC   = near(price, prior.poc)
-          const isOnPOC      = near(price, overnight.poc)
-          const isTodayVAH   = near(price, today.vah)
-          const isTodayVAL   = near(price, today.val)
-          const isPriorVAH   = near(price, prior.vah)
-          const isPriorVAL   = near(price, prior.val)
-          const isTodayIBH   = near(price, today.ib_high)
-          const isTodayIBL   = near(price, today.ib_low)
-          const isSPToday    = todaySP.has(price)
-          const isSPPrior    = priorSP.has(price)
-          const isSPOn       = onSP.has(price)
+          const isCurrent      = currentPrice != null && Math.abs(price - currentPrice) < tick * 0.6
+          const isTodayPOC     = near(price, today.poc)
+          const isPriorPOC     = near(price, prior.poc)
+          const isOnPOC        = near(price, overnight.poc)
+          const isPriorOnPOC   = near(price, priorOvernight.poc)
+          const isTodayVAH     = near(price, today.vah)
+          const isTodayVAL     = near(price, today.val)
+          const isPriorVAH     = near(price, prior.vah)
+          const isPriorVAL     = near(price, prior.val)
+          const isTodayIBH     = near(price, today.ib_high)
+          const isTodayIBL     = near(price, today.ib_low)
+          const isSPToday      = todaySP.has(price)
+          const isSPPrior      = priorSP.has(price)
+          const isSPOn         = onSP.has(price)
+          const isSPPriorOn    = priorOnSP.has(price)
 
           const priceColor = isCurrent   ? '#fbbf24'
                            : isTodayPOC  ? '#a78bfa'
@@ -309,8 +351,9 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                            : isPriorPOC  ? '#818cf8'
                            : 'var(--text-dim)'
 
-          const priorBarW = priorRow ? Math.max(4, Math.round((priorRow.count / maxPriorCount) * PRIOR_W * 0.9)) : 0
-          const onBarW    = onRow    ? Math.max(4, Math.round((onRow.count    / maxOnCount)    * ON_W    * 0.9)) : 0
+          const priorBarW   = priorRow   ? Math.max(4, Math.round((priorRow.count   / maxPriorCount)   * PRIOR_W    * 0.9)) : 0
+          const onBarW      = onRow      ? Math.max(4, Math.round((onRow.count      / maxOnCount)      * ON_W       * 0.9)) : 0
+          const priorOnBarW = priorOnRow ? Math.max(4, Math.round((priorOnRow.count / maxPriorOnCount) * PRIOR_ON_W * 0.9)) : 0
 
           return (
             <g key={price}>
@@ -328,6 +371,29 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                 {price.toFixed(2)}
               </text>
 
+              {/* Prior Overnight letters — muted indigo */}
+              {hasPriorOn && priorOnRow && (
+                <g>
+                  <rect x={xPriorOn} y={y + 2} width={priorOnBarW} height={ROW_H - 4}
+                    fill="rgba(99,102,241,0.08)" rx={1} />
+                  {priorOnRow.letters.split('').map((ltr, li) => (
+                    <text key={li}
+                      x={xPriorOn + 3 + li * 6}
+                      y={y + ROW_H - 4}
+                      fontSize={7.5} fontWeight={isPriorOnPOC ? '700' : '400'}
+                      fill={ON_LETTER_COLOR[ltr] ?? '#6366f1'}
+                      opacity={isSPPriorOn ? 0.35 : 0.55}>
+                      {ltr}
+                    </text>
+                  ))}
+                </g>
+              )}
+              {hasPriorOn && isPriorOnPOC && (
+                <text x={xPriorOn + PRIOR_ON_W - 2} y={y + ROW_H - 4}
+                  fontSize={7.5} fontWeight="700" textAnchor="end"
+                  fill="#6366f1" opacity={0.6}>◆</text>
+              )}
+
               {/* Prior RTH letters */}
               {priorRow && (
                 <g>
@@ -341,7 +407,6 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                   </text>
                 </g>
               )}
-              {/* Prior annotations */}
               {(isPriorPOC || isPriorVAH || isPriorVAL) && (
                 <text x={xPrior + PRIOR_W - 2} y={y + ROW_H - 4}
                   fontSize={7.5} fontWeight="700" textAnchor="end"
@@ -350,12 +415,11 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                 </text>
               )}
 
-              {/* Overnight letters */}
+              {/* Current Overnight letters */}
               {hasOn && onRow && (
                 <g>
                   <rect x={xOn} y={y + 2} width={onBarW} height={ROW_H - 4}
-                    fill={isSPOn ? 'rgba(34,211,238,0.08)' : 'rgba(34,211,238,0.06)'}
-                    rx={1} />
+                    fill="rgba(34,211,238,0.06)" rx={1} />
                   {onRow.letters.split('').map((ltr, li) => (
                     <text key={li}
                       x={xOn + 3 + li * 6.5}
@@ -368,14 +432,13 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                   ))}
                 </g>
               )}
-              {/* Overnight POC annotation */}
               {hasOn && isOnPOC && (
                 <text x={xOn + ON_W - 2} y={y + ROW_H - 4}
                   fontSize={7.5} fontWeight="700" textAnchor="end"
                   fill="#22d3ee" opacity={0.7}>◆</text>
               )}
 
-              {/* Today RTH letters — letter-by-letter coloring */}
+              {/* Today RTH letters */}
               {todayRow && (
                 <g>
                   {todayRow.letters.split('').map((ltr, li) => (
@@ -390,7 +453,6 @@ function TpoChart({ today, prior, overnight, currentPrice, tick }: {
                   ))}
                 </g>
               )}
-              {/* Today annotations */}
               {(isTodayPOC || isTodayVAH || isTodayVAL || isTodayIBH || isTodayIBL || isCurrent) && (
                 <text x={xToday + TODAY_W - 2} y={y + ROW_H - 4}
                   fontSize={7.5} fontWeight="700" textAnchor="end"
@@ -853,6 +915,7 @@ export default function MarketProfile() {
             <TpoChart
               today={data.today}
               prior={data.prior_rth}
+              priorOvernight={data.prior_overnight}
               overnight={data.overnight}
               currentPrice={data.current_price}
               tick={data.tick}
