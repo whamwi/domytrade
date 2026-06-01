@@ -235,8 +235,9 @@ export default function DashboardPage() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  // ── Apply lightweight price update (every 10s from _hl_loop) ────────────────
+  // ── Apply lightweight price update (every 5s from _price_loop) ──────────────
   const applyPrices = useCallback((prices: Record<string, number>) => {
+    // 1. Update signal rows (sig.last)
     setData(prev => {
       if (!prev?.signals?.length) return prev
       let changed = false
@@ -247,6 +248,17 @@ export default function DashboardPage() {
         return { ...s, last: p }
       })
       return changed ? { ...prev, signals: updated } : prev
+    })
+    // 2. Update symbol rows (sym.last_price) — these use allSymbols, not signals
+    setAllSymbols(prev => {
+      let changed = false
+      const updated = prev.map(sym => {
+        const p = prices[sym.ticker]
+        if (p == null || p === sym.last_price) return sym
+        changed = true
+        return { ...sym, last_price: p, net_change: sym.prev_close ? p - sym.prev_close : sym.net_change }
+      })
+      return changed ? updated : prev
     })
   }, [])
 

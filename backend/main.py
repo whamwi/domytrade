@@ -1953,17 +1953,8 @@ async def background_loop():
                 syms = state.get('symbols', [])
                 sid_to_ticker = {s['id']: s['ticker'] for s in syms}
 
-                # Priority symbols: futures always + ENTRY/NEAR stocks
-                active_tickers = {
-                    r['symbol'] for r in state.get('signals', [])
-                    if r.get('signal_state') in ('ENTRY', 'NEAR')
-                }
-                priority = [
-                    s for s in syms
-                    if s['ticker'].startswith('/') or s['ticker'] in active_tickers
-                ]
-                if not priority:
-                    priority = syms[:30]   # fallback: first 30 symbols
+                # Fetch ALL active symbols — get_quotes is one batch call regardless of count
+                priority = syms   # no filtering — full universe every 5s
 
                 quote_syms = [
                     _active_contract(s['ticker']) if s['ticker'].startswith('/')
