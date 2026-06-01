@@ -6145,7 +6145,7 @@ def _classify_day_type(today_prof: dict, prior_rth_range: float | None) -> dict:
                                f'Sellers won the IB auction. Sell rallies to IB Low ({ib_low:.2f}).'}
     return {**extra, 'type': 'NORMAL', 'label': 'Normal Day',
             'description': f'Wide IB ({ib_range:.2f}), balanced two-sided auction. '
-                           f'Buy near VAL ({val:.2f if val else "—"}), sell near VAH ({vah:.2f if vah else "—"}).'}
+                           f'Buy near VAL ({f"{val:.2f}" if val else "—"}), sell near VAH ({f"{vah:.2f}" if vah else "—"}).'}
 
 
 def _check_80pct_rule(open_price: float, a_period: dict | None, b_period: dict | None,
