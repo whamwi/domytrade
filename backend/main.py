@@ -6362,8 +6362,8 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             'detail': (f'IB ({ib_low:.2f}–{ib_high:.2f}) stays inside the overnight range '
                        f'({on_low:.2f}–{on_high:.2f}). RTH accepting overnight prices — rotational day. '
                        f'Sell near ONH ({on_high:.2f}), buy near ONL ({on_low:.2f}) until a clear breakout.')})
-        key_levels.append({'level': on_high, 'label': 'ONH Target ↑', 'role': 'target_up',   'color': 'cyan'})
-        key_levels.append({'level': on_low,  'label': 'ONL Target ↓', 'role': 'target_down', 'color': 'cyan'})
+        key_levels.append({'level': on_high, 'label': 'ONH — fade (sell) / long target', 'role': 'target_up',   'color': 'cyan'})
+        key_levels.append({'level': on_low,  'label': 'ONL — long entry / fade (buy)',  'role': 'target_down', 'color': 'cyan'})
 
     # ── 2. IB vs Overnight POC ────────────────────────────────────────────────
     # Use B period close (last bar of 10:00–10:30 window) to distinguish between:
@@ -6389,7 +6389,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                 'detail': (f'Entire IB sits below overnight POC ({on_poc:.2f}). '
                            f'Day-session sellers winning value. Rally to ON POC ({on_poc:.2f}) '
                            f'is the first short opportunity.')})
-            key_levels.append({'level': on_poc, 'label': 'ON POC → Sell zone', 'role': 'resistance', 'color': 'cyan'})
+            key_levels.append({'level': on_poc, 'label': 'ON POC — resistance / short entry', 'role': 'resistance', 'color': 'cyan'})
         elif b_close is not None:
             # IB range crosses ON POC — use B period close to determine structure
             if b_close > on_poc + straddle_thresh:
@@ -6411,7 +6411,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                                f'closed at {b_close:.2f} — {pts_below} pts below. '
                                f'Sellers defended ON POC as a ceiling. '
                                f'ON POC is confirmed as a sell-zone resistance above the IB.')})
-                key_levels.append({'level': on_poc, 'label': 'ON POC → Resistance / Sell zone', 'role': 'resistance', 'color': 'cyan'})
+                key_levels.append({'level': on_poc, 'label': 'ON POC — resistance / short entry', 'role': 'resistance', 'color': 'cyan'})
             else:
                 # B close within 3 ticks of ON POC — genuine straddle, neither side committed
                 signals.append({'type': 'NEUTRAL', 'signal': 'IB straddles overnight POC',
@@ -6571,6 +6571,22 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             f'buy overnight VAL ({val_s}), sell overnight VAH ({vah_s}) for range trades. '
             f'Wait for a decisive close outside the overnight range before committing direction.'
         )
+
+    # ── LONG regime key-level relabeling ─────────────────────────────────────
+    # Remove short-side language from labels so the trader sees only valid actions.
+    if bias_score <= -1:
+        for kl in key_levels:
+            lbl = kl['label']
+            # Rotational OA day — clarify which side is valid in LONG regime
+            if lbl == 'ONH — fade (sell) / long target':
+                kl['label'] = 'ONH — long target'
+            elif lbl == 'ONL — long entry / fade (buy)':
+                kl['label'] = 'ONL — long entry zone'
+            # ON POC is resistance in bearish IB; in LONG regime it's the break-above trigger
+            elif 'resistance / short entry' in lbl:
+                kl['label'] = lbl.replace('resistance / short entry',
+                                          'resistance — break above = long signal')
+                kl['color'] = 'amber'   # amber = watch/decision, not red resistance
 
     key_levels_out = sorted(key_levels, key=lambda x: x['level'], reverse=True)
 
