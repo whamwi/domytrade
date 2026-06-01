@@ -1272,8 +1272,8 @@ export default function MarketProfile() {
               <IBAnalysis signals={data.ib_signals} title="IB Analysis — Today" />
             )}
 
-            {/* IB Signals — prior session (Thu overnight → Fri RTH) */}
-            {data.prior_ib_signals && (
+            {/* IB Signals — prior session: only show before today's IB is ready */}
+            {data.prior_ib_signals?.ready && !data.ib_signals?.ready && (
               <IBAnalysis signals={data.prior_ib_signals} title="IB Analysis — Prior Session" />
             )}
 
