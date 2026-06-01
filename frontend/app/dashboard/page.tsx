@@ -116,9 +116,10 @@ export default function DashboardPage() {
   const [warmRetries, setWarmRetries] = useState(0)
   const warmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Refresh countdown: counts down from 60→0 after each successful data fetch
-  const [countdown, setCountdown] = useState<number>(60)
-  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // WebSocket live indicator — pulses on every incoming message
+  const [wsLive, setWsLive]   = useState(false)   // true = connected
+  const [wsPulse, setWsPulse] = useState(false)   // brief flash on each message
+  const pulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
 
@@ -151,19 +152,12 @@ export default function DashboardPage() {
     }
   }, [isWarmingUp])
 
-  // Reset countdown to 60 and tick down every second whenever the data timestamp changes
-  useEffect(() => {
-    if (!lastUpdated) return
-    setCountdown(30)   // WS pushes every ~30s — reset countdown on each update
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current)
-    countdownIntervalRef.current = setInterval(() => {
-      setCountdown(c => {
-        if (c <= 1) { clearInterval(countdownIntervalRef.current!); return 0 }
-        return c - 1
-      })
-    }, 1000)
-    return () => { if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current) }
-  }, [lastUpdated])
+  // Pulse the live dot briefly on each incoming WS message
+  const triggerPulse = useCallback(() => {
+    setWsPulse(true)
+    if (pulseTimerRef.current) clearTimeout(pulseTimerRef.current)
+    pulseTimerRef.current = setTimeout(() => setWsPulse(false), 600)
+  }, [])
 
   const [sideFilter, setSideFilter]   = useState<SideFilter>('all')
   const [modelFilter, setModelFilter] = useState<ModelFilter>('CON')
@@ -293,6 +287,7 @@ export default function DashboardPage() {
 
     ws.onopen = () => {
       wsRetryMs.current = WS_RETRY_BASE_MS   // reset backoff on success
+      setWsLive(true)
     }
 
     ws.onmessage = (evt) => {
@@ -300,8 +295,10 @@ export default function DashboardPage() {
         const msg = JSON.parse(evt.data)
         if (msg.type === 'snapshot' || msg.type === 'update') {
           applySignals(msg)
+          triggerPulse()
         } else if (msg.type === 'prices') {
-          applyPrices(msg.prices)   // fast 10s price tick — no full re-render
+          applyPrices(msg.prices)
+          triggerPulse()
         }
         // pong handled implicitly — no action needed
       } catch { /* malformed message — ignore */ }
@@ -309,6 +306,7 @@ export default function DashboardPage() {
 
     ws.onclose = () => {
       wsRef.current = null
+      setWsLive(false)
       // Exponential backoff — doubles each retry up to 30s
       const delay = wsRetryMs.current
       wsRetryMs.current = Math.min(delay * 2, 30_000)
@@ -318,7 +316,7 @@ export default function DashboardPage() {
     ws.onerror = () => ws.close()   // onclose handles reconnect
 
     wsRef.current = ws
-  }, [applySignals, applyPrices])
+  }, [applySignals, applyPrices, triggerPulse])
 
   // ── Slow data poll — market-bias, symbols, industries, etc. ──────────────
   // These change infrequently so 60s polling is fine; signals come via WS.
@@ -365,8 +363,9 @@ export default function DashboardPage() {
     }, 20_000)
     return () => {
       clearInterval(pingInterval)
-      if (wsRetryRef.current)  clearTimeout(wsRetryRef.current)
+      if (wsRetryRef.current)   clearTimeout(wsRetryRef.current)
       if (slowTimerRef.current) clearTimeout(slowTimerRef.current)
+      if (pulseTimerRef.current) clearTimeout(pulseTimerRef.current)
       wsRef.current?.close()
     }
   }, [authed, connectWS, fetchSlowData])
@@ -488,29 +487,23 @@ export default function DashboardPage() {
 
           {/* Right: last updated + countdown arc + briefing + refresh */}
           <div className="flex items-center gap-3">
-            {lastUpdated && (
-              <div className="flex items-center gap-1.5">
+            {/* Live indicator — replaces countdown (push model has no fixed interval) */}
+            <div className="flex items-center gap-1.5">
+              {lastUpdated && (
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                   {lastUpdated}
                 </span>
-                {/* Countdown arc — fills from empty→full as next refresh approaches */}
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-                  <circle cx="7" cy="7" r="5" stroke="var(--border)" strokeWidth="1.5" />
-                  <circle
-                    cx="7" cy="7" r="5"
-                    stroke="var(--accent-blue)"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeDasharray={`${2 * Math.PI * 5}`}
-                    strokeDashoffset={`${2 * Math.PI * 5 * (countdown / 30)}`}
-                    style={{ transform: 'rotate(-90deg)', transformOrigin: '7px 7px', transition: 'stroke-dashoffset 0.8s linear' }}
-                  />
-                </svg>
-                <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)', minWidth: '2ch' }}>
-                  {countdown}s
-                </span>
-              </div>
-            )}
+              )}
+              <div style={{
+                width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                background: wsLive ? (wsPulse ? '#ffffff' : '#4ade80') : '#475569',
+                boxShadow: wsLive ? `0 0 ${wsPulse ? '8px #4ade80' : '4px #4ade8066'}` : 'none',
+                transition: 'background 0.2s, box-shadow 0.2s',
+              }} title={wsLive ? 'Live — receiving updates' : 'Reconnecting…'} />
+              <span className="text-xs" style={{ color: wsLive ? '#4ade80' : '#475569', fontWeight: 600 }}>
+                {wsLive ? 'LIVE' : 'OFF'}
+              </span>
+            </div>
             <button
               onClick={() => setBriefingOpen(true)}
               className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
