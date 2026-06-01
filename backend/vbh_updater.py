@@ -7,13 +7,22 @@ or from the CLI (update_vbh_tables.py).
 Public API
 ----------
 run_update(tickers=None) -> dict
-    Fetch new 30-min Schwab candles for active futures, aggregate to
-    hourly H/L buckets, persist to ohlc_hourly, recompute ATR means,
-    apply confirmed VBH k-ratios, upsert to vbh_stats, then reload the
-    vbh_engine in-memory cache.
+    Fetch new 30-min Schwab candles for active symbols, persist the raw
+    30-min bars to ohlc_30min (new), aggregate to hourly and persist to
+    ohlc_hourly, then compute VBH stats from the 30-min source (matching
+    the original TOS study timeframe) and upsert to vbh_stats.
 
-    tickers  — optional list of /XX tickers to restrict to (default: all active)
+    tickers  — optional list of tickers to restrict to (default: all active)
     returns  — {'ok': ['/ES', ...], 'failed': ['/NQ', ...]}
+
+Data flow:
+    Schwab 30-min API
+        ↓  raw bars
+    ohlc_30min  ← NEW — permanent 30-min store, grows incrementally
+        ↓  aggregate (max H, min L per hour bucket)
+    ohlc_hourly ← kept for backward compatibility / dashboard display
+        ↓  per-hour μ/σ from 30-min H-L ranges (not hourly H-L)
+    vbh_stats   ← L1/L2/L3/L4 for AGG / CON / WIDE
 """
 
 import logging, time, requests
@@ -25,8 +34,9 @@ log = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-LOOKBACK_DAYS = 90
-ET            = ZoneInfo('America/New_York')
+LOOKBACK_DAYS    = 365   # raised from 90 — more history → stable σ, especially H9
+LOOKBACK_DAYS_30 = 365   # same window for 30-min source
+ET               = ZoneInfo('America/New_York')
 
 # 2022 original methodology (reverse-engineered from Dec-2022 TOS study):
 #
@@ -92,6 +102,32 @@ def _fetch_candles(api_symbol: str, start_ms: int) -> list[dict]:
 
 # ── Aggregation helpers ───────────────────────────────────────────────────────
 
+def _candles_to_30min_rows(symbol_id: int, candles: list[dict]) -> list[dict]:
+    """Convert raw Schwab 30-min candles to ohlc_30min rows.
+
+    Schwab returns candles already at 30-min resolution; we just
+    normalise and tag each bar with hour_et / minute_et.
+    """
+    rows = []
+    for c in candles:
+        dt_utc = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc)
+        dt_et  = dt_utc.astimezone(ET)
+        # Normalise bar_time to exact :00 or :30 boundary (drop seconds)
+        bar_utc = dt_utc.replace(second=0, microsecond=0)
+        rows.append({
+            'symbol_id': symbol_id,
+            'bar_time' : bar_utc.isoformat(),
+            'hour_et'  : dt_et.hour,
+            'minute_et': 0 if dt_et.minute < 30 else 30,
+            'open'     : float(c['open']),
+            'high'     : float(c['high']),
+            'low'      : float(c['low']),
+            'close'    : float(c['close']),
+            'volume'   : int(c.get('volume') or 0),
+        })
+    return rows
+
+
 def _aggregate_to_hourly(symbol_id: int, candles: list[dict]) -> list[dict]:
     """Aggregate 30-min candles into hourly OHLCV rows for ohlc_hourly upsert."""
     buckets: dict[datetime, dict] = {}
@@ -131,34 +167,47 @@ def _aggregate_to_hourly(symbol_id: int, candles: list[dict]) -> list[dict]:
     return rows
 
 
-def _compute_vbh_rows(symbol_id: int, ohlc_rows: list[dict]) -> list[dict]:
-    """Compute AGG + CON vbh_stats rows from 90-day ohlc_hourly data.
+def _compute_vbh_rows(symbol_id: int, bars_30min: list[dict]) -> list[dict]:
+    """Compute AGG / CON / WIDE vbh_stats rows from 30-min bar data.
 
-    Replicates the 2022 TOS study methodology:
+    Aggregates the two 30-min bars per hour into one hourly H-L range
+    (max high, min low across :00 and :30 bars) — matching the original
+    TOS study which plotted on hourly boxes using hourly H and L.
+
+    Each (date, hour_et) bucket → one hourly H-L range observation.
+    Across the lookback period, we collect one range per trading hour per day.
+
+    Formula (unchanged from 2022 TOS study reconstruction):
       μ         = mean of hourly (H-L) ranges
-      σ         = sample std dev of hourly (H-L) ranges
-      σ_eff     = min(σ, μ × 0.1473)   ← cap matches 2022 fixed k-ratio
+      σ         = sample std dev of those ranges
+      σ_eff     = min(σ, μ × 0.1473)   ← 2022 fixed k-ratio cap
 
-    WHY 14.73%:
-      Analysis of _AGG_2022 (the authoritative 2022 reference hardcoded in
-      vbh_engine.py) shows σ/μ = 14.730% ±0.003% across ALL 240 non-zero RTH
-      hour/symbol pairs — impossibly uniform for raw σ.  Conclusion: the 2022
-      study applied a fixed k-ratio of 14.73% rather than the raw sample σ.
-      Capping at 14.73% replicates this character: L1 ≥ 0.8527μ → inversions
-      only when range > 1.705μ.  In 2026, raw σ/μ ~34%; the cap brings
-      effective σ back to 2022 proportions.
-
-    L4: T2 target sits 0.385·σ_eff OUTSIDE L1 (away from centre).
-      (_AGG_2022: (L1−L4)/σ_eff = 0.3849 ±0.003, consistent across all 240 pairs.)
-
-      AGG: L1=μ-σ_eff,         L2=μ,            L3=μ+σ_eff,       L4=L1-0.385·σ_eff
-      CON: L1=μ+1.4σ_eff,      L2=μ+2.4σ_eff,   L3=μ+3.4σ_eff,    L4=L1-0.385·σ_eff
+      AGG : L1=μ−σ_eff,       L2=μ,         L3=μ+σ_eff,       L4=L1−0.385·σ_eff
+      CON : L1=μ+1.4·σ_eff,   L2=μ+2.4·σ,  L3=μ+3.4·σ_eff,   L4=L1−0.385·σ_eff
+      WIDE: L1=μ+3.0·σ_eff,   L2=μ+4.0·σ,  L3=μ+5.0·σ_eff,   L4=L1−0.385·σ_eff
     """
+    # ── Step 1: aggregate 30-min bars → one hourly H-L per (date, hour) ───────
+    from datetime import date as date_type
+    hourly_buckets: dict[tuple[date_type, int], dict] = {}
+    for row in bars_30min:
+        bar_dt = datetime.fromisoformat(row['bar_time'])
+        if bar_dt.tzinfo is None:
+            bar_dt = bar_dt.replace(tzinfo=timezone.utc)
+        bar_et  = bar_dt.astimezone(ET)
+        key     = (bar_et.date(), row['hour_et'])
+        h, l    = float(row['high']), float(row['low'])
+        if key not in hourly_buckets:
+            hourly_buckets[key] = {'high': h, 'low': l}
+        else:
+            if h > hourly_buckets[key]['high']: hourly_buckets[key]['high'] = h
+            if l < hourly_buckets[key]['low']:  hourly_buckets[key]['low']  = l
+
+    # ── Step 2: collect H-L ranges per ET hour ────────────────────────────────
     hour_ranges: dict[int, list[float]] = defaultdict(list)
-    for row in ohlc_rows:
-        r = row['high'] - row['low']
+    for (_, h_et), b in hourly_buckets.items():
+        r = b['high'] - b['low']
         if r > 0:
-            hour_ranges[row['hour_et']].append(r)
+            hour_ranges[h_et].append(r)
 
     rows    = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -225,18 +274,28 @@ def _compute_vbh_rows(symbol_id: int, ohlc_rows: list[dict]) -> list[dict]:
 # ── Main update function ───────────────────────────────────────────────────────
 
 def run_update(tickers: list[str] | None = None,
-               include_stocks: bool = False) -> dict:
-    """Fetch new candles, update ohlc_hourly + vbh_stats, reload vbh_engine cache.
+               include_stocks: bool = False,
+               vbh_for_stocks: bool = False) -> dict:
+    """Fetch new 30-min bars for all targets, compute VBH stats selectively.
 
     tickers        — optional list of tickers to restrict to (default: all active).
                      Futures: '/ES', '/NQ', …   Stocks: 'SPY', 'QQQ', …
-    include_stocks — when True, also updates stocks/ETFs (default: False, futures only).
-                     Stocks use the same 90-day lookback and σ_eff formula as futures.
+    include_stocks — when True, fetches 30-min bars for stocks/ETFs too
+                     (default: False → futures only).
+    vbh_for_stocks — when True AND include_stocks=True, also recomputes VBH stats
+                     for stocks/ETFs (default: False → stocks get bar storage only,
+                     VBH recompute skipped until weekend run).
+
+    Scheduling intent:
+      Daily 5:30 AM  : run_update(include_stocks=True)
+                         → new bars for everyone, VBH recomputed for futures only
+      Saturday 8 AM  : run_update(include_stocks=True, vbh_for_stocks=True)
+                         → VBH recomputed for all from full week's bars
 
     Returns {'ok': [...], 'failed': [...]}
     """
-    from db import (get_db, upsert_ohlc, get_ohlc, upsert_vbh_stats,
-                    get_last_ohlc_bar_times)
+    from db import (get_db, upsert_ohlc, upsert_vbh_stats,
+                    upsert_30min, get_30min, get_last_30min_bar_times)
     import vbh_engine
 
     # ── Determine target symbols ───────────────────────────────────────────────
@@ -250,7 +309,6 @@ def run_update(tickers: list[str] | None = None,
         targets = [s for s in all_syms if s['ticker'].startswith('/')]  # futures only
 
     if tickers:
-        # Accept both '/ES' and 'SPY' style — match against ticker column
         targets = [s for s in targets if s['ticker'] in tickers
                    or s['ticker'].lstrip('/') in tickers]
 
@@ -258,21 +316,24 @@ def run_update(tickers: list[str] | None = None,
         log.warning('VBH update: no active symbols found')
         return {'ok': [], 'failed': []}
 
-    log.info('VBH update starting — %d symbol(s)', len(targets))
+    log.info('VBH update starting — %d symbol(s), lookback=%dd, vbh_for_stocks=%s',
+             len(targets), LOOKBACK_DAYS, vbh_for_stocks)
 
-    # ── Incremental start times ────────────────────────────────────────────────
-    symbol_ids      = [s['id'] for s in targets]
-    last_bar_times  = get_last_ohlc_bar_times(symbol_ids)
-    default_start   = int((time.time() - LOOKBACK_DAYS * 86400) * 1000)
+    # ── Incremental start: use ohlc_30min last bar as watermark ───────────────
+    symbol_ids     = [s['id'] for s in targets]
+    last_bar_times = get_last_30min_bar_times(symbol_ids)
+    default_start  = int((time.time() - LOOKBACK_DAYS * 86400) * 1000)
 
     ok, failed = [], []
 
     for sym in targets:
-        sid    = sym['id']
-        ticker = sym['ticker']
-        schwab = sym['schwab_symbol']
+        sid       = sym['id']
+        ticker    = sym['ticker']
+        schwab    = sym['schwab_symbol']
+        is_future = ticker.startswith('/')
+        do_vbh    = is_future or vbh_for_stocks   # futures always; stocks only on weekend
 
-        # Determine incremental start
+        # Determine incremental start from ohlc_30min watermark
         last_bt = last_bar_times.get(sid)
         if last_bt:
             last_dt = datetime.fromisoformat(last_bt)
@@ -282,40 +343,54 @@ def run_update(tickers: list[str] | None = None,
         else:
             start_ms = default_start
 
-        # Fetch
-        candles = _fetch_candles(schwab, start_ms)
-        if not candles:
-            log.warning('VBH update: no candles for %s — skipping', ticker)
-            failed.append(ticker)
+        # ── Fetch 30-min candles from Schwab ──────────────────────────────
+        candles    = _fetch_candles(schwab, start_ms)
+        rows_30min = []
+        hourly_rows = []
+
+        if candles:
+            # ── Persist raw 30-min bars ────────────────────────────────────
+            rows_30min = _candles_to_30min_rows(sid, candles)
+            if rows_30min:
+                upsert_30min(rows_30min)
+
+            # ── Also aggregate → ohlc_hourly (backward compat / dashboard) ─
+            hourly_rows = _aggregate_to_hourly(sid, candles)
+            if hourly_rows:
+                upsert_ohlc(hourly_rows)
+
+        elif do_vbh:
+            # No new bars from Schwab — but we still need to (re)compute VBH
+            # from existing DB history (e.g. weekend recompute after 5:30 AM
+            # already stored the latest bars).
+            log.debug('VBH %s: no new candles — recomputing VBH from DB history', ticker)
+
+        else:
+            # Bar-fetch only mode and nothing new — not an error, just skip
+            log.debug('VBH bars: no new 30-min bars for %s (already current)', ticker)
             time.sleep(0.4)
             continue
 
-        # Aggregate → upsert ohlc_hourly
-        hourly_rows = _aggregate_to_hourly(sid, candles)
-        if not hourly_rows:
-            log.warning('VBH update: no hourly rows after aggregation for %s', ticker)
-            failed.append(ticker)
-            time.sleep(0.4)
-            continue
+        # ── VBH stats (futures always; stocks only when vbh_for_stocks=True) ─
+        if do_vbh:
+            bars = get_30min(sid, LOOKBACK_DAYS_30)
+            if not bars:
+                log.warning('VBH update: no 30-min bars in DB for %s', ticker)
+                failed.append(ticker)
+                time.sleep(0.4)
+                continue
 
-        upsert_ohlc(hourly_rows)
+            stat_rows = _compute_vbh_rows(sid, bars)
+            upsert_vbh_stats(stat_rows)
 
-        # Load 90-day window → compute stats → upsert vbh_stats
-        ohlc_rows = get_ohlc(sid, LOOKBACK_DAYS)
-        if not ohlc_rows:
-            log.warning('VBH update: no ohlc rows in DB for %s after upsert', ticker)
-            failed.append(ticker)
-            time.sleep(0.4)
-            continue
-
-        stat_rows = _compute_vbh_rows(sid, ohlc_rows)
-        upsert_vbh_stats(stat_rows)
-
-        rth = [r['sample_count'] for r in stat_rows
-               if r['model'] == 'AGG' and 9 <= r['hour_et'] < 17]
-        log.info('VBH %s: %d new candles → %d hourly bars, %d–%d obs/RTH hour',
-                 ticker, len(candles), len(hourly_rows),
-                 min(rth) if rth else 0, max(rth) if rth else 0)
+            rth = [r['sample_count'] for r in stat_rows
+                   if r['model'] == 'AGG' and 9 <= r['hour_et'] < 17]
+            log.info('VBH %s: %d new 30m bars → %d hourly, %d–%d obs/RTH hour',
+                     ticker, len(rows_30min), len(hourly_rows),
+                     min(rth) if rth else 0, max(rth) if rth else 0)
+        else:
+            log.info('VBH %s: %d new 30m bars stored (VBH recompute scheduled for weekend)',
+                     ticker, len(rows_30min))
 
         ok.append(ticker)
         time.sleep(0.4)   # rate-limit between symbols

@@ -7,15 +7,31 @@ interface Message {
   content: string
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
+const API_URL    = process.env.NEXT_PUBLIC_API_URL ?? ''
+const STORAGE_KEY = 'askai_history'
 
 export default function AskAI() {
   const [open,    setOpen]    = useState(false)
   const [input,   setInput]   = useState('')
-  const [history, setHistory] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
+
+  // Initialise from localStorage (lazy — runs once on mount, client-only)
+  const [history, setHistory] = useState<Message[]>(() => {
+    if (typeof window === 'undefined') return []
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      return saved ? (JSON.parse(saved) as Message[]) : []
+    } catch {
+      return []
+    }
+  })
+
+  // Persist history to localStorage whenever it changes
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(history)) } catch {}
+  }, [history])
 
   // Scroll to bottom whenever history changes
   useEffect(() => {
@@ -123,7 +139,7 @@ export default function AskAI() {
             <div className="flex items-center gap-3">
               {history.length > 0 && (
                 <button
-                  onClick={() => setHistory([])}
+                  onClick={() => { setHistory([]); localStorage.removeItem(STORAGE_KEY) }}
                   style={{ color: '#64748b', fontSize: '11px', background: 'none', border: 'none', cursor: 'pointer' }}
                 >
                   clear
