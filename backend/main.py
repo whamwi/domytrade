@@ -5642,15 +5642,7 @@ async def api_entry_log(
     Filter by model=CR to see only Clearing Range events.
     """
     try:
-        def _fetch():
-            q = get_db().table('entry_log').select('*').order('fired_at', desc=True)
-            if model != 'all':
-                q = q.eq('model', model.upper())
-            if side != 'all':
-                q = q.eq('side', side.upper())
-            q = q.limit(limit)
-            return (q.execute().data or [])
-        rows = await asyncio.to_thread(_fetch)
+        rows = await asyncio.to_thread(get_entry_log, limit, model, side)
         return {'entries': rows, 'count': len(rows)}
     except Exception as e:
         log.warning('entry-log fetch error: %s', e)

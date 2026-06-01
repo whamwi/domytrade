@@ -68,6 +68,65 @@ def get_vbh_stats(symbol_id: int) -> list[dict]:
     return res.data
 
 
+# ── 30-min bars (all symbols — VBH source) ───────────────────────────────────
+
+def upsert_30min(rows: list[dict]) -> None:
+    """Upsert 30-min OHLCV bars.
+    rows = [{symbol_id, bar_time, hour_et, minute_et, open, high, low, close, volume}]
+    """
+    if not rows:
+        return
+    get_db().table('ohlc_30min').upsert(rows, on_conflict='symbol_id,bar_time').execute()
+
+
+def get_30min(symbol_id: int, lookback_days: int) -> list[dict]:
+    """Fetch 30-min bars for a symbol over the last N days (for VBH stat computation).
+
+    Paginates in 1 000-row pages to work around Supabase PostgREST's default
+    max-rows cap (which silently truncates even large explicit .limit() calls).
+    365d × 48 bars/day ≈ 17 500 bars per equity symbol.
+    """
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+
+    PAGE   = 1_000
+    offset = 0
+    all_rows: list[dict] = []
+
+    while True:
+        res = (get_db().table('ohlc_30min')
+               .select('bar_time,hour_et,minute_et,open,high,low,close,volume')
+               .eq('symbol_id', symbol_id)
+               .gte('bar_time', cutoff)
+               .order('bar_time')
+               .range(offset, offset + PAGE - 1)
+               .execute())
+        batch = res.data
+        all_rows.extend(batch)
+        if len(batch) < PAGE:
+            break                # last page — done
+        offset += PAGE
+
+    return all_rows
+
+
+def get_last_30min_bar_times(symbol_ids: list[int]) -> dict[int, str | None]:
+    """Return {symbol_id: max_bar_time_isoformat} for incremental 30-min fetching."""
+    if not symbol_ids:
+        return {}
+    result = {sid: None for sid in symbol_ids}
+    for sid in symbol_ids:
+        res = (get_db().table('ohlc_30min')
+               .select('bar_time')
+               .eq('symbol_id', sid)
+               .order('bar_time', desc=True)
+               .limit(1)
+               .execute())
+        if res.data:
+            result[sid] = res.data[0]['bar_time']
+    return result
+
+
 # ── 1-min bars (market futures only) ─────────────────────────────────────────
 
 def upsert_1min(rows: list[dict]) -> None:
@@ -393,13 +452,18 @@ def insert_entry_log(rows: list[dict]) -> None:
     get_db().table('entry_log').insert(rows).execute()
 
 
-def get_entry_log(limit: int = 200) -> list[dict]:
-    """Return the most recent entry_log rows, newest first."""
-    res = (get_db().table('entry_log')
-           .select('*')
-           .order('fired_at', desc=True)
-           .limit(limit)
-           .execute())
+def get_entry_log(limit: int = 200, model: str = 'all', side: str = 'all') -> list[dict]:
+    """Return the most recent entry_log rows, newest first.
+
+    model: 'all' | 'AGG' | 'CON' | 'WIDE' | 'CR'
+    side:  'all' | 'LONG' | 'SHORT'
+    """
+    q = get_db().table('entry_log').select('*').order('fired_at', desc=True)
+    if model != 'all':
+        q = q.eq('model', model.upper())
+    if side != 'all':
+        q = q.eq('side', side.upper())
+    res = q.limit(limit).execute()
     return res.data or []
 
 
