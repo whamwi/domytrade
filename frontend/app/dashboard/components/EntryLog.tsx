@@ -83,11 +83,12 @@ export default function EntryLog({ visible, onClose }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/entry-log?limit=200`)
+      const modelParam = filter === 'ALL' ? '' : `&model=${filter}`
+      const res = await fetch(`${API}/api/entry-log?limit=500${modelParam}`)
       const data = await res.json()
       setEntries(data.entries ?? [])
     } catch { /* silent */ }
-  }, [])
+  }, [filter])
 
   const purge = useCallback(async () => {
     if (!confirm('Clear all entry log entries?')) return
@@ -103,11 +104,11 @@ export default function EntryLog({ visible, onClose }: Props) {
     load().finally(() => setLoading(false))
     const t = setInterval(load, 30_000)
     return () => clearInterval(t)
-  }, [visible, load])
+  }, [visible, load])  // load already depends on filter, so filter change triggers reload
 
   if (!visible) return null
 
-  const filtered = filter === 'ALL' ? entries : entries.filter(e => e.model === filter)
+  const filtered = entries  // filtering now done server-side
 
   // Group by date
   const grouped: { date: string; rows: EntryRow[] }[] = []

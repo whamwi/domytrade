@@ -5630,14 +5630,27 @@ def get_stock_profile(ticker: str):
 # ── Entry Log ─────────────────────────────────────────────────────────────────
 
 @app.get('/api/entry-log')
-async def api_entry_log(limit: int = Query(default=200, le=500)):
+async def api_entry_log(
+    limit: int  = Query(default=200, le=1000),
+    model: str  = Query(default='all'),   # 'all' | 'AGG' | 'CON' | 'WIDE' | 'CR'
+    side:  str  = Query(default='all'),   # 'all' | 'LONG' | 'SHORT'
+):
     """Return recent ENTRY alert history for forward-testing analysis.
 
     Each row is a NEAR→ENTRY transition across all models (AGG/CON/WIDE/CR).
-    Newest first. Default 200 rows, max 500.
+    Newest first. Default 200 rows, max 1000.
+    Filter by model=CR to see only Clearing Range events.
     """
     try:
-        rows = await asyncio.to_thread(get_entry_log, limit)
+        def _fetch():
+            q = get_db().table('entry_log').select('*').order('fired_at', desc=True)
+            if model != 'all':
+                q = q.eq('model', model.upper())
+            if side != 'all':
+                q = q.eq('side', side.upper())
+            q = q.limit(limit)
+            return (q.execute().data or [])
+        rows = await asyncio.to_thread(_fetch)
         return {'entries': rows, 'count': len(rows)}
     except Exception as e:
         log.warning('entry-log fetch error: %s', e)
