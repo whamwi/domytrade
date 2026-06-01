@@ -44,6 +44,7 @@ CON_DAYS = 90
 STATS_REFRESH_HOURS = 24
 SIGNAL_REFRESH_SECS = 30
 HL_REFRESH_SECS     = 10   # fast H/L accumulator — closes gap with TOS tick-by-tick
+PRICE_REFRESH_SECS  =  5   # fast price-only push via WebSocket
 
 
 # Sector / industry ETF tickers — used by frontend for "Sectors" filter
@@ -1930,25 +1931,77 @@ async def background_loop():
             except Exception as _hl_e:
                 log.warning('_hl_loop error: %s', _hl_e)
 
-            # ── Push current prices to WS clients ─────────────────────────
-            if ws_manager.clients and state['last_price']:
-                try:
-                    sid_to_ticker = {s['id']: s['ticker'] for s in state.get('symbols', [])}
-                    prices = {
-                        sid_to_ticker[sid]: price
-                        for sid, price in state['last_price'].items()
-                        if sid in sid_to_ticker and price
-                    }
-                    if prices:
-                        asyncio.create_task(ws_manager.broadcast({
-                            'type':   'prices',
-                            'prices': prices,
-                            'ts':     datetime.now(ET).isoformat(),
-                        }))
-                except Exception as _pe:
-                    log.warning('WS price push error: %s', _pe)
+            # Price push handled by _price_loop (every 5s) — no duplicate here
 
     asyncio.create_task(_hl_loop())   # fast H/L accumulator — runs independently at 10s
+
+    async def _price_loop():
+        """5-second price-only refresh pushed to WS clients.
+
+        Fetches quotes for:
+          • All active futures (always — traders need these real-time)
+          • Stocks/ETFs currently in ENTRY or NEAR state (highest priority)
+        Then broadcasts a lightweight {type:'prices'} payload.
+        No candle processing, no signal recompute — pure quote + push.
+        """
+        while True:
+            await asyncio.sleep(PRICE_REFRESH_SECS)
+            if not ws_manager.clients:
+                continue   # nobody watching — skip the Schwab call entirely
+
+            try:
+                syms = state.get('symbols', [])
+                sid_to_ticker = {s['id']: s['ticker'] for s in syms}
+
+                # Priority symbols: futures always + ENTRY/NEAR stocks
+                active_tickers = {
+                    r['symbol'] for r in state.get('signals', [])
+                    if r.get('signal_state') in ('ENTRY', 'NEAR')
+                }
+                priority = [
+                    s for s in syms
+                    if s['ticker'].startswith('/') or s['ticker'] in active_tickers
+                ]
+                if not priority:
+                    priority = syms[:30]   # fallback: first 30 symbols
+
+                quote_syms = [
+                    _active_contract(s['ticker']) if s['ticker'].startswith('/')
+                    else s['schwab_symbol']
+                    for s in priority
+                ]
+                quote_key = {
+                    (_active_contract(s['ticker']) if s['ticker'].startswith('/') else s['schwab_symbol']): s['id']
+                    for s in priority
+                }
+
+                raw = await asyncio.to_thread(get_quotes, quote_syms)
+
+                prices: dict[str, float] = {}
+                for qs, q in raw.items():
+                    last = q.get('last', 0)
+                    if not last:
+                        continue
+                    sid = quote_key.get(qs)
+                    if sid is None:
+                        continue
+                    ticker = sid_to_ticker.get(sid)
+                    if ticker:
+                        prices[ticker] = round(last, 4)
+                        state['last_price'][sid] = round(last, 4)
+
+                if prices:
+                    asyncio.create_task(ws_manager.broadcast({
+                        'type':   'prices',
+                        'prices': prices,
+                        'ts':     datetime.now(ET).isoformat(),
+                    }))
+                    log.debug('Price push: %d symbols → %d WS clients',
+                              len(prices), len(ws_manager.clients))
+            except Exception as _pe:
+                log.warning('_price_loop error: %s', _pe)
+
+    asyncio.create_task(_price_loop())   # 5s real-time price push via WebSocket
 
     # Kick off background tasks that don't block startup
     asyncio.create_task(refresh_etf_holdings())
