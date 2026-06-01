@@ -15,10 +15,11 @@ import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomi
 import AskAI from './components/AskAI'
 import EntryLog from './components/EntryLog'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-const REFRESH_INTERVAL       = 30_000   // normal polling — matches entry log cadence
-const WARMUP_RETRY_INTERVAL  = 10_000   // fast retry while backend is still computing
-const ERROR_REFRESH_INTERVAL =  5_000   // retry on network error
+const API_URL  = process.env.NEXT_PUBLIC_API_URL ?? ''
+// WebSocket URL — same host, ws(s):// scheme
+const WS_URL   = API_URL.replace(/^https?:\/\//, m => m === 'https://' ? 'wss://' : 'ws://')
+const SLOW_POLL_INTERVAL = 60_000   // market-bias, symbols, industries, etc.
+const WS_RETRY_BASE_MS   =  3_000   // initial WS reconnect delay (doubles up to 30s)
 
 interface ApiResponse {
   signals: Signal[]
@@ -153,7 +154,7 @@ export default function DashboardPage() {
   // Reset countdown to 60 and tick down every second whenever the data timestamp changes
   useEffect(() => {
     if (!lastUpdated) return
-    setCountdown(REFRESH_INTERVAL / 1000)
+    setCountdown(30)   // WS pushes every ~30s — reset countdown on each update
     if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current)
     countdownIntervalRef.current = setInterval(() => {
       setCountdown(c => {
@@ -209,7 +210,10 @@ export default function DashboardPage() {
     )
   }
 
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wsRef       = useRef<WebSocket | null>(null)
+  const wsRetryRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wsRetryMs   = useRef(WS_RETRY_BASE_MS)
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auth check
   useEffect(() => {
@@ -231,77 +235,117 @@ export default function DashboardPage() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  const fetchSignals = useCallback(async () => {
-    try {
-      const [sigRes, symRes, biasRes, indRes, ytdRes, persRes] = await Promise.all([
-        fetch(`${API_URL}/api/signals?model=all&side=all`, { cache: 'no-store' }),
-        fetch(`${API_URL}/api/symbols`,                    { cache: 'no-store' }),
-        fetch(`${API_URL}/api/market-bias`,                { cache: 'no-store' }),
-        fetch(`${API_URL}/api/industries`,                 { cache: 'no-store' }),
-        fetch(`${API_URL}/api/sector-ytd`,                 { cache: 'no-store' }),
-        fetch(`${API_URL}/api/personality`,                { cache: 'no-store' }),
-      ])
-      if (!sigRes.ok) throw new Error(`HTTP ${sigRes.status}`)
-      const json: ApiResponse = await sigRes.json()
-      // Don't overwrite good data with an empty array — backend may be warming up
-      // after a restart and returns [] for the first 30-60s.  Keep showing stale
-      // data until the backend sends real signals again.
-      const hasSignals = json.signals.length > 0
-      setData(prev => (hasSignals || !prev?.signals.length) ? json : prev)
-      setLastUpdated(formatLastUpdated(json.last_updated))
-      setError(null)
-      setLoading(false)
-
-      if (hasSignals) {
-        setWarmRetries(0)
-      } else {
-        // Backend still warming up — count retries so the UI can show progress
-        setWarmRetries(r => r + 1)
+  // ── Apply incoming signal payload (snapshot or update) ────────────────────
+  const applySignals = useCallback((payload: { signals: Signal[]; last_updated?: string }) => {
+    const hasSignals = (payload.signals?.length ?? 0) > 0
+    setData(prev => {
+      if (!hasSignals && (prev?.signals?.length ?? 0) > 0) return prev  // keep stale
+      const base = prev ?? { signals: [], count: 0, longs: 0, shorts: 0,
+                             last_updated: '', last_stats: '', status: '' } as ApiResponse
+      return {
+        ...base,
+        signals:      payload.signals,
+        count:        payload.signals.length,
+        longs:        payload.signals.filter((s: Signal) => s.side === 'LONG').length,
+        shorts:       payload.signals.filter((s: Signal) => s.side === 'SHORT').length,
+        last_updated: payload.last_updated ?? base.last_updated,
+        status:       'live',
       }
-
-      if (symRes.ok) {
-        const symJson = await symRes.json()
-        setAllSymbols(symJson.symbols ?? [])
-      }
-      if (biasRes.ok) {
-        const biasJson = await biasRes.json()
-        setMarketBias(biasJson.markets ?? [])
-        setVix(biasJson.volatility?.vix ?? null)
-      }
-      if (indRes.ok) {
-        const indJson = await indRes.json()
-        setIndustries(indJson.industries ?? [])
-      }
-      if (ytdRes.ok) {
-        setYtdMap(await ytdRes.json())
-      }
-      if (persRes.ok) {
-        const persJson = await persRes.json()
-        setPersonalityData(persJson.data ?? {})
-        setPersonalityHour(persJson.hour_et ?? -1)
-      }
-
-      // Retry faster while signals haven't arrived yet
-      timerRef.current = setTimeout(fetchSignals, hasSignals ? REFRESH_INTERVAL : WARMUP_RETRY_INTERVAL)
-    } catch {
-      setError('Cannot reach server — retrying')
-      setLoading(false)
-      timerRef.current = setTimeout(fetchSignals, ERROR_REFRESH_INTERVAL)
-    }
+    })
+    if (payload.last_updated) setLastUpdated(formatLastUpdated(payload.last_updated))
+    if (hasSignals) { setWarmRetries(0); setError(null); setLoading(false) }
+    else setWarmRetries(r => r + 1)
   }, [])
 
+  // ── WebSocket — real-time signal push ─────────────────────────────────────
+  const connectWS = useCallback(() => {
+    if (!WS_URL) return
+    if (wsRef.current?.readyState === WebSocket.OPEN) return
+
+    const ws = new WebSocket(`${WS_URL}/ws/signals`)
+
+    ws.onopen = () => {
+      wsRetryMs.current = WS_RETRY_BASE_MS   // reset backoff on success
+    }
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data)
+        if (msg.type === 'snapshot' || msg.type === 'update') {
+          applySignals(msg)
+        }
+        // pong handled implicitly — no action needed
+      } catch { /* malformed message — ignore */ }
+    }
+
+    ws.onclose = () => {
+      wsRef.current = null
+      // Exponential backoff — doubles each retry up to 30s
+      const delay = wsRetryMs.current
+      wsRetryMs.current = Math.min(delay * 2, 30_000)
+      wsRetryRef.current = setTimeout(connectWS, delay)
+    }
+
+    ws.onerror = () => ws.close()   // onclose handles reconnect
+
+    wsRef.current = ws
+  }, [applySignals])
+
+  // ── Slow data poll — market-bias, symbols, industries, etc. ──────────────
+  // These change infrequently so 60s polling is fine; signals come via WS.
+  const fetchSlowData = useCallback(async () => {
+    try {
+      const [symRes, biasRes, indRes, ytdRes, persRes] = await Promise.all([
+        fetch(`${API_URL}/api/symbols`,      { cache: 'no-store' }),
+        fetch(`${API_URL}/api/market-bias`,  { cache: 'no-store' }),
+        fetch(`${API_URL}/api/industries`,   { cache: 'no-store' }),
+        fetch(`${API_URL}/api/sector-ytd`,   { cache: 'no-store' }),
+        fetch(`${API_URL}/api/personality`,  { cache: 'no-store' }),
+      ])
+      if (symRes.ok) {
+        const j = await symRes.json()
+        setAllSymbols(j.symbols ?? [])
+      }
+      if (biasRes.ok) {
+        const j = await biasRes.json()
+        setMarketBias(j.markets ?? [])
+        setVix(j.volatility?.vix ?? null)
+      }
+      if (indRes.ok) {
+        const j = await indRes.json()
+        setIndustries(j.industries ?? [])
+      }
+      if (ytdRes.ok) setYtdMap(await ytdRes.json())
+      if (persRes.ok) {
+        const j = await persRes.json()
+        setPersonalityData(j.data ?? {})
+        setPersonalityHour(j.hour_et ?? -1)
+      }
+    } catch { /* network issue — will retry */ }
+    slowTimerRef.current = setTimeout(fetchSlowData, SLOW_POLL_INTERVAL)
+  }, [])
+
+  // ── Boot: connect WS + start slow poll when authed ────────────────────────
   useEffect(() => {
     if (!authed) return
-    fetchSignals()
+    connectWS()
+    fetchSlowData()
+    // Keepalive ping every 20s to prevent proxy/Railway idle timeout
+    const pingInterval = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send('ping')
+    }, 20_000)
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
+      clearInterval(pingInterval)
+      if (wsRetryRef.current)  clearTimeout(wsRetryRef.current)
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current)
+      wsRef.current?.close()
     }
-  }, [authed, fetchSignals])
+  }, [authed, connectWS, fetchSlowData])
 
   function handleRefresh() {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    setLoading(true)
-    fetchSignals()
+    // Force a slow-data refresh immediately; WS delivers signals automatically
+    if (slowTimerRef.current) clearTimeout(slowTimerRef.current)
+    fetchSlowData()
   }
 
   // Filter signals — watchlist narrows first, then side/model/asset apply on top
@@ -429,7 +473,7 @@ export default function DashboardPage() {
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeDasharray={`${2 * Math.PI * 5}`}
-                    strokeDashoffset={`${2 * Math.PI * 5 * (countdown / (REFRESH_INTERVAL / 1000))}`}
+                    strokeDashoffset={`${2 * Math.PI * 5 * (countdown / 30)}`}
                     style={{ transform: 'rotate(-90deg)', transformOrigin: '7px 7px', transition: 'stroke-dashoffset 0.8s linear' }}
                   />
                 </svg>

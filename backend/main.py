@@ -1177,6 +1177,14 @@ async def refresh_signals():
     state['last_signal_update'] = datetime.now(ET).isoformat()
     state['status'] = 'live'
 
+    # ── Push to all connected WebSocket clients ────────────────────────────────
+    if ws_manager.clients:
+        asyncio.create_task(ws_manager.broadcast({
+            'type':         'update',
+            'signals':      rows,
+            'last_updated': state['last_signal_update'],
+        }))
+
     _near_ct  = sum(1 for r in rows if r.get('signal_state') == 'NEAR')
     _entry_ct = sum(1 for r in rows if r.get('signal_state') == 'ENTRY')
     _alert_ct = sum(1 for r in rows if r.get('entry_alert'))
@@ -2333,6 +2341,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title='domytrade API', lifespan=lifespan)
 
+# ── WebSocket connection manager ───────────────────────────────────────────────
+from fastapi import WebSocket, WebSocketDisconnect as _WSDisconnect
+
+class _WSManager:
+    """Manages all active /ws/signals connections and broadcasts."""
+    def __init__(self):
+        self.clients: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.clients.append(ws)
+        log.info('WS client connected  (total: %d)', len(self.clients))
+
+    def disconnect(self, ws: WebSocket):
+        self.clients = [c for c in self.clients if c is not ws]
+        log.info('WS client disconnected (total: %d)', len(self.clients))
+
+    async def broadcast(self, payload: dict):
+        """Send payload to all connected clients; drop dead connections."""
+        dead = []
+        for c in self.clients:
+            try:
+                await c.send_json(payload)
+            except Exception:
+                dead.append(c)
+        for c in dead:
+            self.clients = [x for x in self.clients if x is not c]
+
+ws_manager = _WSManager()
+
 app.add_middleware(CORSMiddleware,
     allow_origins=[
         'http://localhost:3000',
@@ -2373,6 +2411,37 @@ def get_signals(model: str = Query('all'), side: str = Query('all')):
         'last_stats'  : state['last_stats_update'],
         'status'      : state['status'],
     }
+
+
+@app.websocket('/ws/signals')
+async def ws_signals(ws: WebSocket):
+    """WebSocket endpoint — pushes signal updates in real time.
+
+    On connect: immediately sends the current snapshot so the client has
+    data before the next 30-second backend refresh cycle.
+
+    Message types sent to client:
+      { type: 'snapshot', signals: [...], last_updated: '...' }
+      { type: 'update',   signals: [...], last_updated: '...' }
+
+    Client can send 'ping' → server replies with 'pong' (keepalive).
+    """
+    await ws_manager.connect(ws)
+    # Immediate snapshot so the client doesn't wait up to 30s for first data
+    await ws.send_json({
+        'type':         'snapshot',
+        'signals':      state['signals'],
+        'last_updated': state['last_signal_update'],
+    })
+    try:
+        while True:
+            msg = await ws.receive_text()
+            if msg == 'ping':
+                await ws.send_json({'type': 'pong'})
+    except _WSDisconnect:
+        ws_manager.disconnect(ws)
+    except Exception:
+        ws_manager.disconnect(ws)
 
 
 @app.get('/api/debug/loop')
