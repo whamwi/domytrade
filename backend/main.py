@@ -6582,11 +6582,20 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                 kl['label'] = 'ONH — long target'
             elif lbl == 'ONL — long entry / fade (buy)':
                 kl['label'] = 'ONL — long entry zone'
-            # ON POC is resistance in bearish IB; in LONG regime it's the break-above trigger
+            # ON POC: resistance in bearish IB — in LONG regime it's the break-above trigger
             elif 'resistance / short entry' in lbl:
                 kl['label'] = lbl.replace('resistance / short entry',
                                           'resistance — break above = long signal')
-                kl['color'] = 'amber'   # amber = watch/decision, not red resistance
+                kl['color'] = 'amber'
+            # ONL confirmed broken below — in LONG regime: watch for price to reclaim it
+            elif lbl == 'ONL → Resistance (confirmed)':
+                kl['label'] = 'ONL — broken support, reclaim above = bullish pivot'
+                kl['color'] = 'amber'
+            elif lbl == 'ONL → Resistance':
+                kl['label'] = 'ONL — reclaim above = watch level'
+                kl['color'] = 'amber'
+            # ONH confirmed as support (bullish excess) — no change needed, already correct
+            # ONH probe labels — no change needed
 
     key_levels_out = sorted(key_levels, key=lambda x: x['level'], reverse=True)
 
