@@ -2343,6 +2343,19 @@ app.add_middleware(CORSMiddleware,
     allow_headers=['*'],
 )
 
+# ── Global exception handler — ensures CORS headers survive unhandled errors ──
+# Without this, Railway returns a plain-text 500 with no CORS headers,
+# which the browser sees as "TypeError: Failed to fetch" instead of a real error.
+from fastapi.responses import JSONResponse as _JSONResponse
+from fastapi.requests import Request as _Request
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(_req: _Request, exc: Exception):
+    log.exception('Unhandled exception in %s', _req.url.path)
+    return _JSONResponse(
+        status_code=500,
+        content={'error': 'server_error', 'message': str(exc)[:200]},
+    )
+
 
 @app.get('/api/signals')
 def get_signals(model: str = Query('all'), side: str = Query('all')):
@@ -6989,7 +7002,11 @@ async def api_market_profile(symbol: str):
         raw_1min = await asyncio.to_thread(get_candles, symbol, 5, 1)
     except Exception as exc:
         err_str = str(exc)
-        if 'invalid_grant' in err_str or 'refresh_token' in err_str.lower() or '401' in err_str:
+        if ('invalid_grant' in err_str or 'refresh_token' in err_str.lower()
+                or '401' in err_str
+                or 'oauth/token' in err_str          # 400 from failed token refresh
+                or 'unsupported_token_type' in err_str
+                or 'token is invalid' in err_str.lower()):
             return JSONResponse(status_code=503, content={
                 'error': 'token_expired',
                 'message': 'Schwab token expired — run renew_schwab_token.py to restore live data.',
