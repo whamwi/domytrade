@@ -789,7 +789,7 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
                 borderLeft: `2px solid ${sc.dot}` }}>
                 <div style={{ fontSize: '13px', fontWeight: 700, color: sc.color,
                   marginBottom: '2px' }}>{s.signal}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>
                   {s.detail}
                 </div>
               </div>
@@ -804,7 +804,7 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
                 textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
                 Trade Plan
               </div>
-              <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              <div style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.5 }}>
                 {signals.trade_plan}
               </div>
             </div>
@@ -812,7 +812,7 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
 
           {/* Day context */}
           {signals.day_context && (
-            <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.4,
+            <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.4,
               fontStyle: 'italic' }}>
               {signals.day_context}
             </div>
