@@ -6738,11 +6738,11 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
 
     # Helper: period label with human-readable time
     def _plabel(letter: str) -> str:
-        idx    = ord(letter) - ord('A')
-        h_s    = 9 + idx // 2
-        m_s    = 30 if idx % 2 == 1 else 0
-        h_e    = 9 + (idx + 1) // 2
-        m_e    = 30 if (idx) % 2 == 0 else 0
+        idx       = ord(letter) - ord('A')
+        t_s       = 570 + idx * 30        # minutes since midnight (A=9:30)
+        t_e       = t_s + 30
+        h_s, m_s  = divmod(t_s, 60)
+        h_e, m_e  = divmod(t_e, 60)
         return f'{letter}  ({h_s}:{m_s:02d}–{h_e}:{m_e:02d})'
 
     period_label = _plabel(last_letter)

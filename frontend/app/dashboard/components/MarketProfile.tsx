@@ -915,7 +915,7 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
 
         {/* Narrative */}
         {lr.current_read && (
-          <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
+          <p style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.6, margin: 0 }}>
             {lr.current_read}
           </p>
         )}
@@ -928,7 +928,7 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
               textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
               Guidance
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.55 }}>
+            <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.55 }}>
               {lr.live_guidance}
             </div>
           </div>
@@ -940,14 +940,14 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
             padding: '8px 12px', background: 'rgba(255,255,255,0.03)',
             border: '1px solid rgba(255,255,255,0.06)', borderRadius: '7px' }}>
             <div>
-              <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b',
                 textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '2px' }}>
                 Watch
               </div>
               <div style={{ fontSize: '12px', fontWeight: 700, color: cfg.color }}>
                 {lr.watch_level.label}
               </div>
-              <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '2px', lineHeight: 1.4 }}>
+              <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', lineHeight: 1.4 }}>
                 {lr.watch_level.significance}
               </div>
             </div>
