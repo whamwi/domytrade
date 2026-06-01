@@ -77,9 +77,10 @@ interface Props {
 }
 
 export default function EntryLog({ visible, onClose }: Props) {
-  const [entries, setEntries] = useState<EntryRow[]>([])
-  const [loading, setLoading] = useState(false)
-  const [filter, setFilter] = useState<'ALL' | 'AGG' | 'CON' | 'WIDE' | 'CR'>('ALL')
+  const [entries,  setEntries]  = useState<EntryRow[]>([])
+  const [loading,  setLoading]  = useState(false)
+  const [filter,   setFilter]   = useState<'ALL' | 'AGG' | 'CON' | 'WIDE' | 'CR'>('ALL')
+  const [symSearch, setSymSearch] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -108,7 +109,9 @@ export default function EntryLog({ visible, onClose }: Props) {
 
   if (!visible) return null
 
-  const filtered = entries  // filtering now done server-side
+  // Symbol search — client-side (instant, no extra fetch)
+  const sym = symSearch.trim().toUpperCase()
+  const filtered = sym ? entries.filter(e => e.symbol.toUpperCase().includes(sym)) : entries
 
   // Group by date
   const grouped: { date: string; rows: EntryRow[] }[] = []
@@ -137,21 +140,39 @@ export default function EntryLog({ visible, onClose }: Props) {
     }}>
       {/* Header */}
       <div style={{
-        padding: '16px 20px',
+        padding: '12px 20px',
         borderBottom: '1px solid #2a2d36',
         display: 'flex',
-        alignItems: 'center',
-        gap: 10,
+        flexDirection: 'column',
+        gap: 8,
         flexShrink: 0,
       }}>
-        <span style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 15 }}>Entry Log</span>
-        <span style={{ color: '#64748b', fontSize: 12 }}>
-          {entries.length} entries
-        </span>
-        {loading && <span style={{ color: '#475569', fontSize: 11 }}>loading…</span>}
+        {/* Row 1: title + close */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 15 }}>Entry Log</span>
+          <span style={{ color: '#64748b', fontSize: 12 }}>
+            {filtered.length}{filtered.length !== entries.length ? `/${entries.length}` : ''} entries
+          </span>
+          {loading && <span style={{ color: '#475569', fontSize: 11 }}>loading…</span>}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+            {entries.length > 0 && (
+              <button onClick={purge} style={{
+                background: 'rgba(248,113,113,0.08)',
+                border: '1px solid rgba(248,113,113,0.2)',
+                color: '#f87171', cursor: 'pointer',
+                borderRadius: 5, padding: '2px 9px', fontSize: 11, fontWeight: 600,
+              }}>Clear</button>
+            )}
+            <button onClick={onClose} style={{
+              background: 'transparent', border: 'none', color: '#64748b',
+              cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: '0 4px',
+            }}>✕</button>
+          </div>
+        </div>
 
-        {/* Model filter pills */}
-        <div style={{ display: 'flex', gap: 5, marginLeft: 8 }}>
+        {/* Row 2: model pills + symbol search */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          {/* Model filter pills */}
           {models.map(m => {
             const s = m === 'ALL' ? null : MODEL_STYLE[m]
             const active = filter === m
@@ -162,30 +183,32 @@ export default function EntryLog({ visible, onClose }: Props) {
                 border: `1px solid ${active ? (s ? s.color + '50' : '#555') : '#2a2d36'}`,
                 borderRadius: 5, padding: '2px 9px', fontSize: 11,
                 fontWeight: 600, cursor: 'pointer',
-              }}>
-                {m}
-              </button>
+              }}>{m}</button>
             )
           })}
-        </div>
 
-        {/* Clear + Close buttons */}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-          {entries.length > 0 && (
-            <button onClick={purge} style={{
-              background: 'rgba(248,113,113,0.08)',
-              border: '1px solid rgba(248,113,113,0.2)',
-              color: '#f87171', cursor: 'pointer',
-              borderRadius: 5, padding: '2px 9px', fontSize: 11, fontWeight: 600,
-            }} title="Purge all entries">
-              Clear
-            </button>
-          )}
-          <button onClick={onClose} style={{
-            background: 'transparent',
-            border: 'none', color: '#64748b', cursor: 'pointer',
-            fontSize: 20, lineHeight: 1, padding: '0 4px',
-          }} title="Close log">✕</button>
+          {/* Symbol search */}
+          <div style={{ position: 'relative', marginLeft: 4 }}>
+            <input
+              type="text"
+              placeholder="Symbol…"
+              value={symSearch}
+              onChange={e => setSymSearch(e.target.value)}
+              style={{
+                background: 'rgba(255,255,255,0.05)',
+                border: `1px solid ${symSearch ? '#60a5fa50' : '#2a2d36'}`,
+                borderRadius: 5, padding: '2px 28px 2px 8px',
+                color: '#e2e8f0', fontSize: 11, width: 90, outline: 'none',
+              }}
+            />
+            {symSearch && (
+              <button onClick={() => setSymSearch('')} style={{
+                position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', color: '#64748b',
+                cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: 0,
+              }}>✕</button>
+            )}
+          </div>
         </div>
       </div>
 
