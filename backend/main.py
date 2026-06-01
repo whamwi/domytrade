@@ -1919,13 +1919,34 @@ async def background_loop():
 
     # ── Define inner loops BEFORE creating tasks ───────────────────────────────
     async def _hl_loop():
-        """Independent 10s loop — updates hourly H/L accumulators between signal refreshes."""
+        """Independent 10s loop — updates hourly H/L accumulators between signal refreshes.
+        Also pushes a lightweight price update to all WS clients so the browser
+        reflects the latest price every 10s instead of waiting for the full 30s refresh.
+        """
         while True:
             await asyncio.sleep(HL_REFRESH_SECS)
             try:
                 await refresh_hourly_hl()
             except Exception as _hl_e:
                 log.warning('_hl_loop error: %s', _hl_e)
+
+            # ── Push current prices to WS clients ─────────────────────────
+            if ws_manager.clients and state['last_price']:
+                try:
+                    sid_to_ticker = {s['id']: s['ticker'] for s in state.get('symbols', [])}
+                    prices = {
+                        sid_to_ticker[sid]: price
+                        for sid, price in state['last_price'].items()
+                        if sid in sid_to_ticker and price
+                    }
+                    if prices:
+                        asyncio.create_task(ws_manager.broadcast({
+                            'type':   'prices',
+                            'prices': prices,
+                            'ts':     datetime.now(ET).isoformat(),
+                        }))
+                except Exception as _pe:
+                    log.warning('WS price push error: %s', _pe)
 
     asyncio.create_task(_hl_loop())   # fast H/L accumulator — runs independently at 10s
 

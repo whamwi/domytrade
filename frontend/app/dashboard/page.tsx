@@ -235,6 +235,21 @@ export default function DashboardPage() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
+  // ── Apply lightweight price update (every 10s from _hl_loop) ────────────────
+  const applyPrices = useCallback((prices: Record<string, number>) => {
+    setData(prev => {
+      if (!prev?.signals?.length) return prev
+      let changed = false
+      const updated = prev.signals.map((s: Signal) => {
+        const p = prices[s.symbol]
+        if (p == null || p === s.last) return s
+        changed = true
+        return { ...s, last: p }
+      })
+      return changed ? { ...prev, signals: updated } : prev
+    })
+  }, [])
+
   // ── Apply incoming signal payload (snapshot or update) ────────────────────
   const applySignals = useCallback((payload: { signals: Signal[]; last_updated?: string }) => {
     const hasSignals = (payload.signals?.length ?? 0) > 0
@@ -273,6 +288,8 @@ export default function DashboardPage() {
         const msg = JSON.parse(evt.data)
         if (msg.type === 'snapshot' || msg.type === 'update') {
           applySignals(msg)
+        } else if (msg.type === 'prices') {
+          applyPrices(msg.prices)   // fast 10s price tick — no full re-render
         }
         // pong handled implicitly — no action needed
       } catch { /* malformed message — ignore */ }
@@ -289,7 +306,7 @@ export default function DashboardPage() {
     ws.onerror = () => ws.close()   // onclose handles reconnect
 
     wsRef.current = ws
-  }, [applySignals])
+  }, [applySignals, applyPrices])
 
   // ── Slow data poll — market-bias, symbols, industries, etc. ──────────────
   // These change infrequently so 60s polling is fine; signals come via WS.
