@@ -118,9 +118,6 @@ export default function Terminal() {
           </tbody>
         </table>
       </div>
-      <div className="term-overlay">
-        <button className="btn btn-primary btn-lg">Open the live terminal →</button>
-      </div>
     </div>
   );
 }
