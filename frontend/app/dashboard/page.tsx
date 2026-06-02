@@ -181,7 +181,7 @@ export default function DashboardPage() {
   const [editorOpen,        setEditorOpen]        = useState(false)
   const [editingWatchlist,  setEditingWatchlist]  = useState<Watchlist | null>(null)
 
-  // Load watchlists from Supabase on mount
+  // Load watchlists from Supabase on mount + restore active selection
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) return
@@ -190,9 +190,25 @@ export default function DashboardPage() {
         .select('*')
         .eq('user_id', session.user.id)
         .order('created_at', { ascending: true })
-      if (data) setWatchlists(data as Watchlist[])
+      if (data) {
+        setWatchlists(data as Watchlist[])
+        // Restore last active watchlist (if it still exists)
+        const saved = localStorage.getItem('domytrade_active_watchlist')
+        if (saved && data.some((w: Watchlist) => w.id === saved)) {
+          setActiveWatchlistId(saved)
+        }
+      }
     })
   }, [])
+
+  // Persist active watchlist selection
+  useEffect(() => {
+    if (activeWatchlistId) {
+      localStorage.setItem('domytrade_active_watchlist', activeWatchlistId)
+    } else {
+      localStorage.removeItem('domytrade_active_watchlist')
+    }
+  }, [activeWatchlistId])
 
   function handleWatchlistSaved(w: Watchlist) {
     setWatchlists(prev => {
