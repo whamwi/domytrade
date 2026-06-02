@@ -7165,15 +7165,81 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
         else:
             return _building
 
+    # ── Developing period — bridge the gap between closes ────────────────────
+    # The live read is designed to narrate what's happening RIGHT NOW inside
+    # the current in-progress period, not just at the close of each letter.
+    next_idx = last_complete_idx + 1
+    dev_read = ''
+    dev_letter = ''
+    dev_price  = None
+    if next_idx <= 12:
+        dev_letter = chr(ord('A') + next_idx)
+        dev_data   = pr.get(dev_letter, {})
+        dev_price  = dev_data.get('close')   # current live price of the developing bar
+
+        if dev_price is not None and on_high is not None and on_low is not None and on_poc is not None:
+            above_onh = dev_price > on_high + tick
+            below_onl = dev_price < on_low  - tick
+            below_poc = dev_price < on_poc  - tick
+            above_poc = dev_price > on_poc  + tick
+            ib_h      = ib_high or on_high
+            above_ibh = dev_price > ib_h + tick
+
+            if bias in ('BULLISH', 'BULLISH_LEAN'):
+                if above_ibh and status == 'CONFIRMED':
+                    pts = round(dev_price - ib_h, 2)
+                    dev_read = (f'\n\n⚡ {dev_letter} extending {pts} pts above IB High ({ib_h:.2f}) '
+                                f'at {dev_price:.2f}. Trend day in progress — ride longs, '
+                                f'trail stop below ONH ({on_high_s}).')
+                elif above_onh and status in ('WEAKENING', 'INTACT'):
+                    pts = round(dev_price - on_high, 2)
+                    dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts above ONH ({on_high_s}) '
+                                f'at {dev_price:.2f}. Acceptance building — '
+                                f'if {dev_letter} closes here, status upgrades to CONFIRMED. '
+                                f'Trail stop below ONH on open longs.')
+                elif above_onh and status == 'CONFIRMED':
+                    dev_read = (f'\n\n{dev_letter} holding above ONH ({on_high_s}) at {dev_price:.2f}. '
+                                f'Trend day continuing — maintain longs.')
+                elif below_poc:
+                    dev_read = (f'\n\n⚠ {dev_letter} developing below ON POC ({on_poc_s}) '
+                                f'at {dev_price:.2f}. If {dev_letter} closes here → signal INVALIDATED. '
+                                f'Reduce longs immediately.')
+                elif dev_price < on_high - tick and status == 'CONFIRMED':
+                    pts = round(on_high - dev_price, 2)
+                    dev_read = (f'\n\n{dev_letter} pulling back {pts} pts below ONH ({on_high_s}) '
+                                f'at {dev_price:.2f}. Watch for close: above ONH = trend intact, '
+                                f'below = downgrade.')
+
+            elif bias in ('BEARISH', 'BEARISH_LEAN'):
+                ib_l = ib_low or on_low
+                below_ibl = dev_price < ib_l - tick
+                if below_ibl and status == 'CONFIRMED':
+                    pts = round(ib_l - dev_price, 2)
+                    dev_read = (f'\n\n⚡ {dev_letter} extending {pts} pts below IB Low ({ib_l:.2f}) '
+                                f'at {dev_price:.2f}. Trend day in progress — ride shorts, '
+                                f'trail stop above ONL ({on_low_s}).')
+                elif below_onl and status in ('WEAKENING', 'INTACT'):
+                    pts = round(on_low - dev_price, 2)
+                    dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts below ONL ({on_low_s}) '
+                                f'at {dev_price:.2f}. Acceptance building — '
+                                f'if {dev_letter} closes here, status upgrades to CONFIRMED. '
+                                f'Trail stop above ONL on open shorts.')
+                elif above_poc:
+                    dev_read = (f'\n\n⚠ {dev_letter} developing above ON POC ({on_poc_s}) '
+                                f'at {dev_price:.2f}. If {dev_letter} closes here → signal INVALIDATED. '
+                                f'Reduce shorts immediately.')
+
     return {
-        'active':        True,
-        'status':        status,
-        'last_period':   last_letter,
-        'last_close':    last_close,
-        'current_read':  read,
-        'live_guidance': guidance,
-        'watch_level':   watch,
-        'first_warning': first_warning,   # frontend can show subtle indicator
+        'active':            True,
+        'status':            status,
+        'last_period':       last_letter,
+        'last_close':        last_close,
+        'current_read':      read + dev_read,   # closed period + live developing context
+        'live_guidance':     guidance,
+        'watch_level':       watch,
+        'first_warning':     first_warning,
+        'developing_period': dev_letter or None,
+        'developing_price':  dev_price,
     }
 
 
