@@ -802,7 +802,7 @@ function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
               border: `1px solid ${bcfg.border}`, borderRadius: '7px' }}>
               <div style={{ fontSize: '10px', fontWeight: 700, color: bcfg.color,
                 textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
-                Trade Plan
+                Trade Plan as Per IB Ranges
               </div>
               <div style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.5 }}>
                 {signals.trade_plan}
