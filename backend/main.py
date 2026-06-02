@@ -6411,6 +6411,10 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
 
     b_close = session_prof.get('period_ranges', {}).get('B', {}).get('close')
 
+    # Probe-rejection flags — set below when probe is confirmed rejected
+    onh_probe_rejected = False
+    onl_probe_rejected = False
+
     if ib_above_onh and not ib_below_onl:
         if open_inside_on:
             # OA open + IB pushed above ONH.
@@ -6433,6 +6437,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                 # B closed back inside the overnight range — probe only, conviction absent.
                 # Overnight sellers held their ground → reverts to two-sided OA context.
                 bias_score += 1
+                onh_probe_rejected = True
                 signals.append({'type': 'NEUTRAL', 'signal': 'IB probed above ONH — B closed back inside (OA)',
                     'detail': (f'IB High ({ib_high:.2f}) extended {round(ib_high - on_high, 2)} pts above '
                                f'ONH ({on_high:.2f}), but B period closed at '
@@ -6471,6 +6476,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
                 # B closed back inside — probe only.
                 # Overnight buyers held their ground → reverts to two-sided OA context.
                 bias_score -= 1
+                onl_probe_rejected = True
                 signals.append({'type': 'NEUTRAL', 'signal': 'IB probed below ONL — B closed back inside (OA)',
                     'detail': (f'IB Low ({ib_low:.2f}) dropped {round(on_low - ib_low, 2)} pts below '
                                f'ONL ({on_low:.2f}), but B period closed at '
@@ -6629,28 +6635,43 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
 
     if bias_score >= 2:
         bias = 'BULLISH'; bias_label = 'Bullish'
-        trade_plan = f'Buy pullbacks to ONH ({onh_s})'
-        if on_poc and ib_low > on_poc:
-            trade_plan += f' and ON POC ({poc_s}). '
+        if onh_probe_rejected:
+            # Probe above ONH was rejected — ONH is still resistance, not support yet.
+            # C period close above ONH is required to confirm.
+            trade_plan = (f'OA session — probe above ONH ({onh_s}) was rejected in B. '
+                          f'Watch C: close above ONH confirms bullish bias — then buy pullbacks to ONH. '
+                          f'Until C confirms: buy ON VAL ({on_val_s}), sell ON VAH ({on_vah_s}). '
+                          f'ON POC ({poc_s}) is the key support floor.')
         else:
-            trade_plan += '. '
-        on_high_val = float(onh_s) if onh_s != 'ONH' else None
-        if p_vah and on_high_val and p_vah > on_high_val:
-            trade_plan += f'Target Prior VAH {p_vah:.2f}. Do not short against the trend.'
-        else:
-            trade_plan += 'Trail stops on new highs. Do not short against the trend.'
+            trade_plan = f'Buy pullbacks to ONH ({onh_s})'
+            if on_poc and ib_low > on_poc:
+                trade_plan += f' and ON POC ({poc_s}). '
+            else:
+                trade_plan += '. '
+            on_high_val = float(onh_s) if onh_s != 'ONH' else None
+            if p_vah and on_high_val and p_vah > on_high_val:
+                trade_plan += f'Target Prior VAH {p_vah:.2f}. Do not short against the trend.'
+            else:
+                trade_plan += 'Trail stops on new highs. Do not short against the trend.'
     elif bias_score <= -2:
         bias = 'BEARISH'; bias_label = 'Bearish'
-        trade_plan = f'Sell rallies to ONL ({onl_s})'
-        if on_poc and ib_high < on_poc:
-            trade_plan += f' and ON POC ({poc_s}). '
+        if onl_probe_rejected:
+            # Probe below ONL was rejected — ONL is still support, not resistance yet.
+            trade_plan = (f'OA session — probe below ONL ({onl_s}) was rejected in B. '
+                          f'Watch C: close below ONL confirms bearish bias — then sell rallies to ONL. '
+                          f'Until C confirms: sell ON VAH ({on_vah_s}), buy ON VAL ({on_val_s}). '
+                          f'ON POC ({poc_s}) is the key resistance ceiling.')
         else:
-            trade_plan += '. '
-        on_low_val = float(onl_s) if onl_s != 'ONL' else None
-        if p_val and on_low_val and p_val < on_low_val:
-            trade_plan += f'Target Prior VAL {p_val:.2f}. Do not buy against the trend.'
-        else:
-            trade_plan += 'Trail stops on new lows. Do not buy against the trend.'
+            trade_plan = f'Sell rallies to ONL ({onl_s})'
+            if on_poc and ib_high < on_poc:
+                trade_plan += f' and ON POC ({poc_s}). '
+            else:
+                trade_plan += '. '
+            on_low_val = float(onl_s) if onl_s != 'ONL' else None
+            if p_val and on_low_val and p_val < on_low_val:
+                trade_plan += f'Target Prior VAL {p_val:.2f}. Do not buy against the trend.'
+            else:
+                trade_plan += 'Trail stops on new lows. Do not buy against the trend.'
     elif bias_score == 1:
         bias = 'BULLISH_LEAN'; bias_label = 'Bullish Lean'
         if open_inside_on and ib_above_onh:
