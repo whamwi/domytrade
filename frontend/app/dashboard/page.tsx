@@ -125,18 +125,6 @@ export default function DashboardPage() {
 
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
 
-  // Play one beep when any signal transitions NEAR → ENTRY
-  // Only beep for signals that pass the active watchlist filter
-  useEffect(() => {
-    if (!data?.signals) return
-    const hasEntryAlert = data.signals.some((s: Signal) => {
-      if (!s.entry_alert) return false
-      const ticker = s.symbol.split(':')[0]
-      return !activeWL || (activeWL.assets.includes(ticker) && activeWL.models.includes(s.model))
-    })
-    if (hasEntryAlert) playAlertSound()
-  }, [data?.signals, activeWL])
-
   // Warm-up timer: only show spinner while backend hasn't responded at all.
   // If status is 'live' or 'cached', backend is healthy — 0 signals just means
   // off-hours (all stocks blocked). Don't spin forever in that case.
@@ -186,6 +174,19 @@ export default function DashboardPage() {
   const [watchlistsLoaded,   setWatchlistsLoaded]   = useState(false)
   const [editorOpen,         setEditorOpen]         = useState(false)
   const [editingWatchlist,   setEditingWatchlist]   = useState<Watchlist | null>(null)
+
+  // Play one beep when any signal transitions NEAR → ENTRY
+  // Only beep for signals that pass the active watchlist filter
+  useEffect(() => {
+    if (!data?.signals) return
+    const currentWL = watchlists.find(w => w.id === activeWatchlistId) ?? null
+    const hasEntryAlert = data.signals.some((s: Signal) => {
+      if (!s.entry_alert) return false
+      const ticker = s.symbol.split(':')[0]
+      return !currentWL || (currentWL.assets.includes(ticker) && currentWL.models.includes(s.model))
+    })
+    if (hasEntryAlert) playAlertSound()
+  }, [data?.signals, watchlists, activeWatchlistId])
 
   // Load watchlists from Supabase on mount + restore active selection
   useEffect(() => {
