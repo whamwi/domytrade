@@ -14,6 +14,8 @@ import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
 import AskAI from './components/AskAI'
 import EntryLog from './components/EntryLog'
+import WatchlistDropdown from './components/WatchlistDropdown'
+import WatchlistEditor, { Watchlist } from './components/WatchlistEditor'
 
 const API_URL  = process.env.NEXT_PUBLIC_API_URL ?? ''
 // WebSocket URL — same host, ws(s):// scheme
@@ -166,25 +168,48 @@ export default function DashboardPage() {
   const [focusMode, setFocusMode]     = useState(true)   // pin key futures, hide neutral others
   const [showLog, setShowLog]         = useState(false)  // entry log panel
 
-  // ── Watchlist (persistent symbol picker) ──────────────────────────────────
+  // ── Watchlist (legacy symbol picker — kept for UI compat) ─────────────────
   const [watchlist, setWatchlist]     = useState<string[]>([])
   const [pickerOpen, setPickerOpen]   = useState(false)
   const [watchSearch, setWatchSearch] = useState('')
   const pickerRef    = useRef<HTMLDivElement>(null)
   const watchSearchRef = useRef<HTMLInputElement>(null)
 
-  // Load from localStorage once on mount
+  // ── Named Watchlists (Supabase-persisted) ─────────────────────────────────
+  const [watchlists,        setWatchlists]        = useState<Watchlist[]>([])
+  const [activeWatchlistId, setActiveWatchlistId] = useState<string | null>(null)
+  const [editorOpen,        setEditorOpen]        = useState(false)
+  const [editingWatchlist,  setEditingWatchlist]  = useState<Watchlist | null>(null)
+
+  // Load watchlists from Supabase on mount
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('domytrade_watchlist')
-      if (saved) setWatchlist(JSON.parse(saved))
-    } catch {}
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session) return
+      const { data } = await supabase
+        .from('watchlists')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .order('created_at', { ascending: true })
+      if (data) setWatchlists(data as Watchlist[])
+    })
   }, [])
 
-  // Persist whenever it changes
-  useEffect(() => {
-    localStorage.setItem('domytrade_watchlist', JSON.stringify(watchlist))
-  }, [watchlist])
+  function handleWatchlistSaved(w: Watchlist) {
+    setWatchlists(prev => {
+      const idx = prev.findIndex(x => x.id === w.id)
+      return idx >= 0 ? prev.map(x => x.id === w.id ? w : x) : [...prev, w]
+    })
+    setActiveWatchlistId(w.id)
+    setEditorOpen(false)
+    setEditingWatchlist(null)
+  }
+
+  function handleWatchlistDeleted(id: string) {
+    setWatchlists(prev => prev.filter(w => w.id !== id))
+    if (activeWatchlistId === id) setActiveWatchlistId(null)
+    setEditorOpen(false)
+    setEditingWatchlist(null)
+  }
 
   // Close picker on outside click; auto-focus search on open
   useEffect(() => {
@@ -394,25 +419,32 @@ export default function DashboardPage() {
   // Filter signals — watchlist narrows first, then side/model/asset apply on top
   const PINNED_ORDER = ['/ES','/MES','/NQ','/MNQ','/YM','/MYM','/RTY','/M2K','/GC','/MGC']
 
+  const activeWL = watchlists.find(w => w.id === activeWatchlistId) ?? null
+
   const filteredSignals = (data?.signals ?? []).filter((sig) => {
     const ticker    = sig.symbol.split(':')[0]
     const isFuture  = ticker.startsWith('/')
     const isSector  = SECTOR_TICKERS.has(ticker)
-    const watchOk   = watchlist.length === 0 || watchlist.includes(ticker)
+    // Named watchlist filter (overrides legacy watchlist + model filter when active)
+    const namedWLOk = !activeWL || (activeWL.assets.includes(ticker) && activeWL.models.includes(sig.model))
+    // Legacy simple watchlist (only used when no named WL active)
+    const watchOk   = activeWL ? true : (watchlist.length === 0 || watchlist.includes(ticker))
     const sideOk    =
       sideFilter === 'all' ||
       (sideFilter === 'longs'  && sig.side === 'LONG') ||
       (sideFilter === 'shorts' && sig.side === 'SHORT')
-    const modelOk   = modelFilter === 'all' || sig.model === modelFilter
+    const modelOk   = activeWL ? true : (modelFilter === 'all' || sig.model === modelFilter)
     const assetOk   =
-      assetFilter === 'all' ||
-      (assetFilter === 'futures'  && isFuture) ||
-      (assetFilter === 'equities' && !isFuture && !isSector) ||
-      (assetFilter === 'sectors'  && isSector)
+      activeWL ? true : (
+        assetFilter === 'all' ||
+        (assetFilter === 'futures'  && isFuture) ||
+        (assetFilter === 'equities' && !isFuture && !isSector) ||
+        (assetFilter === 'sectors'  && isSector)
+      )
     // Focus mode: pin key futures+/GC always; everything else only if at zone
     const focusOk   = !focusMode || PINNED_TICKERS.has(ticker) ||
                       sig.signal_state === 'NEAR' || sig.signal_state === 'ENTRY'
-    return watchOk && sideOk && modelOk && assetOk && focusOk
+    return namedWLOk && watchOk && sideOk && modelOk && assetOk && focusOk
   }).sort((a, b) => {
     const ta = a.symbol.split(':')[0]
     const tb = b.symbol.split(':')[0]
@@ -428,12 +460,14 @@ export default function DashboardPage() {
   // Silent symbols list — filtered by asset type AND watchlist
   const filteredSymbols = allSymbols
     .filter(s =>
-      assetFilter === 'all'      ? true :
-      assetFilter === 'futures'  ? s.ticker.startsWith('/') :
-      assetFilter === 'sectors'  ? SECTOR_TICKERS.has(s.ticker) :
-      !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker)
+      activeWL ? activeWL.assets.includes(s.ticker) : (
+        assetFilter === 'all'      ? true :
+        assetFilter === 'futures'  ? s.ticker.startsWith('/') :
+        assetFilter === 'sectors'  ? SECTOR_TICKERS.has(s.ticker) :
+        !s.ticker.startsWith('/') && !SECTOR_TICKERS.has(s.ticker)
+      )
     )
-    .filter(s => watchlist.length === 0 || watchlist.includes(s.ticker))
+    .filter(s => activeWL ? true : (watchlist.length === 0 || watchlist.includes(s.ticker)))
 
   const session = getSessionLabel()
 
@@ -519,6 +553,13 @@ export default function DashboardPage() {
                 {wsLive ? 'LIVE' : 'OFF'}
               </span>
             </div>
+            <WatchlistDropdown
+              watchlists={watchlists}
+              activeWatchlistId={activeWatchlistId}
+              onActivate={setActiveWatchlistId}
+              onNew={() => { setEditingWatchlist(null); setEditorOpen(true) }}
+              onEdit={w => { setEditingWatchlist(w); setEditorOpen(true) }}
+            />
             <button
               onClick={() => setBriefingOpen(true)}
               className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors"
@@ -827,6 +868,15 @@ export default function DashboardPage() {
 
       {/* Economic Briefing modal */}
       {briefingOpen && <BriefingModal onClose={() => setBriefingOpen(false)} />}
+      {editorOpen && (
+        <WatchlistEditor
+          allSymbols={allSymbols}
+          watchlist={editingWatchlist}
+          onSave={handleWatchlistSaved}
+          onDelete={editingWatchlist ? handleWatchlistDeleted : undefined}
+          onClose={() => { setEditorOpen(false); setEditingWatchlist(null) }}
+        />
+      )}
 
       {/* Economic event alert toast */}
       {activeAlert && (
