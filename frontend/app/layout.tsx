@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DoMyTrade — Trading Signals",
-  description: "Professional trading signals dashboard",
+  title: "DoMyTrade — Trade the Volatility with AI.",
+  description: "AI-scored buy & sell signals across Market Profile, asset volatility, and your trading time frame.",
 };
 
 export default function RootLayout({
@@ -25,8 +25,19 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      data-theme="dark"
+      data-accent="blue"
+      data-density="regular"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+          rel="stylesheet"
+        />
+      </head>
       <body className="h-full" style={{ background: "var(--bg-base)", color: "var(--text-primary)" }}>
         {children}
       </body>
