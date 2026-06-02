@@ -126,11 +126,16 @@ export default function DashboardPage() {
   useEconomicAlerts({ onAlert: (ev) => setActiveAlert(ev) })
 
   // Play one beep when any signal transitions NEAR → ENTRY
+  // Only beep for signals that pass the active watchlist filter
   useEffect(() => {
     if (!data?.signals) return
-    const hasEntryAlert = data.signals.some((s: Signal) => s.entry_alert)
+    const hasEntryAlert = data.signals.some((s: Signal) => {
+      if (!s.entry_alert) return false
+      const ticker = s.symbol.split(':')[0]
+      return !activeWL || (activeWL.assets.includes(ticker) && activeWL.models.includes(s.model))
+    })
     if (hasEntryAlert) playAlertSound()
-  }, [data?.signals])
+  }, [data?.signals, activeWL])
 
   // Warm-up timer: only show spinner while backend hasn't responded at all.
   // If status is 'live' or 'cached', backend is healthy — 0 signals just means
@@ -452,14 +457,12 @@ export default function DashboardPage() {
       sideFilter === 'all' ||
       (sideFilter === 'longs'  && sig.side === 'LONG') ||
       (sideFilter === 'shorts' && sig.side === 'SHORT')
-    const modelOk   = activeWL ? true : (modelFilter === 'all' || sig.model === modelFilter)
+    const modelOk   = modelFilter === 'all' || sig.model === modelFilter
     const assetOk   =
-      activeWL ? true : (
-        assetFilter === 'all' ||
-        (assetFilter === 'futures'  && isFuture) ||
-        (assetFilter === 'equities' && !isFuture && !isSector) ||
-        (assetFilter === 'sectors'  && isSector)
-      )
+      assetFilter === 'all' ||
+      (assetFilter === 'futures'  && isFuture) ||
+      (assetFilter === 'equities' && !isFuture && !isSector) ||
+      (assetFilter === 'sectors'  && isSector)
     // Focus mode: pin key futures+/GC always; everything else only if at zone
     const focusOk   = !focusMode || PINNED_TICKERS.has(ticker) ||
                       sig.signal_state === 'NEAR' || sig.signal_state === 'ENTRY'
