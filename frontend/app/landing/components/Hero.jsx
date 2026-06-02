@@ -22,7 +22,7 @@ export default function Hero({ headline }) {
           <b> trading time frame</b> — each setup ships with entry, stop and target. Across futures, equities and FX.
         </p>
         <div className="hero-cta">
-          <a href="#signup" className="btn btn-primary btn-lg">Create account →</a>
+          <a href="#signup" className="btn btn-primary btn-lg">Create free account →</a>
           <a href="#terminal" className="btn btn-line btn-lg">View live signals</a>
         </div>
         <div className="hero-trust">
