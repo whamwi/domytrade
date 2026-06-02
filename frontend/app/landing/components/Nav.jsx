@@ -18,8 +18,7 @@ export default function Nav() {
           <div className="status-pill">
             <span className="live-dot" /> MARKET OPEN · <span style={{ color: "var(--gold)" }}>Fear 16.12</span>
           </div>
-          <a href="#" className="btn btn-ghost">Sign in</a>
-          <a href="#signup" className="btn btn-primary">Create account</a>
+          <a href="/login" className="btn btn-ghost">Sign in</a>
         </div>
       </div>
     </nav>
