@@ -6659,7 +6659,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             # Probe below ONL was rejected — ONL is still support, not resistance yet.
             trade_plan = (f'OA session — probe below ONL ({onl_s}) was rejected in B. '
                           f'Watch C: close below ONL confirms bearish bias — then sell rallies to ONL. '
-                          f'Until C confirms: sell ON VAH ({on_vah_s}), buy ON VAL ({on_val_s}). '
+                          f'Until C confirms: sell ON VAH ({vah_s}), buy ON VAL ({val_s}). '
                           f'ON POC ({poc_s}) is the key resistance ceiling.')
         else:
             trade_plan = f'Sell rallies to ONL ({onl_s})'
