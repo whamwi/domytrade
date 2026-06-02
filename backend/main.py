@@ -6933,11 +6933,14 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
 
     # ── Consecutive-period confirmation rule ──────────────────────────────────
     # Downgrades require two consecutive closes in the new zone.
-    # First-period dip: keep prior status, warn in narrative.
+    # First-period dip (or very first period of the session): warn in narrative.
     # Upgrades and CONFIRMED are immediate.
     first_warning = False
-    if (prev_zone is not None
-            and curr_zone != 'CONFIRMED'
+    if prev_zone is None:
+        # Very first period close of the session — can never be "two consecutive"
+        first_warning = True
+        effective_zone = curr_zone
+    elif (curr_zone != 'CONFIRMED'
             and _is_downgrade(prev_zone, curr_zone)):
         first_warning = True   # single period dip — hold prior status for badge
         effective_zone = prev_zone
