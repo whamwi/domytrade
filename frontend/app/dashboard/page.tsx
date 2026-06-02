@@ -209,14 +209,29 @@ export default function DashboardPage() {
   const wsRetryMs   = useRef(WS_RETRY_BASE_MS)
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Auth check
+  // Auth check — also verifies profile is approved
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) {
         router.replace('/login')
-      } else {
-        setAuthed(true)
+        setAuthChecked(true)
+        return
       }
+      // Check approval status
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('status')
+        .eq('id', session.user.id)
+        .single()
+
+      if (!profile || profile.status !== 'approved') {
+        await supabase.auth.signOut()
+        router.replace('/login')
+        setAuthChecked(true)
+        return
+      }
+
+      setAuthed(true)
       setAuthChecked(true)
     })
   }, [router])

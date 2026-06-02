@@ -7363,3 +7363,176 @@ async def api_market_profile(symbol: str):
         'prior_ib_signals': prior_ib_signals,
         'live_read':        live_read,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# User Management
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ADMIN_EMAIL         = 'wassim.hamwi@outlook.com'
+RESEND_API_KEY      = os.environ.get('RESEND_API_KEY', '')
+ADMIN_APPROVAL_SECRET = os.environ.get('ADMIN_APPROVAL_SECRET', 'change-me-in-railway')
+SITE_URL            = os.environ.get('SITE_URL', 'https://domytrade.app')
+
+def _send_email(to: str, subject: str, html: str) -> bool:
+    """Send email via Resend. Returns True on success."""
+    if not RESEND_API_KEY:
+        logging.warning('RESEND_API_KEY not set — skipping email to %s', to)
+        return False
+    try:
+        import httpx
+        r = httpx.post(
+            'https://api.resend.com/emails',
+            headers={'Authorization': f'Bearer {RESEND_API_KEY}', 'Content-Type': 'application/json'},
+            json={'from': 'DoMyTrade <noreply@domytrade.app>', 'to': [to], 'subject': subject, 'html': html},
+            timeout=10,
+        )
+        return r.status_code == 200
+    except Exception as exc:
+        logging.error('Email send failed: %s', exc)
+        return False
+
+
+def _get_supabase_admin():
+    """Return a Supabase client with service role key for admin operations."""
+    from supabase import create_client
+    return create_client(
+        os.environ['SUPABASE_URL'],
+        os.environ['SUPABASE_SERVICE_ROLE_KEY'],
+    )
+
+
+@app.post('/api/auth/notify-admin')
+async def notify_admin(request: _Request):
+    """Called from frontend after email verification.
+    Updates profile status to pending_approval and emails the admin.
+    Idempotent — safe to call multiple times."""
+    from fastapi import HTTPException
+
+    # Extract user from JWT
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='Missing token')
+    token = auth_header.split(' ', 1)[1]
+
+    try:
+        sb = _get_supabase_admin()
+        user_resp = sb.auth.get_user(token)
+        user = user_resp.user
+        if not user:
+            raise HTTPException(status_code=401, detail='Invalid token')
+    except Exception:
+        raise HTTPException(status_code=401, detail='Invalid token')
+
+    # Get profile
+    profile_resp = sb.table('user_profiles').select('*').eq('id', str(user.id)).single().execute()
+    profile = profile_resp.data if profile_resp.data else None
+    if not profile:
+        raise HTTPException(status_code=404, detail='Profile not found')
+
+    # Already approved — nothing to do
+    if profile['status'] == 'approved':
+        return {'status': 'already_approved'}
+
+    # Update to pending_approval
+    sb.table('user_profiles').update({'status': 'pending_approval'}).eq('id', str(user.id)).execute()
+
+    # Send admin notification (only if transitioning from pending_verification)
+    if profile['status'] == 'pending_verification':
+        name  = profile.get('full_name', 'Unknown')
+        email = profile.get('email', user.email or '')
+        phone = profile.get('phone') or 'Not provided'
+        approve_url = f"{SITE_URL}/api/admin/approve/{user.id}?secret={ADMIN_APPROVAL_SECRET}"
+        reject_url  = f"{SITE_URL}/api/admin/reject/{user.id}?secret={ADMIN_APPROVAL_SECRET}"
+
+        html = f"""
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+          <h2 style="color:#3b82f6;margin-bottom:4px;">◈ DoMyTrade</h2>
+          <h3 style="color:#111;margin-top:0;">New Access Request</h3>
+          <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+            <tr><td style="padding:6px 0;color:#666;width:100px;">Name</td><td style="padding:6px 0;font-weight:600;">{name}</td></tr>
+            <tr><td style="padding:6px 0;color:#666;">Email</td><td style="padding:6px 0;">{email}</td></tr>
+            <tr><td style="padding:6px 0;color:#666;">Phone</td><td style="padding:6px 0;">{phone}</td></tr>
+          </table>
+          <div style="display:flex;gap:12px;margin-top:24px;">
+            <a href="{approve_url}" style="background:#22c55e;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">✓ Approve</a>
+            <a href="{reject_url}" style="background:#ef4444;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">✕ Reject</a>
+          </div>
+        </div>
+        """
+        _send_email(ADMIN_EMAIL, f'[DoMyTrade] Access request from {name}', html)
+
+    return {'status': 'pending_approval'}
+
+
+@app.get('/api/admin/approve/{user_id}')
+async def approve_user(user_id: str, secret: str = ''):
+    """Admin clicks this link from email to approve a user."""
+    from fastapi.responses import HTMLResponse
+    if secret != ADMIN_APPROVAL_SECRET:
+        return HTMLResponse('<h2>Invalid or expired link.</h2>', status_code=403)
+
+    try:
+        sb = _get_supabase_admin()
+        resp = sb.table('user_profiles').update({
+            'status': 'approved',
+            'approved_at': datetime.now(timezone.utc).isoformat(),
+            'approved_by': ADMIN_EMAIL,
+        }).eq('id', user_id).execute()
+
+        if not resp.data:
+            return HTMLResponse('<h2>User not found.</h2>', status_code=404)
+
+        profile = resp.data[0]
+        user_email = profile.get('email', '')
+        user_name  = profile.get('full_name', 'Trader')
+
+        # Send welcome email to user
+        html = f"""
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+          <h2 style="color:#3b82f6;margin-bottom:4px;">◈ DoMyTrade</h2>
+          <h3 style="color:#111;margin-top:0;">Access Approved!</h3>
+          <p style="color:#444;">Hi {user_name}, your access to DoMyTrade has been approved.</p>
+          <a href="{SITE_URL}/login" style="display:inline-block;background:#3b82f6;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;margin-top:16px;">
+            Sign In Now →
+          </a>
+          <p style="color:#888;font-size:12px;margin-top:24px;">DoMyTrade — Professional Trading Signals</p>
+        </div>
+        """
+        _send_email(user_email, 'Your DoMyTrade access has been approved', html)
+
+        return HTMLResponse(f"""
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+          <h2 style="color:#22c55e;">✓ {user_name} approved</h2>
+          <p>A welcome email has been sent to {user_email}.</p>
+        </body></html>
+        """)
+    except Exception as exc:
+        logging.error('Approve user error: %s', exc)
+        return HTMLResponse('<h2>Error — check logs.</h2>', status_code=500)
+
+
+@app.get('/api/admin/reject/{user_id}')
+async def reject_user(user_id: str, secret: str = ''):
+    """Admin clicks this link to reject a user."""
+    from fastapi.responses import HTMLResponse
+    if secret != ADMIN_APPROVAL_SECRET:
+        return HTMLResponse('<h2>Invalid or expired link.</h2>', status_code=403)
+
+    try:
+        sb = _get_supabase_admin()
+        resp = sb.table('user_profiles').update({'status': 'rejected'}).eq('id', user_id).execute()
+        if not resp.data:
+            return HTMLResponse('<h2>User not found.</h2>', status_code=404)
+
+        profile  = resp.data[0]
+        user_name = profile.get('full_name', 'Applicant')
+
+        return HTMLResponse(f"""
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+          <h2 style="color:#ef4444;">✕ {user_name} rejected</h2>
+        </body></html>
+        """)
+    except Exception as exc:
+        logging.error('Reject user error: %s', exc)
+        return HTMLResponse('<h2>Error — check logs.</h2>', status_code=500)
