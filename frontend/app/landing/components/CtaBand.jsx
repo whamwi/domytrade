@@ -8,8 +8,7 @@ export default function CtaBand() {
           <h2>Trade the volatility, not the noise.</h2>
           <p>Create a free account and watch the signal engine score the open in real time. No card, no commitment.</p>
           <div className="hero-cta">
-            <a href="#" className="btn btn-primary btn-lg">Create your account →</a>
-            <a href="#terminal" className="btn btn-line btn-lg">Explore the terminal</a>
+            <a href="/login" className="btn btn-primary btn-lg">Create your account →</a>
           </div>
         </div>
       </div>
