@@ -6634,8 +6634,11 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             trade_plan += f' and ON POC ({poc_s}). '
         else:
             trade_plan += '. '
-        if p_vah:
+        on_high_val = float(onh_s) if onh_s != 'ONH' else None
+        if p_vah and on_high_val and p_vah > on_high_val:
             trade_plan += f'Target Prior VAH {p_vah:.2f}. Do not short against the trend.'
+        else:
+            trade_plan += 'Trail stops on new highs. Do not short against the trend.'
     elif bias_score <= -2:
         bias = 'BEARISH'; bias_label = 'Bearish'
         trade_plan = f'Sell rallies to ONL ({onl_s})'
@@ -6643,8 +6646,11 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             trade_plan += f' and ON POC ({poc_s}). '
         else:
             trade_plan += '. '
-        if p_val:
+        on_low_val = float(onl_s) if onl_s != 'ONL' else None
+        if p_val and on_low_val and p_val < on_low_val:
             trade_plan += f'Target Prior VAL {p_val:.2f}. Do not buy against the trend.'
+        else:
+            trade_plan += 'Trail stops on new lows. Do not buy against the trend.'
     elif bias_score == 1:
         bias = 'BULLISH_LEAN'; bias_label = 'Bullish Lean'
         if open_inside_on and ib_above_onh:
