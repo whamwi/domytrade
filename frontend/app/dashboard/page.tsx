@@ -64,7 +64,7 @@ function getSessionLabel(): { label: string; color: string; bg: string } {
   }
 
   if (timeMin >= marketOpen && timeMin < marketClose) {
-    return { label: 'LIVE', color: '#4ade80', bg: '#052e16' }
+    return { label: 'OPEN', color: '#4ade80', bg: '#052e16' }
   }
 
   if (timeMin >= preMarketStart && timeMin < marketOpen) {
@@ -176,10 +176,11 @@ export default function DashboardPage() {
   const watchSearchRef = useRef<HTMLInputElement>(null)
 
   // ── Named Watchlists (Supabase-persisted) ─────────────────────────────────
-  const [watchlists,        setWatchlists]        = useState<Watchlist[]>([])
-  const [activeWatchlistId, setActiveWatchlistId] = useState<string | null>(null)
-  const [editorOpen,        setEditorOpen]        = useState(false)
-  const [editingWatchlist,  setEditingWatchlist]  = useState<Watchlist | null>(null)
+  const [watchlists,         setWatchlists]         = useState<Watchlist[]>([])
+  const [activeWatchlistId,  setActiveWatchlistId]  = useState<string | null>(null)
+  const [watchlistsLoaded,   setWatchlistsLoaded]   = useState(false)
+  const [editorOpen,         setEditorOpen]         = useState(false)
+  const [editingWatchlist,   setEditingWatchlist]   = useState<Watchlist | null>(null)
 
   // Load watchlists from Supabase on mount + restore active selection
   useEffect(() => {
@@ -192,23 +193,25 @@ export default function DashboardPage() {
         .order('created_at', { ascending: true })
       if (data) {
         setWatchlists(data as Watchlist[])
-        // Restore last active watchlist (if it still exists)
+        // Restore last active watchlist (only if it still exists)
         const saved = localStorage.getItem('domytrade_active_watchlist')
         if (saved && data.some((w: Watchlist) => w.id === saved)) {
           setActiveWatchlistId(saved)
         }
       }
+      setWatchlistsLoaded(true)
     })
   }, [])
 
-  // Persist active watchlist selection
+  // Persist active watchlist — only after watchlists have loaded to avoid wiping on mount
   useEffect(() => {
+    if (!watchlistsLoaded) return
     if (activeWatchlistId) {
       localStorage.setItem('domytrade_active_watchlist', activeWatchlistId)
     } else {
       localStorage.removeItem('domytrade_active_watchlist')
     }
-  }, [activeWatchlistId])
+  }, [activeWatchlistId, watchlistsLoaded])
 
   function handleWatchlistSaved(w: Watchlist) {
     setWatchlists(prev => {
