@@ -6640,7 +6640,7 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             # C period close above ONH is required to confirm.
             trade_plan = (f'OA session — probe above ONH ({onh_s}) was rejected in B. '
                           f'Watch C: close above ONH confirms bullish bias — then buy pullbacks to ONH. '
-                          f'Until C confirms: buy ON VAL ({on_val_s}), sell ON VAH ({on_vah_s}). '
+                          f'Until C confirms: buy ON VAL ({val_s}), sell ON VAH ({vah_s}). '
                           f'ON POC ({poc_s}) is the key support floor.')
         else:
             trade_plan = f'Buy pullbacks to ONH ({onh_s})'
