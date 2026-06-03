@@ -4807,13 +4807,14 @@ async def ai_chat(body: dict = Body(...)):
 _ASK_AI_SYSTEM = """\
 You are an experienced trading assistant covering futures, stocks, ETFs, and macro. \
 You have access to live market data including VBH mean-reversion signals, market internals, \
-sector ETF performance, and general market knowledge.
+sector ETF performance, Market Profile analysis, and general market knowledge.
 
-SCOPE: Answer ANY market question — futures, stocks, ETFs, macro, sectors, earnings, technicals. \
+SCOPE: Answer ANY market question — futures, stocks, ETFs, macro, sectors, earnings, technicals, \
+Market Profile, Dalton methodology. \
 NEVER say "we don't track that", "not in our system", "not a futures contract", or any variation. \
 NEVER mention VBH, signal system, or dashboard limitations to the user. \
 Just answer directly like a trader who knows markets — use sector context, macro, technicals, \
-fundamentals, and the live internals data you have.
+fundamentals, and the live data you have.
 
 HOW TO ANALYZE — follow this order:
 1. INTERNALS FIRST: $TICK extremes (>+800 = strong bull, <-800 = strong bear) override everything. \
@@ -4821,7 +4822,10 @@ $TRIN <0.8 = buying volume dominant, >1.5 = selling volume dominant. A/D ratio s
 2. SECTOR LEADERSHIP: XLK leads /NQ (Nasdaq). XLV + XLF lead /YM (Dow). \
 XLK + XLF + XLV drive /ES (S&P). XLF + XLI lead /RTY (Russell). \
 If the leading sector is weak, the futures will be weak — that is the CAUSE.
-3. SIGNALS LAST: VBH signals show WHERE price is relative to supply/demand zones, \
+3. MARKET PROFILE: Use the live IB score, zone status, and current bias as structural context. \
+A BEARISH IB with CONFIRMED zone = trend day down, do not fade. \
+A NEUTRAL IB with INTACT zone = two-sided day, trade the range.
+4. SIGNALS LAST: VBH signals show WHERE price is relative to supply/demand zones, \
 not WHY price is moving. A SHORT signal means price is at a supply zone, not that price is weak.
 
 SIGNAL LEVEL MEANINGS (for ALL symbols — equities, ETFs, futures):
@@ -4833,6 +4837,60 @@ SIGNAL LEVEL MEANINGS (for ALL symbols — equities, ETFs, futures):
 - [ENTRY] = price is at/beyond the zone right now  [NEAR] = approaching  [NEUTRAL] = mid-range
 - daily_bias = opening gap direction (LONG = gapped up, SHORT = gapped down)
 
+═══ MARKET PROFILE / DALTON FRAMEWORK ═══
+
+CORE CONCEPT: Jim Dalton's Market Profile maps price against time (TPO letters). \
+Each 30-minute RTH period = one letter (A=9:30, B=10:00, C=10:30 … M=3:30 PM ET). \
+The Initial Balance (IB) = first 60 minutes (A+B periods, 9:30-10:30 AM). \
+It sets the day's directional hypothesis — everything after tests or confirms it.
+
+KEY LEVELS:
+- ONH / ONL: Overnight High / Low (6 PM – 9:30 AM ET) — the range overnight traders defended
+- ON POC: Overnight Point of Control — the price with the most overnight volume; acts as a pivot
+- ON VAH / ON VAL: Overnight Value Area High/Low — 70% of overnight volume
+- IB High / IB Low: Extremes of the first 60 minutes — the day's initial auction range
+- Prior VAH / VAL: Previous session's value area — first extension targets
+
+IB SCORE (−4 to +4) — assessed once at 10:30 AM, never changes:
+- P1 Open vs Overnight Range: open above ONH = +1, open below ONL = −1, OA open (inside) = 0
+- P2 IB vs ONH/ONL: accepted above ONH = +2, probe rejected = +1; accepted below ONL = −2, probe rejected = −1; IB absorbed entire ON range = 0
+- P3 IB vs ON POC: IB entirely above = +1, IB entirely below = −1, straddles = 0
+- P4 Overnight inventory: trended up + IB above ON POC = +1; trended down + IB below ON POC = −1
+Score ≥+2 = BULLISH | +1 = BULLISH LEAN | 0 = NEUTRAL | −1 = BEARISH LEAN | ≤−2 = BEARISH | ±4 = maximum conviction
+
+TWO-LAYER LIVE SCORE: IB score (fixed) + zone adjustment (updates each period) = current score.
+Zone adjustments are direction-aware — for a bearish IB (negative score), direction = −1:
+CONFIRMED=−2, INTACT=0, WEAKENING=+1, CRITICAL=+2, INVALIDATED=+3 (× direction).
+Example: IB −4 + CONFIRMED adj −2 = −6 (Strong Bearish). IB +1 + INVALIDATED adj −3 = −2 (Bearish flip).
+
+ZONE HIERARCHY (bearish IB — mirror for bullish):
+- CONFIRMED: Closed below IB Low → sellers accelerating, trend day developing. Ride shorts, trail stop above ONL.
+- INTACT: Closed below ONL → bearish excess holding, ONL is resistance. Sell rallies to ONL.
+- WEAKENING: Closed between ONL and ON POC → signal fading, two-sided OA active. Cover shorts 50%, no new entries.
+- CRITICAL: Closed at ON POC ± 3 ticks → last defence for bears. Cover all shorts.
+- INVALIDATED: Closed above ON POC → bearish thesis broken. Reverse — buy dips to ON POC (now support).
+Downgrades require TWO consecutive period closes. First dip = warning badge held. Upgrades are immediate.
+
+OPENING TYPES:
+- OA (Open Auction): Open inside overnight range → two-sided, buy ONL / sell ONH until one side breaks
+- OD (Open Drive): Open outside prior VA, A continued in that direction → one-timeframe control, do not fade
+- OTD (Open Test Drive): Open outside prior VA, A tested boundary then drove further → directional, high conviction
+- ORR (Open Rejection Reverse): Open outside prior VA, A period reversed back inside → fading the gap, trade the reversal
+
+DAY TYPE (classified after IB):
+- Trend Day: Both sides extended + total range > 2.5× IB → do not fade, hold for limit moves
+- Normal Variation: One-sided extension > 25% of IB → winners of IB auction in control
+- Normal: Wide IB (>55% of prior range) → balanced, rotate within IB
+- Neutral: Both sides extended but balanced → two-sided, no directional edge
+
+ANSWERING MARKET PROFILE QUESTIONS:
+- "What does IB −4 mean?" → Maximum bearish conviction: all four pillars (open, IB vs ONL, IB vs ON POC, inventory) aligned bearish.
+- "What zone are we in?" → Reference the live Market Profile snapshot below.
+- "Should I fade this move?" → Check zone: CONFIRMED = never fade. WEAKENING/INVALIDATED = fading is correct.
+- "What is ON POC?" → The overnight price with the most volume. Acts as a magnet and pivot — bulls must defend it, bears must break it.
+
+═══ END MARKET PROFILE ═══
+
 FOR ANY STOCK OR ETF (BABA, AAPL, TSLA, etc.):
 - Map it to its sector (BABA → China tech → KWEB/FXI context)
 - Use live internals to judge broad market tone
@@ -4843,12 +4901,12 @@ ANSWERING "WHY is X weak/strong?":
 - Look at its leading sectors first — are they down? That's why.
 - Check $TICK and $TRIN — is the broader market selling?
 - Check A/D ratio — is weakness broad or narrow?
-- THEN mention the signal as confirmation, not as the cause.
+- THEN mention the signal and Market Profile zone as confirmation, not as the cause.
 
 STYLE: Conversational, 2-4 sentences. No bullet lists unless listing multiple items. \
 No tables. Speak like a trading desk colleague, not a report. \
 Reference actual numbers when available. \
-Flag conflicts clearly (e.g. "internals are bullish but price is at a short zone — wait for clarity").\
+Flag conflicts clearly (e.g. "internals are bullish but Market Profile zone is WEAKENING — wait for clarity").\
 """
 
 def _build_ask_ai_context() -> str:
@@ -4934,6 +4992,93 @@ def _build_ask_ai_context() -> str:
     return '\n'.join(lines)
 
 
+def _build_market_profile_context() -> str:
+    """Compact Market Profile snapshot for /ES, /NQ, /YM, /RTY injected into Ask AI context."""
+    from datetime import datetime, timezone
+    MP_SYMBOLS = ['/ES', '/NQ', '/YM', '/RTY']
+    now_et = datetime.now(ET)
+    tick_map = {'/ES': 0.25, '/NQ': 0.25, '/YM': 1.0, '/RTY': 0.10}
+
+    lines = ['\n=== MARKET PROFILE SNAPSHOT (live) ===']
+    for sym in MP_SYMBOLS:
+        try:
+            tick = tick_map.get(sym, 0.25)
+            raw  = get_candles(sym, 5, 1)
+            if not raw:
+                continue
+
+            rth_by_date: dict = {}
+            on_by_date:  dict = {}
+            for c in raw:
+                dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
+                d     = dt.date()
+                t_min = dt.hour * 60 + dt.minute
+                wday  = dt.weekday()
+                is_rth      = wday < 5 and (9 * 60 + 30) <= t_min < 16 * 60
+                is_on_wkday = wday < 5 and t_min < (9 * 60 + 30)
+                is_evening  = wday < 5 and t_min >= 18 * 60
+                if is_rth:
+                    rth_by_date.setdefault(d, []).append(c)
+                elif is_on_wkday:
+                    on_by_date.setdefault(d, []).append(c)
+                elif is_evening:
+                    days_fwd = 3 if wday == 4 else 1
+                    on_by_date.setdefault(d + timedelta(days=days_fwd), []).append(c)
+
+            today = now_et.date()
+            today_bars    = rth_by_date.get(today, [])
+            tonight_bars  = on_by_date.get(today, [])
+
+            if not today_bars and not tonight_bars:
+                continue
+
+            today_prof = _build_rth_tpo_profile(today_bars, tick)
+            overnight  = _build_overnight_tpo_profile(tonight_bars, tick)
+
+            # Get prior session for IB signals
+            prior_dates = sorted([d for d in rth_by_date if d < today], reverse=True)
+            prior_bars  = rth_by_date.get(prior_dates[0], []) if prior_dates else []
+            prior_prof  = _build_rth_tpo_profile(prior_bars, tick) if prior_bars else {}
+            prior_on_dates = sorted([d for d in on_by_date if d < today], reverse=True)
+            prior_on_bars  = on_by_date.get(prior_on_dates[0], []) if prior_on_dates else []
+            prior_overnight = _build_overnight_tpo_profile(prior_on_bars, tick) if prior_on_bars else {}
+
+            ib_signals = _generate_ib_signals(today_prof, overnight, prior_prof, tick)
+            live_read  = _evaluate_live_read(today_prof, ib_signals, overnight, now_et, tick)
+
+            bias         = ib_signals.get('bias_label', 'Neutral')
+            ib_score     = ib_signals.get('ib_score', 0)
+            zone         = live_read.get('status', 'BUILDING')
+            curr_label   = live_read.get('current_label', '')
+            curr_score   = live_read.get('current_score', ib_score)
+            live_adj     = live_read.get('live_adjustment', 0)
+            last_period  = live_read.get('last_period', '—')
+            last_close   = live_read.get('last_close')
+            trade_plan   = live_read.get('live_trade_plan') or ib_signals.get('trade_plan', '')
+            on_high      = overnight.get('high')
+            on_low       = overnight.get('low')
+            on_poc       = overnight.get('poc')
+            ib_high      = today_prof.get('ib_high')
+            ib_low       = today_prof.get('ib_low')
+
+            close_str = f'{last_close:.2f}' if last_close else '—'
+            lines.append(
+                f'\n{sym}  IB:{ib_score:+d} ({bias}) + adj {live_adj:+d} = {curr_score:+d} ({curr_label})'
+                f'  Zone:{zone}  Last:{last_period} @ {close_str}'
+            )
+            if on_high and on_low and on_poc:
+                lines.append(f'  ONH:{on_high}  ONL:{on_low}  ON POC:{on_poc}'
+                              + (f'  IB Hi:{ib_high}  IB Lo:{ib_low}' if ib_high and ib_low else ''))
+            if trade_plan:
+                lines.append(f'  Plan: {trade_plan}')
+        except Exception:
+            pass
+
+    if len(lines) == 1:
+        lines.append('  Market Profile data unavailable (pre-RTH or Schwab error).')
+    return '\n'.join(lines)
+
+
 @app.post('/api/ai/ask')
 async def ask_ai(body: dict = Body(...)):
     """Gemini-powered conversational assistant with live dashboard context."""
@@ -4947,14 +5092,15 @@ async def ask_ai(body: dict = Body(...)):
     if not api_key:
         return {'reply': 'GEMINI_API_KEY not configured.'}
 
-    # Gather internals concurrently with context build
-    internals, ctx = await asyncio.gather(
+    # Gather internals, signals context, and market profile concurrently
+    internals, ctx, mp_ctx = await asyncio.gather(
         _internals_snapshot(),
         asyncio.to_thread(_build_ask_ai_context),
+        asyncio.to_thread(_build_market_profile_context),
     )
 
-    # Append internals to context with plain interpretation
-    ctx_lines = [ctx]
+    # Append internals and market profile to context
+    ctx_lines = [ctx, mp_ctx]
     if internals and any(internals.values()):
         tick = internals.get('tick', 0)
         trin = internals.get('trin', 0)
