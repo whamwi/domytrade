@@ -892,7 +892,7 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
             <span style={{ fontSize: '10px', fontWeight: 600, color: '#fbbf24',
               background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)',
               borderRadius: '4px', padding: '2px 7px', letterSpacing: '0.04em' }}>
-              ⚠ Watching
+              Watching
             </span>
           )}
           {/* Zone status badge */}
