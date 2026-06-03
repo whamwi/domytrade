@@ -7484,10 +7484,17 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                                 f'Trail stop below ONH ({on_high_s}) on open longs.')
                 elif above_onh and status in ('WEAKENING', 'INTACT'):
                     pts = round(dev_price - on_high, 2)
-                    dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts above ONH ({on_high_s}) '
-                                f'at {dev_price:.2f}. Acceptance building — '
-                                f'if {dev_letter} closes here, status upgrades to CONFIRMED. '
-                                f'Trail stop below ONH on open longs.')
+                    ib_ref = f'{ib_h:.2f}'
+                    if status == 'WEAKENING':
+                        dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts above ONH ({on_high_s}) '
+                                    f'at {dev_price:.2f}. Close here upgrades from WEAKENING to INTACT — '
+                                    f'buyers reclaiming ONH. Close above IB High ({ib_ref}) = CONFIRMED. '
+                                    f'Trail stop below ONH on open longs.')
+                    else:  # INTACT
+                        dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts above ONH ({on_high_s}) '
+                                    f'at {dev_price:.2f}. Signal INTACT — buyers holding above ONH. '
+                                    f'Close above IB High ({ib_ref}) upgrades to CONFIRMED. '
+                                    f'Trail stop below ONH on open longs.')
                 elif above_onh and status == 'CONFIRMED':
                     dev_read = (f'\n\n{dev_letter} holding above ONH ({on_high_s}) at {dev_price:.2f}. '
                                 f'Trend day continuing — maintain longs.')
@@ -7521,10 +7528,17 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                                 f'Trail stop above ONL ({on_low_s}) on open shorts.')
                 elif below_onl and status in ('WEAKENING', 'INTACT'):
                     pts = round(on_low - dev_price, 2)
-                    dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts below ONL ({on_low_s}) '
-                                f'at {dev_price:.2f}. Acceptance building — '
-                                f'if {dev_letter} closes here, status upgrades to CONFIRMED. '
-                                f'Trail stop above ONL on open shorts.')
+                    ib_ref = f'{ib_l:.2f}'
+                    if status == 'WEAKENING':
+                        dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts below ONL ({on_low_s}) '
+                                    f'at {dev_price:.2f}. Close here upgrades from WEAKENING to INTACT — '
+                                    f'sellers reclaiming ONL. Close below IB Low ({ib_ref}) = CONFIRMED. '
+                                    f'Trail stop above ONL on open shorts.')
+                    else:  # INTACT
+                        dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts below ONL ({on_low_s}) '
+                                    f'at {dev_price:.2f}. Signal INTACT — sellers holding below ONL. '
+                                    f'Close below IB Low ({ib_ref}) upgrades to CONFIRMED. '
+                                    f'Trail stop above ONL on open shorts.')
                 elif above_poc:
                     if status == 'INVALIDATED':
                         dev_read = (f'\n\n⚡ {dev_letter} confirming INVALIDATED at {dev_price:.2f} — '
