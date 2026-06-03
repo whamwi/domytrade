@@ -7032,14 +7032,39 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
         return _building
 
     # ── IB just complete (last = B) — read IB bias as the baseline ───────────
-    ib_ready = ib_signals.get('ready', False)
+    # Gate on CLOCK TIME, not just period count — _build_rth_tpo_profile
+    # includes developing B bars in period_ranges before B closes, so
+    # ib_signals.ready can be True as early as 10:00 AM. Enforce 10:30 AM ET.
+    IB_COMPLETE_MIN = RTH_START + 60   # 10:30 AM ET (A + B = 2 × 30min)
+    ib_clock_ready  = t_min >= IB_COMPLETE_MIN
+    ib_ready        = ib_signals.get('ready', False) and ib_clock_ready
+
     if not ib_ready:
+        # Show developing B period context while it's building (10:00–10:30 AM)
+        b_data  = session_prof.get('period_ranges', {}).get('B', {})
+        b_hi    = b_data.get('high')
+        b_lo    = b_data.get('low')
+        b_last  = b_data.get('close')   # most recent close in developing B
+
+        if last_complete_idx == 0 and b_last is not None:
+            # A complete, B developing — show live B vs key levels
+            vs_onl = f'{b_last - on_low:.2f} pts above ONL ({on_low_s})' if on_low and b_last > on_low else \
+                     f'{on_low - b_last:.2f} pts BELOW ONL ({on_low_s})' if on_low else ''
+            vs_onh = f'{on_high - b_last:.2f} pts below ONH ({on_high_s})' if on_high and b_last < on_high else \
+                     f'{b_last - on_high:.2f} pts ABOVE ONH ({on_high_s})' if on_high else ''
+            read = (f'A closed at {last_close:.2f} — B period building '
+                    f'(Hi: {b_hi:.2f}  Lo: {b_lo:.2f}  Last: {b_last:.2f}). '
+                    f'{vs_onl}. {vs_onh}. IB completes at 10:30 AM ET.')
+        else:
+            read = (f'{last_letter} period closed at {last_close:.2f}. '
+                    f'IB completes when B period closes at 10:30 AM ET.')
+
         return {
             'active': True, 'status': 'IB_BUILDING',
             'last_period': last_letter, 'last_close': last_close,
-            'current_read': f'{last_letter} period closed at {last_close:.2f}. IB forming.',
-            'live_guidance': 'IB completes when B period closes at 10:30 AM ET.',
-            'watch_level': None,
+            'current_read': read,
+            'live_guidance': f'Wait for B close (10:30 AM ET) — IB will set the directional bias.',
+            'watch_level': {'price': on_low, 'label': 'ONL', 'significance': 'B close below = bearish IB'} if on_low else None,
         }
 
     bias       = ib_signals.get('bias', 'NEUTRAL')
@@ -7346,6 +7371,31 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                     dev_read = (f'\n\n⚠ {dev_letter} developing above ON POC ({on_poc_s}) '
                                 f'at {dev_price:.2f}. If {dev_letter} closes here → signal INVALIDATED. '
                                 f'Reduce shorts immediately.')
+
+            else:
+                # NEUTRAL (OA day) — narrate live vs overnight range boundaries
+                if status == 'CONFIRMED' and dev_price > on_high + tick:
+                    pts = round(dev_price - on_high, 2)
+                    dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts above ONH ({on_high_s}) '
+                                f'at {dev_price:.2f}. OA resolving bullish — '
+                                f'if {dev_letter} closes above ONH, buy pullbacks to ONH.')
+                elif status == 'CONFIRMED' and dev_price < on_low - tick:
+                    pts = round(on_low - dev_price, 2)
+                    dev_read = (f'\n\n⚡ {dev_letter} developing {pts} pts below ONL ({on_low_s}) '
+                                f'at {dev_price:.2f}. OA resolving bearish — '
+                                f'if {dev_letter} closes below ONL, sell rallies to ONL.')
+                elif dev_price > on_high - tick:
+                    dev_read = (f'\n\n{dev_letter} testing ONH ({on_high_s}) at {dev_price:.2f}. '
+                                f'Close above = OA resolved bullish. Fade if rejected back inside.')
+                elif dev_price < on_low + tick:
+                    dev_read = (f'\n\n{dev_letter} testing ONL ({on_low_s}) at {dev_price:.2f}. '
+                                f'Close below = OA resolved bearish. Fade if rejected back inside.')
+                elif on_poc and dev_price > on_poc + tick:
+                    dev_read = (f'\n\n{dev_letter} at {dev_price:.2f}, holding above ON POC ({on_poc_s}). '
+                                f'Buyers slightly in control — watch for ONH ({on_high_s}) test.')
+                elif on_poc and dev_price < on_poc - tick:
+                    dev_read = (f'\n\n{dev_letter} at {dev_price:.2f}, below ON POC ({on_poc_s}). '
+                                f'Sellers slightly in control — watch for ONL ({on_low_s}) test.')
 
     return {
         'active':            True,
