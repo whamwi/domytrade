@@ -901,23 +901,16 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
             borderRadius: '5px', padding: '2px 10px' }}>
             {cfg.label}
           </span>
-          {/* Live-adjusted bias badge — shown once IB is complete */}
-          {bcfg && lr.current_label && (
-            <span style={{ fontSize: '12px', fontWeight: 700, color: bcfg.color,
-              background: bcfg.bg, border: `1px solid ${bcfg.border}`,
-              borderRadius: '5px', padding: '2px 10px' }}>
-              {bcfg.icon} {lr.current_label}
-            </span>
-          )}
         </div>
       </div>
 
       <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
 
-        {/* Score math row: IB score → adj → current */}
+        {/* Score math row: IB + adj = current  [▼ Current Label] */}
         {lr.current_score != null && lr.ib_score != null && lr.live_adjustment != null && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px',
-            fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'monospace' }}>
+            fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'monospace',
+            flexWrap: 'wrap' }}>
             <span>IB {lr.ib_score > 0 ? '+' : ''}{lr.ib_score}</span>
             <span style={{ color: '#475569' }}>+</span>
             <span style={{ color: lr.live_adjustment >= 0 ? '#4ade80' : '#f87171' }}>
@@ -927,6 +920,13 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
             <span style={{ fontWeight: 700, color: bcfg?.color ?? 'var(--text-primary)' }}>
               {lr.current_score > 0 ? '+' : ''}{lr.current_score}
             </span>
+            {bcfg && lr.current_label && (
+              <span style={{ fontSize: '11px', fontWeight: 700, color: bcfg.color,
+                background: bcfg.bg, border: `1px solid ${bcfg.border}`,
+                borderRadius: '4px', padding: '1px 8px', fontFamily: 'sans-serif' }}>
+                {bcfg.icon} {lr.current_label}
+              </span>
+            )}
           </div>
         )}
 
