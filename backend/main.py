@@ -1057,9 +1057,12 @@ async def refresh_signals():
                     state['cr_breached'][sid] = None   # CR signal killed
 
         # ── Legacy daily bias fallback (futures: was already set via rth_open) ─
+        # Guard with _is_rth: rth_open / prev_settle carry over from the prior
+        # day and would re-stamp yesterday's bias pre-market after the new-day
+        # reset clears daily_bias — suppressing LONG signals all pre-market.
         rth_open_val   = state['rth_open'].get(sid, 0)
         prev_settl_val = state['prev_settle'].get(sid)
-        if rth_open_val and prev_settl_val and not state['daily_bias'].get(sid):
+        if _is_rth and rth_open_val and prev_settl_val and not state['daily_bias'].get(sid):
             if rth_open_val > prev_settl_val:
                 state['daily_bias'][sid] = 'LONG'
             elif rth_open_val < prev_settl_val:
