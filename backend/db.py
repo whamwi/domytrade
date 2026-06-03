@@ -468,10 +468,14 @@ def get_entry_log(limit: int = 200, model: str = 'all', side: str = 'all') -> li
 
 
 def get_open_entry_log_rows() -> list[dict]:
-    """Return all entry_log rows still OPEN — used by outcome checker."""
+    """Return all entry_log rows still OPEN (or partially hit) — used by outcome checker."""
     res = (get_db().table('entry_log')
-           .select('id,fired_at,symbol,side,entry,stop,target,price_1h,price_4h,price_eod,snap_1h_at,snap_4h_at,snap_eod_at')
-           .eq('outcome', 'OPEN')
+           .select('id,fired_at,symbol,side,entry,stop,target,'
+                   'target_t1,target_t2,target_t3,'
+                   'outcome_t1,outcome_t2,outcome_t3,'
+                   'price_1h,price_4h,price_eod,'
+                   'snap_1h_at,snap_4h_at,snap_eod_at')
+           .in_('outcome', ['OPEN', 'HIT_T1', 'HIT_T2'])   # still has open tiers
            .order('fired_at')
            .execute())
     return res.data or []

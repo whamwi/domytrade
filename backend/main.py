@@ -1212,6 +1212,43 @@ async def refresh_signals():
             log.warning('Signal snapshot save error: %s', e)
 
     # ── Entry log — persist every NEAR→ENTRY transition for forward testing ──────
+    # Build a (symbol, model) → signal lookup so we can resolve cross-model targets.
+    # When a WIDE entry fires we capture AGG and CON targets as T1/T2 exit tiers.
+    _sig_map: dict[tuple, dict] = {(r['symbol'], r['model']): r for r in rows}
+
+    def _tiered_targets(r: dict) -> dict:
+        """Return T1/T2/T3 target levels and initial outcomes for this signal row."""
+        sym   = r['symbol']
+        model = r['model']
+        side  = r['side']
+        entry = r['entry']
+
+        agg  = _sig_map.get((sym, 'AGG'),  {})
+        con  = _sig_map.get((sym, 'CON'),  {})
+        wide = _sig_map.get((sym, 'WIDE'), {})
+
+        # T1 = AGG target (always), T2 = CON target, T3 = WIDE target
+        t1_px = agg.get('target')   or (r['target'] if model == 'AGG'  else None)
+        t2_px = con.get('target')   if model in ('CON', 'WIDE') else None
+        t3_px = wide.get('target')  if model == 'WIDE' else None
+
+        def _pnl(tgt):
+            if tgt is None or entry is None:
+                return None
+            return round((tgt - entry) if side == 'LONG' else (entry - tgt), 4)
+
+        return {
+            'target_t1' : t1_px,
+            'target_t2' : t2_px,
+            'target_t3' : t3_px,
+            'pnl_t1'    : _pnl(t1_px),
+            'pnl_t2'    : _pnl(t2_px),
+            'pnl_t3'    : _pnl(t3_px),
+            'outcome_t1': 'OPEN' if t1_px is not None else None,
+            'outcome_t2': 'OPEN' if t2_px is not None else None,
+            'outcome_t3': 'OPEN' if t3_px is not None else None,
+        }
+
     _entry_log_rows = [
         {
             'fired_at'  : datetime.now(ET).isoformat(),
@@ -1225,6 +1262,7 @@ async def refresh_signals():
             'last_price': r['last'],
             'daily_bias': r.get('daily_bias'),
             'hour_et'   : r.get('hour_et'),
+            **_tiered_targets(r),
         }
         for r in rows if r.get('entry_alert')
     ]
@@ -1815,14 +1853,14 @@ def _seed_state_stats_from_db() -> None:
 
 
 async def check_entry_log_outcomes() -> None:
-    """Grade OPEN entry_log rows against current prices.
+    """Grade entry_log rows against current prices — tiered (T1 / T2 / T3) + stop.
 
-    Runs every 30s alongside the signal refresh.  For each OPEN row:
+    Runs every 30s alongside the signal refresh.  For each row still open:
       • Stamps 1h / 4h / EOD price snapshots as they come due.
-      • Marks HIT_TARGET / HIT_STOP as soon as price crosses a level.
-      • Marks EXPIRED after 48 hours if still OPEN.
-
-    P&L is expressed in points (positive = winner, negative = loser).
+      • Grades each tier independently (T1=AGG, T2=CON, T3=WIDE target).
+      • Marks HIT_STOP if stop crosses before any remaining open tier.
+      • Marks EXPIRED after 48h if still open.
+      • Overall outcome = furthest tier hit: HIT_T3 > HIT_T2 > HIT_T1 > HIT_STOP > OPEN.
     """
     from db import get_open_entry_log_rows, update_entry_log_outcome
 
@@ -1843,61 +1881,85 @@ async def check_entry_log_outcomes() -> None:
             ticker_to_price[tick] = px
 
     for row in rows:
-        symbol     = row['symbol']
-        side       = row['side']           # 'LONG' | 'SHORT'
-        entry_px   = row['entry']
-        stop_px    = row['stop']
-        target_px  = row['target']
-        fired_at   = datetime.fromisoformat(row['fired_at'].replace('Z', '+00:00'))
+        symbol   = row['symbol']
+        side     = row['side']
+        entry_px = row['entry']
+        stop_px  = row['stop']
+        fired_at = datetime.fromisoformat(row['fired_at'].replace('Z', '+00:00'))
 
         current_px = ticker_to_price.get(symbol)
         if not current_px:
-            continue   # symbol not in active price feed — skip
+            continue
 
         updates: dict = {}
         elapsed_h = (now_utc - fired_at).total_seconds() / 3600
 
         # ── Price snapshots ─────────────────────────────────────────────────
-        if elapsed_h >= 1.0 and not row['snap_1h_at']:
-            updates['price_1h']    = current_px
-            updates['snap_1h_at']  = now_utc.isoformat()
-
-        if elapsed_h >= 4.0 and not row['snap_4h_at']:
-            updates['price_4h']    = current_px
-            updates['snap_4h_at']  = now_utc.isoformat()
-
-        # EOD snapshot: after 4:00 PM ET on the day the alert fired
-        fired_et      = fired_at.astimezone(ET)
-        fired_date_et = fired_et.date()
-        is_eod        = (now_et.date() >= fired_date_et
-                         and now_et.hour >= 16
-                         and not row['snap_eod_at'])
-        if is_eod:
+        if elapsed_h >= 1.0 and not row.get('snap_1h_at'):
+            updates['price_1h']   = current_px
+            updates['snap_1h_at'] = now_utc.isoformat()
+        if elapsed_h >= 4.0 and not row.get('snap_4h_at'):
+            updates['price_4h']   = current_px
+            updates['snap_4h_at'] = now_utc.isoformat()
+        fired_et = fired_at.astimezone(ET)
+        if (now_et.date() >= fired_et.date() and now_et.hour >= 16
+                and not row.get('snap_eod_at')):
             updates['price_eod']   = current_px
             updates['snap_eod_at'] = now_utc.isoformat()
 
-        # ── Outcome grading ─────────────────────────────────────────────────
-        outcome = None
-        if side == 'LONG':
-            if current_px <= stop_px:
-                outcome = 'HIT_STOP'
-            elif current_px >= target_px:
-                outcome = 'HIT_TARGET'
-        else:  # SHORT
-            if current_px >= stop_px:
-                outcome = 'HIT_STOP'
-            elif current_px <= target_px:
-                outcome = 'HIT_TARGET'
+        # ── Helpers ──────────────────────────────────────────────────────────
+        def _hit_target(tgt) -> bool:
+            if tgt is None: return False
+            return current_px >= tgt if side == 'LONG' else current_px <= tgt
 
-        if outcome is None and elapsed_h >= 48:
-            outcome = 'EXPIRED'
+        def _hit_stop() -> bool:
+            if stop_px is None: return False
+            return current_px <= stop_px if side == 'LONG' else current_px >= stop_px
 
-        if outcome:
+        # ── Per-tier grading ─────────────────────────────────────────────────
+        t1_px = row.get('target_t1')
+        t2_px = row.get('target_t2')
+        t3_px = row.get('target_t3')
+
+        if row.get('outcome_t1') == 'OPEN' and _hit_target(t1_px):
+            updates['outcome_t1'] = 'HIT'
+            updates['t1_hit_at']  = now_utc.isoformat()
+
+        if row.get('outcome_t2') == 'OPEN' and _hit_target(t2_px):
+            updates['outcome_t2'] = 'HIT'
+            updates['t2_hit_at']  = now_utc.isoformat()
+
+        if row.get('outcome_t3') == 'OPEN' and _hit_target(t3_px):
+            updates['outcome_t3'] = 'HIT'
+            updates['t3_hit_at']  = now_utc.isoformat()
+
+        # Resolve current tier outcomes (merging updates with existing row data)
+        oc_t1 = updates.get('outcome_t1', row.get('outcome_t1'))
+        oc_t2 = updates.get('outcome_t2', row.get('outcome_t2'))
+        oc_t3 = updates.get('outcome_t3', row.get('outcome_t3'))
+
+        # ── Overall outcome: furthest tier hit, else stop/expired ────────────
+        current_overall = row.get('outcome', 'OPEN')
+        new_overall     = current_overall
+
+        stopped = _hit_stop() and current_overall not in ('HIT_T1', 'HIT_T2', 'HIT_T3')
+
+        if oc_t3 == 'HIT':
+            new_overall = 'HIT_T3'
+        elif oc_t2 == 'HIT':
+            new_overall = 'HIT_T2'
+        elif oc_t1 == 'HIT':
+            new_overall = 'HIT_T1'
+        elif stopped:
+            new_overall = 'HIT_STOP'
+        elif elapsed_h >= 48 and current_overall == 'OPEN':
+            new_overall = 'EXPIRED'
+
+        if new_overall != current_overall:
             pnl = round(
-                (current_px - entry_px) if side == 'LONG' else (entry_px - current_px),
-                4,
+                (current_px - entry_px) if side == 'LONG' else (entry_px - current_px), 4
             )
-            updates['outcome']    = outcome
+            updates['outcome']    = new_overall
             updates['outcome_at'] = now_utc.isoformat()
             updates['pnl_pts']    = pnl
 

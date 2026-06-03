@@ -17,13 +17,26 @@ interface EntryRow {
   last_price: number
   daily_bias: string | null
   hour_et: number | null
-  // Outcome tracking
-  outcome: 'OPEN' | 'HIT_TARGET' | 'HIT_STOP' | 'EXPIRED'
+  // Overall outcome
+  outcome: 'OPEN' | 'HIT_T1' | 'HIT_T2' | 'HIT_T3' | 'HIT_STOP' | 'EXPIRED'
   outcome_at: string | null
   pnl_pts: number | null
   price_1h: number | null
   price_4h: number | null
   price_eod: number | null
+  // Tiered targets — T1=AGG, T2=CON, T3=WIDE
+  target_t1: number | null
+  target_t2: number | null
+  target_t3: number | null
+  pnl_t1: number | null
+  pnl_t2: number | null
+  pnl_t3: number | null
+  outcome_t1: 'HIT' | 'OPEN' | null
+  outcome_t2: 'HIT' | 'OPEN' | null
+  outcome_t3: 'HIT' | 'OPEN' | null
+  t1_hit_at: string | null
+  t2_hit_at: string | null
+  t3_hit_at: string | null
 }
 
 const MODEL_STYLE: Record<string, { bg: string; color: string }> = {
@@ -34,10 +47,12 @@ const MODEL_STYLE: Record<string, { bg: string; color: string }> = {
 }
 
 const OUTCOME_STYLE: Record<string, { bg: string; color: string; label: string }> = {
-  OPEN:       { bg: 'rgba(100,116,139,0.15)', color: '#94a3b8', label: 'OPEN'   },
-  HIT_TARGET: { bg: 'rgba(34,197,94,0.15)',   color: '#4ade80', label: '✓ TARGET' },
-  HIT_STOP:   { bg: 'rgba(248,113,113,0.15)', color: '#f87171', label: '✕ STOP'  },
-  EXPIRED:    { bg: 'rgba(251,191,36,0.12)',  color: '#fbbf24', label: 'EXPIRED' },
+  OPEN:     { bg: 'rgba(100,116,139,0.15)', color: '#94a3b8', label: 'OPEN'    },
+  HIT_T1:   { bg: 'rgba(34,197,94,0.12)',   color: '#4ade80', label: '✓ T1'    },
+  HIT_T2:   { bg: 'rgba(34,197,94,0.18)',   color: '#22c55e', label: '✓✓ T2'   },
+  HIT_T3:   { bg: 'rgba(34,197,94,0.28)',   color: '#16a34a', label: '✓✓✓ T3'  },
+  HIT_STOP: { bg: 'rgba(248,113,113,0.15)', color: '#f87171', label: '✕ STOP'  },
+  EXPIRED:  { bg: 'rgba(251,191,36,0.12)',  color: '#fbbf24', label: 'EXPIRED' },
 }
 
 function ModelBadge({ model }: { model: string }) {
@@ -76,6 +91,40 @@ function OutcomeBadge({ outcome }: { outcome: string }) {
   )
 }
 
+// ── Tier cell — shows target price + HIT/OPEN badge ──────────────────────────
+function TierCell({ label, price, outcome, pnl, hitAt }: {
+  label: string
+  price: number | null
+  outcome: 'HIT' | 'OPEN' | null
+  pnl: number | null
+  hitAt: string | null
+}) {
+  if (price == null) return <span style={{ color: '#2a2d36' }}>—</span>
+
+  const hit = outcome === 'HIT'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <span style={{
+          fontSize: 9, fontWeight: 700, padding: '0px 4px', borderRadius: 3,
+          background: hit ? 'rgba(34,197,94,0.18)' : 'rgba(100,116,139,0.12)',
+          color: hit ? '#4ade80' : '#475569',
+        }}>
+          {hit ? '✓' : label}
+        </span>
+        <span style={{ color: hit ? '#4ade80' : '#94a3b8', fontSize: 11 }}>
+          {price < 10 ? price.toFixed(3) : price.toFixed(2)}
+        </span>
+      </div>
+      {pnl != null && (
+        <span style={{ fontSize: 9, color: '#475569' }}>
+          {pnl > 0 ? '+' : ''}{pnl < 10 ? pnl.toFixed(2) : pnl.toFixed(0)} pts
+        </span>
+      )}
+    </div>
+  )
+}
+
 function fmt(n: number | null | undefined) {
   if (n == null) return '—'
   if (Math.abs(n) < 10) return n.toFixed(3)
@@ -108,8 +157,9 @@ function fmtDate(iso: string) {
 
 // ── Summary stats ─────────────────────────────────────────────────────────────
 function computeStats(rows: EntryRow[]) {
-  const graded = rows.filter(r => r.outcome === 'HIT_TARGET' || r.outcome === 'HIT_STOP')
-  const wins   = graded.filter(r => r.outcome === 'HIT_TARGET')
+  const HIT_OUTCOMES = ['HIT_T1', 'HIT_T2', 'HIT_T3']
+  const graded = rows.filter(r => HIT_OUTCOMES.includes(r.outcome) || r.outcome === 'HIT_STOP')
+  const wins   = graded.filter(r => HIT_OUTCOMES.includes(r.outcome))
   const losses = graded.filter(r => r.outcome === 'HIT_STOP')
   const open   = rows.filter(r => r.outcome === 'OPEN').length
 
@@ -169,7 +219,14 @@ export default function EntryLog({ visible, onClose }: Props) {
   const sym      = symSearch.trim().toUpperCase()
   const filtered = entries
     .filter(e => !sym || e.symbol.toUpperCase().includes(sym))
-    .filter(e => outcomeF === 'ALL' || e.outcome === outcomeF)
+    .filter(e => {
+      if (outcomeF === 'ALL') return true
+      if (outcomeF === 'OPEN') return e.outcome === 'OPEN'
+      if (outcomeF === 'HIT_TARGET') return ['HIT_T1','HIT_T2','HIT_T3'].includes(e.outcome)
+      if (outcomeF === 'HIT_STOP') return e.outcome === 'HIT_STOP'
+      if (outcomeF === 'EXPIRED') return e.outcome === 'EXPIRED'
+      return true
+    })
 
   // Summary stats over the full (unfiltered-by-outcome) symbol/model set
   const statsBase = entries.filter(e => !sym || e.symbol.toUpperCase().includes(sym))
@@ -187,10 +244,20 @@ export default function EntryLog({ visible, onClose }: Props) {
   const models:   ModelFilter[]   = ['ALL', 'AGG', 'CON', 'WIDE', 'CR']
   const outcomes: OutcomeFilter[] = ['ALL', 'OPEN', 'HIT_TARGET', 'HIT_STOP', 'EXPIRED']
 
+  // Map old outcome values to new tiered names for display
+  const outcomeLabel = (o: string) => {
+    if (o === 'ALL') return 'All'
+    if (o === 'OPEN') return 'Open'
+    if (o === 'HIT_TARGET') return '✓ Any Hit'
+    if (o === 'HIT_STOP') return '✕ Stop'
+    if (o === 'EXPIRED') return 'Expired'
+    return o
+  }
+
   return (
     <div style={{
       position: 'fixed', top: 0, right: 0,
-      width: 640, height: '100vh',
+      width: 820, height: '100vh',
       background: '#0d0f14',
       borderLeft: '1px solid #2a2d36',
       display: 'flex', flexDirection: 'column',
@@ -334,16 +401,18 @@ export default function EntryLog({ visible, onClose }: Props) {
                 <th style={th}>Side</th>
                 <th style={{ ...th, textAlign: 'right' }}>Entry</th>
                 <th style={{ ...th, textAlign: 'right' }}>Stop</th>
-                <th style={{ ...th, textAlign: 'right' }}>Target</th>
-                <th style={th}>Outcome</th>
-                <th style={{ ...th, textAlign: 'right' }}>P&L pts</th>
+                <th style={{ ...th, textAlign: 'right' }}>T1 AGG</th>
+                <th style={{ ...th, textAlign: 'right' }}>T2 CON</th>
+                <th style={{ ...th, textAlign: 'right' }}>T3 WIDE</th>
+                <th style={th}>Result</th>
+                <th style={{ ...th, textAlign: 'right' }}>P&L</th>
               </tr>
             </thead>
             <tbody>
               {grouped.map(({ date, rows }) => (
                 <>
                   <tr key={date + '_hdr'}>
-                    <td colSpan={9} style={{
+                    <td colSpan={11} style={{
                       color: '#475569', fontSize: 11, fontWeight: 600,
                       padding: '10px 10px 4px', letterSpacing: '0.05em',
                       borderBottom: '1px solid #1e2130',
@@ -366,7 +435,15 @@ export default function EntryLog({ visible, onClose }: Props) {
                         <td style={td}><SideBadge side={e.side} /></td>
                         <td style={{ ...td, textAlign: 'right', color: '#e2e8f0' }}>{fmt(e.entry)}</td>
                         <td style={{ ...td, textAlign: 'right', color: '#f87171' }}>{fmt(e.stop)}</td>
-                        <td style={{ ...td, textAlign: 'right', color: '#4ade80' }}>{fmt(e.target)}</td>
+                        <td style={{ ...td, textAlign: 'right' }}>
+                          <TierCell label="T1" price={e.target_t1} outcome={e.outcome_t1} pnl={e.pnl_t1} hitAt={e.t1_hit_at} />
+                        </td>
+                        <td style={{ ...td, textAlign: 'right' }}>
+                          <TierCell label="T2" price={e.target_t2} outcome={e.outcome_t2} pnl={e.pnl_t2} hitAt={e.t2_hit_at} />
+                        </td>
+                        <td style={{ ...td, textAlign: 'right' }}>
+                          <TierCell label="T3" price={e.target_t3} outcome={e.outcome_t3} pnl={e.pnl_t3} hitAt={e.t3_hit_at} />
+                        </td>
                         <td style={td}><OutcomeBadge outcome={e.outcome ?? 'OPEN'} /></td>
                         <td style={{ ...td, textAlign: 'right', color: pnlColor, fontWeight: e.pnl_pts != null ? 700 : 400 }}>
                           {fmtPnl(e.pnl_pts)}
