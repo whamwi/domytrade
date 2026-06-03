@@ -7489,9 +7489,14 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                     dev_read = (f'\n\n{dev_letter} holding above ONH ({on_high_s}) at {dev_price:.2f}. '
                                 f'Trend day continuing — maintain longs.')
                 elif below_poc:
-                    dev_read = (f'\n\n⚠ {dev_letter} developing below ON POC ({on_poc_s}) '
-                                f'at {dev_price:.2f}. If {dev_letter} closes here → signal INVALIDATED. '
-                                f'Reduce longs immediately.')
+                    if status == 'INVALIDATED':
+                        dev_read = (f'\n\n⚡ {dev_letter} confirming INVALIDATED at {dev_price:.2f} — '
+                                    f'holding below ON POC ({on_poc_s}, now resistance). '
+                                    f'Sell rallies to ON POC. Maintain short bias.')
+                    else:
+                        dev_read = (f'\n\n⚠ {dev_letter} developing below ON POC ({on_poc_s}) '
+                                    f'at {dev_price:.2f}. If {dev_letter} closes here → signal INVALIDATED. '
+                                    f'Reduce longs immediately.')
                 elif dev_price < on_high - tick and status == 'CONFIRMED':
                     pts = round(on_high - dev_price, 2)
                     dev_read = (f'\n\n{dev_letter} pulling back {pts} pts below ONH ({on_high_s}) '
@@ -7513,9 +7518,14 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                                 f'if {dev_letter} closes here, status upgrades to CONFIRMED. '
                                 f'Trail stop above ONL on open shorts.')
                 elif above_poc:
-                    dev_read = (f'\n\n⚠ {dev_letter} developing above ON POC ({on_poc_s}) '
-                                f'at {dev_price:.2f}. If {dev_letter} closes here → signal INVALIDATED. '
-                                f'Reduce shorts immediately.')
+                    if status == 'INVALIDATED':
+                        dev_read = (f'\n\n⚡ {dev_letter} confirming INVALIDATED at {dev_price:.2f} — '
+                                    f'holding above ON POC ({on_poc_s}, now support). '
+                                    f'Buy dips to ON POC. Maintain long bias.')
+                    else:
+                        dev_read = (f'\n\n⚠ {dev_letter} developing above ON POC ({on_poc_s}) '
+                                    f'at {dev_price:.2f}. If {dev_letter} closes here → signal INVALIDATED. '
+                                    f'Reduce shorts immediately.')
 
             else:
                 # NEUTRAL (OA day) — narrate live vs overnight range boundaries
