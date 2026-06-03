@@ -7243,14 +7243,25 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
         if on_high is None or on_poc is None:
             return _building
 
-        if curr_zone == 'CONFIRMED':
-            excess   = round(last_close - (ib_high or on_high), 2)
-            ib_ref   = f'{ib_high:.2f}' if ib_high else on_high_s
-            read     = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts above '
-                        f'IB High ({ib_ref}). Buyers accelerating — trend day developing.')
-            guidance = (f'Ride longs. Trail stop below ONH ({on_high_s}). '
-                        f'Do not fade — let price show exhaustion before reducing.')
-            watch    = {'price': on_high, 'label': 'ONH — trail stop', 'significance': 'close below → reduce position'}
+        if effective_zone == 'CONFIRMED':
+            ib_ref = f'{ib_high:.2f}' if ib_high else on_high_s
+            if first_warning and curr_zone != 'CONFIRMED':
+                # First dip back below IB High — hold CONFIRMED badge, warn
+                pts_below = round((ib_high or on_high) - last_close, 2)
+                read     = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_below} pts below IB High ({ib_ref}) — '
+                            f'first pullback from extension. One period is noise; CONFIRMED badge held. '
+                            f'Watch next close: above IB High restores full extension, below ONH downgrades.')
+                guidance = (f'Hold longs. Trail stop below ONH ({on_high_s}). '
+                            f'Next close above {ib_ref} = CONFIRMED restored. '
+                            f'Close below ONH = downgrade to INTACT.')
+                watch    = {'price': ib_high or on_high, 'label': 'IB High — watching', 'significance': 'close above → CONFIRMED restored'}
+            else:
+                excess   = round(last_close - (ib_high or on_high), 2)
+                read     = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts above '
+                            f'IB High ({ib_ref}). Buyers accelerating — trend day developing.')
+                guidance = (f'Ride longs. Trail stop below ONH ({on_high_s}). '
+                            f'Do not fade — let price show exhaustion before reducing.')
+                watch    = {'price': on_high, 'label': 'ONH — trail stop', 'significance': 'close below → reduce position'}
 
         elif effective_zone == 'INTACT':
             pts = round(last_close - on_high, 2)
@@ -7327,14 +7338,25 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
         if on_low is None or on_poc is None:
             return _building
 
-        if curr_zone == 'CONFIRMED':
-            excess   = round((ib_low or on_low) - last_close, 2)
-            ib_ref   = f'{ib_low:.2f}' if ib_low else on_low_s
-            read     = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts below '
-                        f'IB Low ({ib_ref}). Sellers accelerating — trend day developing.')
-            guidance = (f'Ride shorts. Trail stop above ONL ({on_low_s}). '
-                        f'Do not fade — let price show exhaustion.')
-            watch    = {'price': on_low, 'label': 'ONL — trail stop', 'significance': 'close above → reduce position'}
+        if effective_zone == 'CONFIRMED':
+            ib_ref = f'{ib_low:.2f}' if ib_low else on_low_s
+            if first_warning and curr_zone != 'CONFIRMED':
+                # First close back above IB Low — hold CONFIRMED badge, warn
+                pts_above = round(last_close - (ib_low or on_low), 2)
+                read     = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_above} pts above IB Low ({ib_ref}) — '
+                            f'first pullback from extension. One period is noise; CONFIRMED badge held. '
+                            f'Watch next close: below IB Low restores full extension, above ONL downgrades.')
+                guidance = (f'Hold shorts. Trail stop above ONL ({on_low_s}). '
+                            f'Next close below {ib_ref} = CONFIRMED restored. '
+                            f'Close above ONL = downgrade to INTACT.')
+                watch    = {'price': ib_low or on_low, 'label': 'IB Low — watching', 'significance': 'close below → CONFIRMED restored'}
+            else:
+                excess   = round((ib_low or on_low) - last_close, 2)
+                read     = (f'{period_label} closed at {last_close:.2f}, extending {excess} pts below '
+                            f'IB Low ({ib_ref}). Sellers accelerating — trend day developing.')
+                guidance = (f'Ride shorts. Trail stop above ONL ({on_low_s}). '
+                            f'Do not fade — let price show exhaustion.')
+                watch    = {'price': on_low, 'label': 'ONL — trail stop', 'significance': 'close above → reduce position'}
 
         elif effective_zone == 'INTACT':
             pts = round(on_low - last_close, 2)
