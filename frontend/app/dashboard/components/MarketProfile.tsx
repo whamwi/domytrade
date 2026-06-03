@@ -86,14 +86,20 @@ interface IBSignals {
 }
 interface LiveWatchLevel { price: number; label: string; significance: string }
 interface LiveReadData {
-  active:         boolean
-  status:         string   // BUILDING | IB_BUILDING | INTACT | WEAKENING | CRITICAL | CONFIRMED | INVALIDATED
-  last_period:    string | null
-  last_close:     number | null
-  current_read:   string
-  live_guidance:  string
-  watch_level:    LiveWatchLevel | null
-  first_warning?: boolean  // true when status held pending 2nd-period confirmation
+  active:           boolean
+  status:           string   // BUILDING | IB_BUILDING | INTACT | WEAKENING | CRITICAL | CONFIRMED | INVALIDATED
+  last_period:      string | null
+  last_close:       number | null
+  current_read:     string
+  live_guidance:    string
+  watch_level:      LiveWatchLevel | null
+  first_warning?:   boolean  // true when status held pending 2nd-period confirmation
+  ib_score?:        number
+  live_adjustment?: number
+  current_score?:   number
+  current_bias?:    string
+  current_label?:   string
+  live_trade_plan?: string
 }
 interface MPData {
   symbol:           string
@@ -868,7 +874,8 @@ const LIVE_STATUS_CFG: Record<string, { color: string; bg: string; border: strin
 }
 
 function LiveRead({ lr }: { lr: LiveReadData }) {
-  const cfg = LIVE_STATUS_CFG[lr.status] ?? LIVE_STATUS_CFG['BUILDING']
+  const cfg  = LIVE_STATUS_CFG[lr.status] ?? LIVE_STATUS_CFG['BUILDING']
+  const bcfg = lr.current_bias ? (BIAS_CFG[lr.current_bias] ?? BIAS_CFG.NEUTRAL) : null
   return (
     <div style={{ background: 'var(--bg-panel)', border: `1px solid ${cfg.border}`,
       borderRadius: '10px', overflow: 'hidden' }}>
@@ -888,15 +895,40 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
               ⚠ Watching
             </span>
           )}
+          {/* Zone status badge */}
           <span style={{ fontSize: '12px', fontWeight: 700, color: cfg.color,
             background: cfg.bg, border: `1px solid ${cfg.border}`,
             borderRadius: '5px', padding: '2px 10px' }}>
             {cfg.label}
           </span>
+          {/* Live-adjusted bias badge — shown once IB is complete */}
+          {bcfg && lr.current_label && (
+            <span style={{ fontSize: '12px', fontWeight: 700, color: bcfg.color,
+              background: bcfg.bg, border: `1px solid ${bcfg.border}`,
+              borderRadius: '5px', padding: '2px 10px' }}>
+              {bcfg.icon} {lr.current_label}
+            </span>
+          )}
         </div>
       </div>
 
       <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+
+        {/* Score math row: IB score → adj → current */}
+        {lr.current_score != null && lr.ib_score != null && lr.live_adjustment != null && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px',
+            fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'monospace' }}>
+            <span>IB {lr.ib_score > 0 ? '+' : ''}{lr.ib_score}</span>
+            <span style={{ color: '#475569' }}>+</span>
+            <span style={{ color: lr.live_adjustment >= 0 ? '#4ade80' : '#f87171' }}>
+              adj {lr.live_adjustment > 0 ? '+' : ''}{lr.live_adjustment}
+            </span>
+            <span style={{ color: '#475569' }}>=</span>
+            <span style={{ fontWeight: 700, color: bcfg?.color ?? 'var(--text-primary)' }}>
+              {lr.current_score > 0 ? '+' : ''}{lr.current_score}
+            </span>
+          </div>
+        )}
 
         {/* Last period chip */}
         {lr.last_period && lr.last_close != null && (
@@ -930,6 +962,20 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
             </div>
             <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.55 }}>
               {lr.live_guidance}
+            </div>
+          </div>
+        )}
+
+        {/* Live trade plan — overrides IB plan when signal has evolved */}
+        {lr.live_trade_plan && bcfg && (
+          <div style={{ padding: '8px 12px', background: bcfg.bg,
+            border: `1px solid ${bcfg.border}`, borderRadius: '7px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: bcfg.color,
+              textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
+              Live Trade Plan
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.55 }}>
+              {lr.live_trade_plan}
             </div>
           </div>
         )}

@@ -6890,11 +6890,60 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
         'ready':       True,
         'bias':        bias,
         'bias_label':  bias_label,
+        'ib_score':    bias_score,    # raw numeric score for live-adjustment use
         'signals':     signals,
         'key_levels':  key_levels_out,
         'day_context': day_context,
         'trade_plan':  trade_plan,
     }
+
+
+def _zone_to_live_adj(zone: str, ib_score: int) -> int:
+    """Convert a live-read zone into a signed score adjustment.
+
+    The adjustment is always applied in the direction that either
+    confirms or contradicts the original IB thesis:
+
+      Bullish IB (ib_score > 0):           Bearish IB (ib_score < 0):
+        CONFIRMED  → +2  (accelerating)      CONFIRMED  → −2
+        INTACT     →  0  (holding)           INTACT     →  0
+        WEAKENING  → −1  (fading)            WEAKENING  → +1
+        CRITICAL   → −2  (under stress)      CRITICAL   → +2
+        INVALIDATED→ −3  (flip)              INVALIDATED→ +3
+
+      Neutral IB (ib_score == 0) — zone carries its own direction:
+        CONFIRMED above ON range → +2
+        CONFIRMED below ON range → −2
+        INTACT                  →  0
+        WEAKENING               → −1
+        CRITICAL                → −2
+        INVALIDATED             → −3
+    """
+    direction = 1 if ib_score >= 0 else -1
+    _MAP = {
+        'CONFIRMED':   2,
+        'INTACT':      0,
+        'WEAKENING':  -1,
+        'CRITICAL':   -2,
+        'INVALIDATED':-3,
+        'IB_BUILDING': 0,
+        'BUILDING':    0,
+    }
+    raw = _MAP.get(zone, 0)
+    return direction * raw
+
+
+def _score_to_bias(score: int) -> tuple[str, str]:
+    """Convert a numeric score to (bias, label) strings."""
+    if   score >=  4: return 'BULLISH',      'Strong Bullish'
+    elif score ==  3: return 'BULLISH',      'Bullish'
+    elif score ==  2: return 'BULLISH',      'Bullish'
+    elif score ==  1: return 'BULLISH_LEAN', 'Bullish Lean'
+    elif score ==  0: return 'NEUTRAL',      'Neutral'
+    elif score == -1: return 'BEARISH_LEAN', 'Bearish Lean'
+    elif score == -2: return 'BEARISH',      'Bearish'
+    elif score == -3: return 'BEARISH',      'Bearish'
+    else:             return 'BEARISH',      'Strong Bearish'
 
 
 def _zone_for_close(close: float, bias: str, on_high, on_low, on_poc,
@@ -6943,6 +6992,76 @@ def _is_downgrade(prev_zone: str, curr_zone: str) -> bool:
         return _ZONE_SEVERITY.index(curr_zone) > _ZONE_SEVERITY.index(prev_zone)
     except ValueError:
         return False
+
+
+def _build_live_trade_plan(
+    zone: str, current_bias: str,
+    on_high, on_low, on_poc, ib_high, ib_low,
+) -> str | None:
+    """Return a live trade plan based on the current zone + live-adjusted bias.
+
+    Only fires once the IB is complete (zone is a real zone, not BUILDING/IB_BUILDING).
+    The plan updates every period and always reflects the current market truth,
+    overriding the frozen IB hypothesis when the signal has flipped.
+    """
+    if zone in ('BUILDING', 'IB_BUILDING', 'INTACT') and current_bias in ('BULLISH', 'BULLISH_LEAN'):
+        # Signal holding — mirror IB plan direction concisely
+        pass  # fall through to zone-specific logic below
+
+    onh = f'{on_high:.2f}' if on_high is not None else 'ONH'
+    onl = f'{on_low:.2f}'  if on_low  is not None else 'ONL'
+    poc = f'{on_poc:.2f}'  if on_poc  is not None else 'ON POC'
+    ibh = f'{ib_high:.2f}' if ib_high is not None else 'IB High'
+    ibl = f'{ib_low:.2f}'  if ib_low  is not None else 'IB Low'
+
+    bullish = current_bias in ('BULLISH', 'BULLISH_LEAN')
+    bearish = current_bias in ('BEARISH', 'BEARISH_LEAN')
+
+    if zone == 'CONFIRMED':
+        if bullish:
+            return (f'Ride longs. Trail stop below ONH ({onh}). '
+                    f'Do not fade — buyers accelerating toward {ibh}.')
+        if bearish:
+            return (f'Ride shorts. Trail stop above ONL ({onl}). '
+                    f'Do not fade — sellers accelerating toward {ibl}.')
+
+    elif zone == 'INTACT':
+        if bullish:
+            return (f'Buy pullbacks to ONH ({onh}). Stop below ON POC ({poc}). '
+                    f'Target IB High ({ibh}).')
+        if bearish:
+            return (f'Sell rallies to ONL ({onl}). Stop above ON POC ({poc}). '
+                    f'Target IB Low ({ibl}).')
+
+    elif zone == 'WEAKENING':
+        if bullish:
+            return (f'Reduce longs 50%. No new entries. '
+                    f'ON POC ({poc}) is next key support — close below signals full exit.')
+        if bearish:
+            return (f'Cover shorts 50%. No new entries. '
+                    f'ON POC ({poc}) is next key resistance — close above signals full cover.')
+
+    elif zone == 'CRITICAL':
+        if bullish:
+            return (f'Exit all longs. ON POC ({poc}) is last defence. '
+                    f'No new positions until a period closes above {poc}.')
+        if bearish:
+            return (f'Cover all shorts. ON POC ({poc}) is last defence. '
+                    f'No new positions until a period closes below {poc}.')
+
+    elif zone == 'INVALIDATED':
+        if bullish:
+            # Original was bearish, flipped — buy side now
+            return (f'Signal flipped BULLISH. Cover shorts. '
+                    f'Buy dips to ON POC ({poc}, now support). '
+                    f'Stop below ONL ({onl}). Target ONH ({onh}).')
+        if bearish:
+            # Original was bullish, flipped — sell side now
+            return (f'Signal flipped BEARISH. Exit all longs. '
+                    f'Sell rallies to ON POC ({poc}, now resistance). '
+                    f'Stop above ONH ({onh}). Target ONL ({onl}).')
+
+    return None
 
 
 def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
@@ -7070,8 +7189,9 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
             'watch_level': {'price': on_low, 'label': 'ONL', 'significance': 'B close below = bearish IB'} if on_low else None,
         }
 
-    bias       = ib_signals.get('bias', 'NEUTRAL')
-    straddle_t = 3 * tick
+    bias        = ib_signals.get('bias', 'NEUTRAL')
+    ib_score_raw = ib_signals.get('ib_score', 0)
+    straddle_t  = 3 * tick
 
     # Helper: period label with human-readable time
     def _plabel(letter: str) -> str:
@@ -7400,6 +7520,16 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                     dev_read = (f'\n\n{dev_letter} at {dev_price:.2f}, below ON POC ({on_poc_s}). '
                                 f'Sellers slightly in control — watch for ONL ({on_low_s}) test.')
 
+    live_adj      = _zone_to_live_adj(effective_zone, ib_score_raw)
+    current_score = ib_score_raw + live_adj
+    current_bias, current_label = _score_to_bias(current_score)
+
+    # ── Live trade plan — updates with current_bias + zone ────────────────────
+    live_trade_plan = _build_live_trade_plan(
+        effective_zone, current_bias,
+        on_high, on_low, on_poc, ib_high, ib_low,
+    )
+
     return {
         'active':            True,
         'status':            status,
@@ -7411,6 +7541,12 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
         'first_warning':     first_warning,
         'developing_period': dev_letter or None,
         'developing_price':  dev_price,
+        'ib_score':          ib_score_raw,
+        'live_adjustment':   live_adj,
+        'current_score':     current_score,
+        'current_bias':      current_bias,
+        'current_label':     current_label,
+        'live_trade_plan':   live_trade_plan,
     }
 
 
