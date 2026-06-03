@@ -467,10 +467,59 @@ def get_entry_log(limit: int = 200, model: str = 'all', side: str = 'all') -> li
     return res.data or []
 
 
+def get_open_entry_log_rows() -> list[dict]:
+    """Return all entry_log rows still OPEN — used by outcome checker."""
+    res = (get_db().table('entry_log')
+           .select('id,fired_at,symbol,side,entry,stop,target,price_1h,price_4h,price_eod,snap_1h_at,snap_4h_at,snap_eod_at')
+           .eq('outcome', 'OPEN')
+           .order('fired_at')
+           .execute())
+    return res.data or []
+
+
+def update_entry_log_outcome(row_id: int, updates: dict) -> None:
+    """Patch a single entry_log row — used by outcome checker for snapshots + final grade."""
+    if not updates:
+        return
+    get_db().table('entry_log').update(updates).eq('id', row_id).execute()
+
+
+def archive_entry_log(reason: str = 'scheduled', cutoff_iso: str | None = None) -> int:
+    """Move entry_log rows to entry_log_archive.
+
+    reason='scheduled' : move rows fired before cutoff_iso (yesterday EOD).
+    reason='manual_clear': move ALL rows then delete them all.
+
+    Returns number of rows archived.
+    """
+    db = get_db()
+    q = db.table('entry_log').select('*')
+    if reason == 'scheduled' and cutoff_iso:
+        q = q.lt('fired_at', cutoff_iso)
+    rows = q.execute().data or []
+    if not rows:
+        return 0
+
+    archive_rows = [{**r, 'archived_at': None, 'archive_reason': reason} for r in rows]
+    # archived_at defaults to now() in DB — omit to let the default fire
+    for r in archive_rows:
+        r.pop('archived_at', None)
+        r['archive_reason'] = reason
+
+    db.table('entry_log_archive').upsert(archive_rows, on_conflict='id').execute()
+
+    ids = [r['id'] for r in rows]
+    # Delete in batches of 100
+    for i in range(0, len(ids), 100):
+        batch = ids[i:i + 100]
+        db.table('entry_log').delete().in_('id', batch).execute()
+
+    return len(rows)
+
+
 def clear_entry_log() -> int:
-    """Delete all entry_log rows. Returns the number of rows deleted."""
-    res = get_db().table('entry_log').delete().gte('id', 0).execute()
-    return len(res.data) if res.data else 0
+    """Archive ALL entry_log rows then delete them. Returns the number archived."""
+    return archive_entry_log(reason='manual_clear')
 
 
 # ── App Cache (key/value store for persisting computed values) ─────────────────

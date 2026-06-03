@@ -1814,6 +1814,97 @@ def _seed_state_stats_from_db() -> None:
              seeded, len(state['symbols']))
 
 
+async def check_entry_log_outcomes() -> None:
+    """Grade OPEN entry_log rows against current prices.
+
+    Runs every 30s alongside the signal refresh.  For each OPEN row:
+      • Stamps 1h / 4h / EOD price snapshots as they come due.
+      • Marks HIT_TARGET / HIT_STOP as soon as price crosses a level.
+      • Marks EXPIRED after 48 hours if still OPEN.
+
+    P&L is expressed in points (positive = winner, negative = loser).
+    """
+    from db import get_open_entry_log_rows, update_entry_log_outcome
+
+    rows = await asyncio.to_thread(get_open_entry_log_rows)
+    if not rows:
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    now_et  = datetime.now(ET)
+
+    # Build symbol → current price map from in-memory state
+    ticker_to_price: dict[str, float] = {}
+    for sym in state.get('symbols', []):
+        sid  = sym['id']
+        tick = sym['ticker']
+        px   = state['last_price'].get(sid)
+        if px:
+            ticker_to_price[tick] = px
+
+    for row in rows:
+        symbol     = row['symbol']
+        side       = row['side']           # 'LONG' | 'SHORT'
+        entry_px   = row['entry']
+        stop_px    = row['stop']
+        target_px  = row['target']
+        fired_at   = datetime.fromisoformat(row['fired_at'].replace('Z', '+00:00'))
+
+        current_px = ticker_to_price.get(symbol)
+        if not current_px:
+            continue   # symbol not in active price feed — skip
+
+        updates: dict = {}
+        elapsed_h = (now_utc - fired_at).total_seconds() / 3600
+
+        # ── Price snapshots ─────────────────────────────────────────────────
+        if elapsed_h >= 1.0 and not row['snap_1h_at']:
+            updates['price_1h']    = current_px
+            updates['snap_1h_at']  = now_utc.isoformat()
+
+        if elapsed_h >= 4.0 and not row['snap_4h_at']:
+            updates['price_4h']    = current_px
+            updates['snap_4h_at']  = now_utc.isoformat()
+
+        # EOD snapshot: after 4:00 PM ET on the day the alert fired
+        fired_et      = fired_at.astimezone(ET)
+        fired_date_et = fired_et.date()
+        is_eod        = (now_et.date() >= fired_date_et
+                         and now_et.hour >= 16
+                         and not row['snap_eod_at'])
+        if is_eod:
+            updates['price_eod']   = current_px
+            updates['snap_eod_at'] = now_utc.isoformat()
+
+        # ── Outcome grading ─────────────────────────────────────────────────
+        outcome = None
+        if side == 'LONG':
+            if current_px <= stop_px:
+                outcome = 'HIT_STOP'
+            elif current_px >= target_px:
+                outcome = 'HIT_TARGET'
+        else:  # SHORT
+            if current_px >= stop_px:
+                outcome = 'HIT_STOP'
+            elif current_px <= target_px:
+                outcome = 'HIT_TARGET'
+
+        if outcome is None and elapsed_h >= 48:
+            outcome = 'EXPIRED'
+
+        if outcome:
+            pnl = round(
+                (current_px - entry_px) if side == 'LONG' else (entry_px - current_px),
+                4,
+            )
+            updates['outcome']    = outcome
+            updates['outcome_at'] = now_utc.isoformat()
+            updates['pnl_pts']    = pnl
+
+        if updates:
+            await asyncio.to_thread(update_entry_log_outcome, row['id'], updates)
+
+
 async def background_loop():
     # ── Schwab token persistence ──────────────────────────────────────────────
     # Schwab uses ROTATING refresh tokens — each use generates a new one.
@@ -2016,6 +2107,7 @@ async def background_loop():
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
     last_vbh_stocks_vbh_run = ''   # 'YYYY-MM-DD' of last Saturday VBH recompute for stocks
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
+    last_archive_run        = ''   # 'YYYY-MM-DD' of last entry_log → archive move
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 30s cadence
@@ -2035,6 +2127,12 @@ async def background_loop():
                 log.warning('refresh_signals timed out (90s) — skipping this cycle')
             except Exception as e:
                 log.warning('refresh_signals error: %s', e)
+
+            # Stage 2b: grade OPEN entry_log rows (every 30s, same cadence)
+            try:
+                await check_entry_log_outcomes()
+            except Exception as e:
+                log.warning('check_entry_log_outcomes error: %s', e)
             try:
                 await refresh_mag10_prices()
             except Exception as e:
@@ -2117,6 +2215,23 @@ async def background_loop():
                 except Exception as e:
                     log.warning('1-min aggregation error: %s', e)
                 last_1min_agg_run = _today
+
+            # 5:00 AM ET — move yesterday's entry_log rows to archive
+            # Runs before the VBH update so the log is clean for the new day.
+            if _et_hhmm == 5 * 60 and last_archive_run != _today:
+                try:
+                    from db import archive_entry_log
+                    from datetime import timedelta
+                    # Cutoff = start of today ET (midnight) — moves everything from yesterday and older
+                    cutoff = datetime.combine(
+                        datetime.now(ET).date(), datetime.min.time()
+                    ).replace(tzinfo=ET).astimezone(timezone.utc).isoformat()
+                    archived = await asyncio.to_thread(archive_entry_log, 'scheduled', cutoff)
+                    if archived:
+                        log.info('Entry log archive: moved %d rows to entry_log_archive', archived)
+                except Exception as e:
+                    log.warning('Entry log archive error: %s', e)
+                last_archive_run = _today
 
             # 5:30 AM ET — daily VBH table update (overnight session just closed).
             # Fetches new 30-min Schwab candles for ALL active symbols (futures +
