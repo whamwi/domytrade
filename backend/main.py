@@ -169,6 +169,7 @@ state = {
     'status'           : 'starting',
     'active_contracts'  : {},   # {ticker: active_contract} e.g. {'/GC': '/GCQ26'}
     'last_loop_error'   : None,  # most recent background loop exception string
+    'market_profile'    : {},   # {symbol: full market profile result} — updated by /api/market-profile calls
     'token_state'       : 'unknown',  # 'loaded_from_db' | 'using_env_var' | 'load_failed'
     '1min_today'        : {},   # {symbol_id: [bars]} — in-memory cache populated by refresh_all_1min()
     'cr'                : {},   # {symbol_id: {high, low, mid, entry_long, entry_short, complete}}
@@ -4993,89 +4994,62 @@ def _build_ask_ai_context() -> str:
 
 
 def _build_market_profile_context() -> str:
-    """Compact Market Profile snapshot for /ES, /NQ, /YM, /RTY injected into Ask AI context."""
-    from datetime import datetime, timezone
+    """Compact Market Profile snapshot for Ask AI — reads from state cache.
+
+    The cache is populated by /api/market-profile/{symbol} calls which the
+    frontend makes every 60 seconds. No extra Schwab calls needed here.
+    """
     MP_SYMBOLS = ['/ES', '/NQ', '/YM', '/RTY']
-    now_et = datetime.now(ET)
-    tick_map = {'/ES': 0.25, '/NQ': 0.25, '/YM': 1.0, '/RTY': 0.10}
+    cache = state.get('market_profile', {})
 
-    lines = ['\n=== MARKET PROFILE SNAPSHOT (live) ===']
+    lines = ['\n=== MARKET PROFILE SNAPSHOT (from last frontend poll) ===']
+    found = False
     for sym in MP_SYMBOLS:
-        try:
-            tick = tick_map.get(sym, 0.25)
-            raw  = get_candles(sym, 5, 1)
-            if not raw:
-                continue
+        data = cache.get(sym)
+        if not data:
+            continue
+        found = True
 
-            rth_by_date: dict = {}
-            on_by_date:  dict = {}
-            for c in raw:
-                dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
-                d     = dt.date()
-                t_min = dt.hour * 60 + dt.minute
-                wday  = dt.weekday()
-                is_rth      = wday < 5 and (9 * 60 + 30) <= t_min < 16 * 60
-                is_on_wkday = wday < 5 and t_min < (9 * 60 + 30)
-                is_evening  = wday < 5 and t_min >= 18 * 60
-                if is_rth:
-                    rth_by_date.setdefault(d, []).append(c)
-                elif is_on_wkday:
-                    on_by_date.setdefault(d, []).append(c)
-                elif is_evening:
-                    days_fwd = 3 if wday == 4 else 1
-                    on_by_date.setdefault(d + timedelta(days=days_fwd), []).append(c)
+        ib      = data.get('ib_signals', {})
+        lr      = data.get('live_read', {})
+        on      = data.get('overnight', {})
+        today   = data.get('today', {})
 
-            today = now_et.date()
-            today_bars    = rth_by_date.get(today, [])
-            tonight_bars  = on_by_date.get(today, [])
+        bias        = ib.get('bias_label', 'Neutral')
+        ib_score    = ib.get('ib_score', 0)
+        zone        = lr.get('status', 'BUILDING')
+        curr_label  = lr.get('current_label', '')
+        curr_score  = lr.get('current_score', ib_score)
+        live_adj    = lr.get('live_adjustment', 0)
+        last_period = lr.get('last_period') or '—'
+        last_close  = lr.get('last_close')
+        trade_plan  = lr.get('live_trade_plan') or ib.get('trade_plan', '')
+        on_high     = on.get('high')
+        on_low      = on.get('low')
+        on_poc      = on.get('poc')
+        ib_high     = today.get('ib_high')
+        ib_low      = today.get('ib_low')
+        computed_at = data.get('computed_at', '')
 
-            if not today_bars and not tonight_bars:
-                continue
-
-            today_prof = _build_rth_tpo_profile(today_bars, tick)
-            overnight  = _build_overnight_tpo_profile(tonight_bars, tick)
-
-            # Get prior session for IB signals
-            prior_dates = sorted([d for d in rth_by_date if d < today], reverse=True)
-            prior_bars  = rth_by_date.get(prior_dates[0], []) if prior_dates else []
-            prior_prof  = _build_rth_tpo_profile(prior_bars, tick) if prior_bars else {}
-            prior_on_dates = sorted([d for d in on_by_date if d < today], reverse=True)
-            prior_on_bars  = on_by_date.get(prior_on_dates[0], []) if prior_on_dates else []
-            prior_overnight = _build_overnight_tpo_profile(prior_on_bars, tick) if prior_on_bars else {}
-
-            ib_signals = _generate_ib_signals(today_prof, overnight, prior_prof, tick)
-            live_read  = _evaluate_live_read(today_prof, ib_signals, overnight, now_et, tick)
-
-            bias         = ib_signals.get('bias_label', 'Neutral')
-            ib_score     = ib_signals.get('ib_score', 0)
-            zone         = live_read.get('status', 'BUILDING')
-            curr_label   = live_read.get('current_label', '')
-            curr_score   = live_read.get('current_score', ib_score)
-            live_adj     = live_read.get('live_adjustment', 0)
-            last_period  = live_read.get('last_period', '—')
-            last_close   = live_read.get('last_close')
-            trade_plan   = live_read.get('live_trade_plan') or ib_signals.get('trade_plan', '')
-            on_high      = overnight.get('high')
-            on_low       = overnight.get('low')
-            on_poc       = overnight.get('poc')
-            ib_high      = today_prof.get('ib_high')
-            ib_low       = today_prof.get('ib_low')
-
-            close_str = f'{last_close:.2f}' if last_close else '—'
+        close_str = f'{last_close:.2f}' if last_close else '—'
+        lines.append(
+            f'\n{sym} (as of {computed_at})'
+            f'\n  IB:{ib_score:+d} ({bias}) + adj {live_adj:+d} = {curr_score:+d} ({curr_label})'
+            f'  Zone:{zone}  Last period:{last_period} @ {close_str}'
+        )
+        if on_high and on_low and on_poc:
             lines.append(
-                f'\n{sym}  IB:{ib_score:+d} ({bias}) + adj {live_adj:+d} = {curr_score:+d} ({curr_label})'
-                f'  Zone:{zone}  Last:{last_period} @ {close_str}'
+                f'  Key levels — ONH:{on_high}  ONL:{on_low}  ON POC:{on_poc}'
+                + (f'  IB High:{ib_high}  IB Low:{ib_low}' if ib_high and ib_low else '')
             )
-            if on_high and on_low and on_poc:
-                lines.append(f'  ONH:{on_high}  ONL:{on_low}  ON POC:{on_poc}'
-                              + (f'  IB Hi:{ib_high}  IB Lo:{ib_low}' if ib_high and ib_low else ''))
-            if trade_plan:
-                lines.append(f'  Plan: {trade_plan}')
-        except Exception:
-            pass
+        if trade_plan:
+            lines.append(f'  Live trade plan: {trade_plan}')
 
-    if len(lines) == 1:
-        lines.append('  Market Profile data unavailable (pre-RTH or Schwab error).')
+    if not found:
+        lines.append(
+            '  No Market Profile data cached yet — user has not opened the Market Profile tab '
+            'or market is pre-RTH. Explain concepts from knowledge above instead.'
+        )
     return '\n'.join(lines)
 
 
@@ -5092,12 +5066,12 @@ async def ask_ai(body: dict = Body(...)):
     if not api_key:
         return {'reply': 'GEMINI_API_KEY not configured.'}
 
-    # Gather internals, signals context, and market profile concurrently
-    internals, ctx, mp_ctx = await asyncio.gather(
+    # Gather internals + signals context concurrently; MP context reads from cache (no I/O)
+    internals, ctx = await asyncio.gather(
         _internals_snapshot(),
         asyncio.to_thread(_build_ask_ai_context),
-        asyncio.to_thread(_build_market_profile_context),
     )
+    mp_ctx = _build_market_profile_context()
 
     # Append internals and market profile to context
     ctx_lines = [ctx, mp_ctx]
@@ -7950,7 +7924,7 @@ async def api_market_profile(symbol: str):
     # Dynamic per-period read that updates with each new letter printed
     live_read = _evaluate_live_read(today_prof, ib_signals, overnight, now_et, tick)
 
-    return {
+    result = {
         'symbol':           symbol,
         'tick':             tick,
         'computed_at':      computed_at,
@@ -7966,6 +7940,10 @@ async def api_market_profile(symbol: str):
         'prior_ib_signals': prior_ib_signals,
         'live_read':        live_read,
     }
+
+    # Cache for Ask AI context — keyed by symbol, always fresh from the frontend 60s poll
+    state['market_profile'][symbol] = result
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
