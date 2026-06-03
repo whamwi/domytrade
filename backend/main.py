@@ -6884,65 +6884,6 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
             trade_plan = (f'No directional edge. Buy IB Low ({ib_low:.2f}), sell IB High ({ib_high:.2f}). '
                           f'Late-session close outside IB sets tomorrow\'s opening bias.')
 
-    # ── LONG-only regime ──────────────────────────────────────────────────────
-    # Backtest (183 days, Sep 2025 → May 2026) shows SHORT IB signals have
-    # no edge in the current bull-trending environment.
-    # Two tiers:
-    #   bias ≤ −2 : confirmed bearish acceptance → full suppression, stand aside
-    #   bias == −1: probe rejected / minor signal → two-sided OA still valid
-    #               buying VAL is a LONG trade; no directional short taken
-    if bias_score <= -2:
-        for s in signals:
-            if s['type'] in ('BEARISH', 'BEARISH_LEAN'):
-                s['type'] = 'INFO'
-        bias       = 'NEUTRAL'
-        bias_label = 'No Trade — LONG regime'
-        trade_plan = (
-            'SHORT signals are not taken in the current regime (LONG-only). '
-            'Bearish IB context noted for awareness — no trade. '
-            'Stand aside and wait for a bullish OA + IB acceptance signal.'
-        )
-    elif bias_score == -1:
-        # Probe rejected or minor bearish signal — overnight sellers/buyers held.
-        # Reverts to two-sided OA: buying VAL is valid (LONG trade).
-        # No directional short entries.
-        for s in signals:
-            if s['type'] in ('BEARISH', 'BEARISH_LEAN'):
-                s['type'] = 'INFO'
-        bias       = 'NEUTRAL'
-        bias_label = 'OA Two-Sided'
-        trade_plan = (
-            f'No directional edge (LONG regime — no short entries). '
-            f'Overnight traders still in control: '
-            f'buy overnight VAL ({val_s}), sell overnight VAH ({vah_s}) for range trades. '
-            f'Wait for a decisive close outside the overnight range before committing direction.'
-        )
-
-    # ── LONG regime key-level relabeling ─────────────────────────────────────
-    # Remove short-side language from labels so the trader sees only valid actions.
-    if bias_score <= -1:
-        for kl in key_levels:
-            lbl = kl['label']
-            # Rotational OA day — clarify which side is valid in LONG regime
-            if lbl == 'ONH — fade (sell) / long target':
-                kl['label'] = 'ONH — long target'
-            elif lbl == 'ONL — long entry / fade (buy)':
-                kl['label'] = 'ONL — long entry zone'
-            # ON POC: resistance in bearish IB — in LONG regime it's the break-above trigger
-            elif 'resistance / short entry' in lbl:
-                kl['label'] = lbl.replace('resistance / short entry',
-                                          'resistance — break above = long signal')
-                kl['color'] = 'amber'
-            # ONL confirmed broken below — in LONG regime: watch for price to reclaim it
-            elif lbl == 'ONL → Resistance (confirmed)':
-                kl['label'] = 'ONL — broken support, reclaim above = bullish pivot'
-                kl['color'] = 'amber'
-            elif lbl == 'ONL → Resistance':
-                kl['label'] = 'ONL — reclaim above = watch level'
-                kl['color'] = 'amber'
-            # ONH confirmed as support (bullish excess) — no change needed, already correct
-            # ONH probe labels — no change needed
-
     key_levels_out = sorted(key_levels, key=lambda x: x['level'], reverse=True)
 
     return {
