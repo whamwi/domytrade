@@ -108,8 +108,10 @@ def calc_squeeze_5min(rows_1min: list[dict]) -> dict:
 
 
 def _calc_squeeze(df: pd.DataFrame) -> dict:
-    if len(df) < LENGTH + 2:
-        return {'error': f'Need ≥{LENGTH + 2} bars, got {len(df)}'}
+    # Need LENGTH bars for rolling(highest/lowest) + LENGTH bars for inertia window = 2×LENGTH
+    # With fewer bars inertia produces all-NaN (momentum UNKNOWN). Use 2×LENGTH as hard floor.
+    if len(df) < LENGTH * 2:
+        return {'error': f'Need ≥{LENGTH * 2} bars, got {len(df)}'}
 
     close = df['Close']
     high  = df['High']
