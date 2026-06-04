@@ -7941,9 +7941,159 @@ async def api_market_profile(symbol: str):
         'live_read':        live_read,
     }
 
+    # Pre-market read — replaces the BUILDING dead-state with useful context
+    t_min_now = now_et.hour * 60 + now_et.minute
+    premarket_read = (
+        _build_premarket_read(current_price, overnight, prior_prof, now_et, tick)
+        if t_min_now < 9 * 60 + 30
+        else {'active': False}
+    )
+    result['premarket_read'] = premarket_read
+
     # Cache for Ask AI context — keyed by symbol, always fresh from the frontend 60s poll
     state['market_profile'][symbol] = result
     return result
+
+
+def _build_premarket_read(
+    current_price: float | None,
+    overnight: dict,
+    prior_rth: dict,
+    now_et,
+    tick: float,
+) -> dict:
+    """Pre-market Dalton context: gap analysis, overnight inventory, opening scenario preview.
+
+    Replaces the BUILDING dead-state before RTH with actionable information:
+      - Gap classification vs prior RTH value area
+      - Overnight inventory position (which third of overnight range)
+      - Most probable opening type (OD/OTD/OA/ORR) and guidance
+      - Key levels to watch at the open
+      - Minutes to open countdown
+    """
+    if current_price is None:
+        return {'active': False}
+
+    on_high   = overnight.get('high')
+    on_low    = overnight.get('low')
+    on_poc    = overnight.get('poc')
+    on_vah    = overnight.get('vah')
+    on_val    = overnight.get('val')
+    prior_vah = prior_rth.get('vah')
+    prior_val = prior_rth.get('val')
+    prior_poc = prior_rth.get('poc')
+
+    if not all([on_high, on_low, prior_vah, prior_val]):
+        return {'active': False}
+
+    on_range = on_high - on_low
+
+    # ── 1. Gap analysis vs prior RTH value area ──────────────────────────────
+    if current_price >= prior_vah - tick:
+        gap_type  = 'ABOVE_VALUE'
+        gap_pts   = round(current_price - prior_vah, 2)
+        gap_label = f'Gap Up {gap_pts} pts — Above Prior VAH ({prior_vah:.2f})'
+        gap_bias  = 'BULLISH'
+    elif current_price <= prior_val + tick:
+        gap_type  = 'BELOW_VALUE'
+        gap_pts   = round(prior_val - current_price, 2)
+        gap_label = f'Gap Down {gap_pts} pts — Below Prior VAL ({prior_val:.2f})'
+        gap_bias  = 'BEARISH'
+    else:
+        gap_type  = 'INSIDE_VALUE'
+        gap_pts   = 0.0
+        gap_label = f'Inside Prior Value Area ({prior_val:.2f}–{prior_vah:.2f})'
+        gap_bias  = 'NEUTRAL'
+
+    # ── 2. Overnight inventory position ──────────────────────────────────────
+    position_pct = round(((current_price - on_low) / on_range) * 100, 1) if on_range > 0 else 50.0
+    position_pct = max(0.0, min(100.0, position_pct))
+
+    if position_pct >= 67:
+        inv_pos   = 'UPPER_THIRD'
+        inv_label = 'Upper third of ON range — overnight longs right'
+        inv_bias  = 'BULLISH'
+    elif position_pct <= 33:
+        inv_pos   = 'LOWER_THIRD'
+        inv_label = 'Lower third of ON range — overnight shorts right'
+        inv_bias  = 'BEARISH'
+    else:
+        inv_pos   = 'MIDDLE'
+        inv_label = 'Middle of ON range — balanced overnight'
+        inv_bias  = 'NEUTRAL'
+
+    # ── 3. Opening scenario preview ──────────────────────────────────────────
+    pval_s = f'{prior_val:.2f}'
+    pvah_s = f'{prior_vah:.2f}'
+    ppoc_s = f'{prior_poc:.2f}' if prior_poc else 'n/a'
+
+    if gap_type == 'ABOVE_VALUE':
+        if inv_bias == 'BULLISH':
+            expected_open = 'OD ↑ or OTD ↑'
+            open_guidance = (f'Buyers in full control overnight. '
+                             f'Watch A period vs Prior VAH ({pvah_s}): acceptance above = trend day up, do not fade. '
+                             f'A period reversal back below Prior VAH = ORR short setup.')
+        else:
+            expected_open = 'ORR ↓ likely'
+            open_guidance = (f'Gapped above value but overnight longs fading (price in lower ON range). '
+                             f'Watch A period: reversal back below Prior VAH ({pvah_s}) = ORR short. '
+                             f'Target Prior POC ({ppoc_s}) then Prior VAL ({pval_s}).')
+    elif gap_type == 'BELOW_VALUE':
+        if inv_bias == 'BEARISH':
+            expected_open = 'OD ↓ or OTD ↓'
+            open_guidance = (f'Sellers in full control overnight. '
+                             f'Watch A period vs Prior VAL ({pval_s}): acceptance below = trend day down, do not fade. '
+                             f'A period reversal back above Prior VAL = ORR long setup.')
+        else:
+            expected_open = 'ORR ↑ likely'
+            open_guidance = (f'Gapped below value but overnight shorts fading (price in upper ON range). '
+                             f'Watch A period: reversal back above Prior VAL ({pval_s}) = ORR long. '
+                             f'Target Prior POC ({ppoc_s}) then Prior VAH ({pvah_s}).')
+    else:
+        expected_open = 'OA — Open Auction'
+        open_guidance = (f'Price inside prior value area ({pval_s}–{pvah_s}) — overnight traders still in control. '
+                         f'Two-sided auction expected. '
+                         f'Buy Prior VAL ({pval_s}), sell Prior VAH ({pvah_s}) until a decisive break outside value.')
+
+    # ── 4. Minutes to open ───────────────────────────────────────────────────
+    RTH_START    = 9 * 60 + 30
+    t_min        = now_et.hour * 60 + now_et.minute
+    mins_to_open = max(0, RTH_START - t_min)
+
+    # ── 5. Key levels (sorted high → low) ────────────────────────────────────
+    _kl: list[dict] = []
+    if prior_vah: _kl.append({'level': prior_vah, 'label': 'Prior VAH',     'role': 'prior_value'})
+    if prior_poc: _kl.append({'level': prior_poc, 'label': 'Prior RTH POC', 'role': 'pivot'})
+    if prior_val: _kl.append({'level': prior_val, 'label': 'Prior VAL',     'role': 'prior_value'})
+    if on_high:   _kl.append({'level': on_high,   'label': 'ONH',           'role': 'overnight'})
+    if on_vah:    _kl.append({'level': on_vah,    'label': 'ON VAH',        'role': 'overnight'})
+    if on_poc:    _kl.append({'level': on_poc,    'label': 'ON POC',        'role': 'overnight'})
+    if on_val:    _kl.append({'level': on_val,    'label': 'ON VAL',        'role': 'overnight'})
+    if on_low:    _kl.append({'level': on_low,    'label': 'ONL',           'role': 'overnight'})
+    _kl.sort(key=lambda x: x['level'], reverse=True)
+
+    return {
+        'active':        True,
+        'gap_type':      gap_type,
+        'gap_bias':      gap_bias,
+        'gap_label':     gap_label,
+        'gap_pts':       gap_pts,
+        'inv_pos':       inv_pos,
+        'inv_label':     inv_label,
+        'inv_bias':      inv_bias,
+        'position_pct':  position_pct,
+        'on_range':      round(on_range, 2),
+        'expected_open': expected_open,
+        'open_guidance': open_guidance,
+        'mins_to_open':  mins_to_open,
+        'key_levels':    _kl,
+        'prior_vah':     prior_vah,
+        'prior_val':     prior_val,
+        'prior_poc':     prior_poc,
+        'on_high':       on_high,
+        'on_low':        on_low,
+        'on_poc':        on_poc,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

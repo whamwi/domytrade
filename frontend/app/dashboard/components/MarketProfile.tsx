@@ -101,6 +101,33 @@ interface LiveReadData {
   current_label?:   string
   live_trade_plan?: string
 }
+interface PreMarketKeyLevel {
+  level: number
+  label: string
+  role:  string  // 'prior_value' | 'pivot' | 'overnight'
+}
+interface PreMarketReadData {
+  active:        boolean
+  gap_type?:     string  // 'ABOVE_VALUE' | 'BELOW_VALUE' | 'INSIDE_VALUE'
+  gap_bias?:     string  // 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+  gap_label?:    string
+  gap_pts?:      number
+  inv_pos?:      string  // 'UPPER_THIRD' | 'MIDDLE' | 'LOWER_THIRD'
+  inv_label?:    string
+  inv_bias?:     string
+  position_pct?: number
+  on_range?:     number
+  expected_open?: string
+  open_guidance?: string
+  mins_to_open?:  number
+  key_levels?:    PreMarketKeyLevel[]
+  prior_vah?:     number
+  prior_val?:     number
+  prior_poc?:     number
+  on_high?:       number
+  on_low?:        number
+  on_poc?:        number
+}
 interface MPData {
   symbol:           string
   tick:             number
@@ -115,6 +142,7 @@ interface MPData {
   rule_80:          Rule80
   ib_signals:       IBSignals
   prior_ib_signals: IBSignals
+  premarket_read?:  PreMarketReadData
   live_read:        LiveReadData
 }
 
@@ -751,6 +779,143 @@ const SIGNAL_CFG: Record<string, { color: string; dot: string }> = {
   INFO:     { color: '#64748b', dot: '#475569' },   // grey — informational, no action
 }
 
+// ── Pre-Market Read ───────────────────────────────────────────────────────────
+const GAP_CFG: Record<string, { bg: string; color: string; border: string; icon: string }> = {
+  BULLISH: { bg: 'rgba(74,222,128,0.12)',  color: '#4ade80', border: 'rgba(74,222,128,0.3)',  icon: '▲' },
+  BEARISH: { bg: 'rgba(248,113,113,0.12)', color: '#f87171', border: 'rgba(248,113,113,0.3)', icon: '▼' },
+  NEUTRAL: { bg: 'rgba(251,191,36,0.10)',  color: '#fbbf24', border: 'rgba(251,191,36,0.25)', icon: '↔' },
+}
+const KL_COLOR: Record<string, string> = {
+  prior_value: '#fb923c',
+  pivot:       '#a78bfa',
+  overnight:   '#60a5fa',
+}
+
+function PreMarketRead({ pm }: { pm: PreMarketReadData }) {
+  if (!pm.active) return null
+  const gcfg = GAP_CFG[pm.gap_bias ?? 'NEUTRAL'] ?? GAP_CFG.NEUTRAL
+  const icfg = GAP_CFG[pm.inv_bias ?? 'NEUTRAL'] ?? GAP_CFG.NEUTRAL
+  const hrs  = pm.mins_to_open != null ? Math.floor(pm.mins_to_open / 60) : 0
+  const mins = pm.mins_to_open != null ? pm.mins_to_open % 60 : 0
+  const countdown = pm.mins_to_open != null
+    ? (hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`)
+    : '—'
+
+  return (
+    <div style={{ background: 'var(--bg-panel)', border: `1px solid ${gcfg.border}`,
+      borderRadius: '10px', overflow: 'hidden' }}>
+
+      {/* Header */}
+      <div style={{ padding: '11px 16px', background: `${gcfg.color}0a`,
+        borderBottom: `1px solid ${gcfg.border}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+        <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)',
+          textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+          Pre-Market
+          {pm.mins_to_open != null && (
+            <span style={{ marginLeft: '8px', color: '#64748b', fontWeight: 400 }}>
+              Opens in {countdown}
+            </span>
+          )}
+        </span>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: gcfg.color,
+          background: gcfg.bg, border: `1px solid ${gcfg.border}`,
+          borderRadius: '5px', padding: '2px 10px' }}>
+          {gcfg.icon} {pm.gap_label}
+        </span>
+      </div>
+
+      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+
+        {/* Overnight inventory position */}
+        {pm.position_pct != null && pm.on_range != null && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              marginBottom: '5px' }}>
+              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Overnight inventory</span>
+              <span style={{ fontSize: '11px', fontWeight: 600, color: icfg.color }}>
+                {pm.inv_label}
+              </span>
+            </div>
+            {/* Progress bar — position within overnight range */}
+            <div style={{ height: '5px', borderRadius: '3px', background: 'rgba(255,255,255,0.06)',
+              position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0,
+                width: `${pm.position_pct}%`, background: icfg.color,
+                borderRadius: '3px', transition: 'width 0.4s ease' }} />
+              {/* Zone markers at 33% and 67% */}
+              {[33, 67].map(p => (
+                <div key={p} style={{ position: 'absolute', top: 0, bottom: 0,
+                  left: `${p}%`, width: '1px', background: 'rgba(255,255,255,0.15)' }} />
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between',
+              fontSize: '10px', color: '#475569', marginTop: '3px' }}>
+              <span>{fmt(pm.on_low)}</span>
+              <span>ON range {pm.on_range} pts</span>
+              <span>{fmt(pm.on_high)}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Expected opening type */}
+        {pm.expected_open && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>
+              Expected open
+            </span>
+            <span style={{ fontSize: '12px', fontWeight: 700, color: gcfg.color }}>
+              {pm.expected_open}
+            </span>
+          </div>
+        )}
+
+        {/* Opening guidance */}
+        {pm.open_guidance && (
+          <div style={{ padding: '8px 12px', background: gcfg.bg,
+            border: `1px solid ${gcfg.border}`, borderRadius: '7px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: gcfg.color,
+              textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>
+              Opening Guidance
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.55 }}>
+              {pm.open_guidance}
+            </div>
+          </div>
+        )}
+
+        {/* Key levels */}
+        {pm.key_levels && pm.key_levels.length > 0 && (
+          <div>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)',
+              textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>
+              Key Levels
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {pm.key_levels.map((kl, i) => {
+                const klColor = KL_COLOR[kl.role] ?? '#64748b'
+                const isCurrent = pm.on_poc != null && Math.abs(kl.level - (pm.on_poc ?? 0)) < 0.5
+                return (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between',
+                    alignItems: 'center', padding: '3px 0',
+                    borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{ fontSize: '12px', color: klColor }}>{kl.label}</span>
+                    <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace',
+                      color: isCurrent ? '#fbbf24' : 'var(--text-primary)' }}>
+                      {fmt(kl.level)}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  )
+}
+
 function IBAnalysis({ signals, title }: { signals: IBSignals; title: string }) {
   const [open, setOpen] = useState(true)
   if (!signals.ready) {
@@ -1310,17 +1475,34 @@ export default function MarketProfile() {
           {/* ── Right panel: context cards ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-            {/* Live Read — dynamic per-period market read */}
-            {data.live_read && <LiveRead lr={data.live_read} />}
+            {data.opening?.type === 'PREMARKET' ? (
+              /* ── PRE-MARKET VIEW ── */
+              <>
+                {/* Pre-market gap + inventory + opening scenario */}
+                {data.premarket_read?.active && (
+                  <PreMarketRead pm={data.premarket_read} />
+                )}
+                {/* Prior session IB — always useful context before the open */}
+                {data.prior_ib_signals?.ready && (
+                  <IBAnalysis signals={data.prior_ib_signals} title="IB Analysis — Prior Session" />
+                )}
+              </>
+            ) : (
+              /* ── RTH VIEW ── */
+              <>
+                {/* Live Read — dynamic per-period market read */}
+                {data.live_read && <LiveRead lr={data.live_read} />}
 
-            {/* IB Signals — current session (after B period) */}
-            {data.ib_signals && (
-              <IBAnalysis signals={data.ib_signals} title="IB Analysis — Today" />
-            )}
+                {/* IB Signals — current session (after B period) */}
+                {data.ib_signals && (
+                  <IBAnalysis signals={data.ib_signals} title="IB Analysis — Today" />
+                )}
 
-            {/* IB Signals — prior session: only show before today's IB is ready */}
-            {data.prior_ib_signals?.ready && !data.ib_signals?.ready && (
-              <IBAnalysis signals={data.prior_ib_signals} title="IB Analysis — Prior Session" />
+                {/* IB Signals — prior session: only show before today's IB is ready */}
+                {data.prior_ib_signals?.ready && !data.ib_signals?.ready && (
+                  <IBAnalysis signals={data.prior_ib_signals} title="IB Analysis — Prior Session" />
+                )}
+              </>
             )}
 
             {/* IB & session stats */}
