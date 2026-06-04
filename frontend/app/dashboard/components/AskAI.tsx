@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
 
 interface Message {
   role: 'user' | 'model'
@@ -194,10 +195,24 @@ export default function AskAI() {
                       : 'rgba(255,255,255,0.04)',
                     color:      msg.role === 'user' ? '#c084fc' : '#e2e8f0',
                     border:     msg.role === 'model' ? '1px solid rgba(255,255,255,0.08)' : 'none',
-                    whiteSpace: 'pre-wrap',
                   }}
                 >
-                  {msg.content}
+                  {msg.role === 'model' ? (
+                    <ReactMarkdown
+                      components={{
+                        p:      ({ children }) => <p style={{ margin: '0 0 6px', lineHeight: 1.6 }}>{children}</p>,
+                        strong: ({ children }) => <strong style={{ color: '#f1f5f9', fontWeight: 700 }}>{children}</strong>,
+                        em:     ({ children }) => <em style={{ color: '#cbd5e1' }}>{children}</em>,
+                        code:   ({ children }) => <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: '3px', fontFamily: 'monospace' }}>{children}</code>,
+                        ul:     ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '16px' }}>{children}</ul>,
+                        li:     ({ children }) => <li style={{ margin: '2px 0', lineHeight: 1.5 }}>{children}</li>,
+                      }}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  ) : (
+                    msg.content
+                  )}
                 </div>
               </div>
             ))}
