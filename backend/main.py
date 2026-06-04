@@ -7403,6 +7403,7 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
 
         elif effective_zone == 'WEAKENING':
             pts_gap = round(on_high - last_close, 2)
+            pts_to_poc = round(last_close - on_poc, 2)
             if first_warning and prev_zone is not None:
                 read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}) — '
                         f'first test of ONH as resistance. One period is noise. '
@@ -7412,13 +7413,23 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                             f'ON POC ({on_poc_s}) is the critical pivot below.')
                 watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
             else:
-                read = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}). '
-                        f'Two consecutive closes below ONH confirmed — ONH failed as support. '
-                        f'Market returned inside overnight range; OA two-sided behaviour active.')
-                guidance = (f'ONH ({on_high_s}) has failed as support — two consecutive closes below. '
-                            f'Market is back inside the overnight range. '
-                            f'Neither side has directional control until ONH is reclaimed or ON POC breaks.')
-                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
+                _wk_range = on_high - on_poc
+                _pct = (on_high - last_close) / _wk_range if _wk_range > 0 else 0
+                if _pct >= 0.7:
+                    read = (f'{period_label} closed at {last_close:.2f}, {abs(pts_to_poc)} pts above ON POC ({on_poc_s}). '
+                            f'Approaching the invalidation level — bulls must defend ON POC.')
+                    guidance = (f'Price pressing ON POC ({on_poc_s}) from above — the key support for the bullish signal. '
+                                f'A close below ON POC confirms the setup has failed. '
+                                f'No new longs here; manage existing position size.')
+                    watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
+                else:
+                    read = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}). '
+                            f'Two consecutive closes below ONH confirmed — ONH failed as support. '
+                            f'Market returned inside overnight range; OA two-sided behaviour active.')
+                    guidance = (f'ONH ({on_high_s}) has failed as support — two consecutive closes below. '
+                                f'Market is back inside the overnight range. '
+                                f'Neither side has directional control until ONH is reclaimed or ON POC breaks.')
+                    watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
 
         elif effective_zone == 'CRITICAL':
             if first_warning and prev_zone is not None:
@@ -7497,6 +7508,7 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
 
         elif effective_zone == 'WEAKENING':
             pts_gap = round(last_close - on_low, 2)
+            pts_to_poc = round(on_poc - last_close, 2)
             if first_warning and prev_zone is not None:
                 read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}) — '
                         f'first test of ONL as support. One period is noise. '
@@ -7506,13 +7518,23 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                             f'ON POC ({on_poc_s}) is the critical pivot above.')
                 watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
             else:
-                read = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}). '
-                        f'Two consecutive closes above ONL confirmed — ONL failed as resistance. '
-                        f'Market returned inside overnight range; OA two-sided behaviour active.')
-                guidance = (f'ONL ({on_low_s}) has failed as resistance — two consecutive closes above. '
-                            f'Market is back inside the overnight range. '
-                            f'Neither side has directional control until ONL is reclaimed or ON POC breaks.')
-                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
+                _wk_range = on_poc - on_low
+                _pct = (last_close - on_low) / _wk_range if _wk_range > 0 else 0
+                if _pct >= 0.7:
+                    read = (f'{period_label} closed at {last_close:.2f}, {pts_to_poc} pts below ON POC ({on_poc_s}). '
+                            f'Approaching the invalidation level — sellers must hold ON POC as resistance.')
+                    guidance = (f'Price pressing ON POC ({on_poc_s}) from below — the key resistance for the bearish signal. '
+                                f'A close above ON POC confirms the setup has failed. '
+                                f'No new shorts here; manage existing position size.')
+                    watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
+                else:
+                    read = (f'{period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}). '
+                            f'Two consecutive closes above ONL confirmed — ONL failed as resistance. '
+                            f'Market returned inside overnight range; OA two-sided behaviour active.')
+                    guidance = (f'ONL ({on_low_s}) has failed as resistance — two consecutive closes above. '
+                                f'Market is back inside the overnight range. '
+                                f'Neither side has directional control until ONL is reclaimed or ON POC breaks.')
+                    watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
 
         elif effective_zone == 'CRITICAL':
             if first_warning and prev_zone is not None:
