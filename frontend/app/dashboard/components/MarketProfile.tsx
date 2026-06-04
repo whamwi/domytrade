@@ -822,7 +822,7 @@ const TIPS: Record<string, string> = {
   'Prior VAH':'Prior session Value Area High — first upside extension target for a bullish day.',
   'Prior VAL':'Prior session Value Area Low — first downside extension target for a bearish day.',
   'Prior RTH POC': 'Prior session Point of Control — key pivot from yesterday. Price often revisits it.',
-  // Opening types
+  // Opening types — short codes
   'OA':       'Open Auction — price opened inside prior day\'s value area. Overnight traders still in control. Two-sided auction expected: buy VAL, sell VAH until a break.',
   'OD ↑':     'Open Drive Up — opened above prior VAH and continued higher without reversing. Buyers in full control. Do not fade.',
   'OD ↓':     'Open Drive Down — opened below prior VAL and continued lower. Sellers in full control. Do not fade.',
@@ -830,6 +830,12 @@ const TIPS: Record<string, string> = {
   'OTD ↓':    'Open Test Drive Down — opened below prior VAL, briefly tested it, then drove lower. Directional bearish move.',
   'ORR ↑':    'Open Rejection Reverse Up — opened below prior VAL but A period reversed back inside value. Gap down failed. Buy the reversal back toward VAH.',
   'ORR ↓':    'Open Rejection Reverse Down — opened above prior VAH but A period reversed back below it. Gap up failed. Sell the reversal back toward VAL.',
+  // Opening types — full strings as returned by the backend pre-market read
+  'OA — Open Auction':  'Open Auction — price opened inside prior value area. Overnight traders still in control. Two-sided expected: buy Prior VAL, sell Prior VAH until a decisive break outside value.',
+  'OD ↑ or OTD ↑':     'Open Drive or Open Test Drive Up — price opened above prior VAH and is continuing higher. Buyers in full control overnight. Watch A period: acceptance above Prior VAH = trend day up. Do not fade.',
+  'OD ↓ or OTD ↓':     'Open Drive or Open Test Drive Down — price opened below prior VAL and is continuing lower. Sellers in full control overnight. Watch A period: acceptance below Prior VAL = trend day down. Do not fade.',
+  'ORR ↑ likely':       'Open Rejection Reverse Up likely — gapped below prior VAL but overnight shorts are fading. Watch A period: if it reverses back above Prior VAL, the gap is failing — buy the reversal, target Prior POC then Prior VAH.',
+  'ORR ↓ likely':       'Open Rejection Reverse Down likely — gapped above prior VAH but overnight longs are fading. Watch A period: if it reverses back below Prior VAH, the gap is failing — sell the reversal, target Prior POC then Prior VAL.',
   // Zone status
   'CONFIRMED':   'Price extended beyond IB High (bullish) or IB Low (bearish). Sellers/buyers accelerating — trend day developing. Ride the move.',
   'INTACT':      'Signal holding. Bullish: closed above ONH. Bearish: closed below ONL. Excess defending as support/resistance.',
