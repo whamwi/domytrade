@@ -7405,13 +7405,24 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
             pts_gap = round(on_high - last_close, 2)
             pts_to_poc = round(last_close - on_poc, 2)
             if first_warning and prev_zone is not None:
-                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}) — '
-                        f'first test of ONH as resistance. One period is noise. '
-                        f'ON POC ({on_poc_s}) is the next key level to watch.')
-                guidance = (f'First period below ONH — one period is noise. '
-                            f'If next period also closes below ONH, OA two-sided behaviour is confirmed. '
-                            f'ON POC ({on_poc_s}) is the critical pivot below.')
-                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
+                if last_close < on_poc - straddle_t:
+                    # Jumped past CRITICAL straight into INVALIDATED territory in one bar.
+                    pts_below_poc = round(on_poc - last_close, 2)
+                    read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_below_poc} pts below ON POC ({on_poc_s}) — '
+                            f'first close below the key support. Signal approaching invalidation. '
+                            f'A second close below ON POC fully invalidates the bullish setup.')
+                    guidance = (f'First close below ON POC ({on_poc_s}) — one period is noise, but buyers must respond. '
+                                f'A second close below confirms the bullish thesis is broken; ON POC becomes resistance. '
+                                f'Reduce longs; no new entries until price recovers back above ON POC.')
+                    watch = {'price': on_poc, 'label': 'ON POC — first breach', 'significance': 'second close below → fully invalidated'}
+                else:
+                    read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts below ONH ({on_high_s}) — '
+                            f'first test of ONH as resistance. One period is noise. '
+                            f'ON POC ({on_poc_s}) is the next key level to watch.')
+                    guidance = (f'First period below ONH — one period is noise. '
+                                f'If next period also closes below ONH, OA two-sided behaviour is confirmed. '
+                                f'ON POC ({on_poc_s}) is the critical pivot below.')
+                    watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close below → invalidated'}
             else:
                 _wk_range = on_high - on_poc
                 _pct = (on_high - last_close) / _wk_range if _wk_range > 0 else 0
@@ -7459,10 +7470,11 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
             else:
                 read = (f'{period_label} closed at {last_close:.2f}, {pts_below} pts below ON POC ({on_poc_s}). '
                         f'Bullish IB signal invalidated — two consecutive closes below ON POC. '
-                        f'Overnight sellers reasserted control; ON POC is now resistance.')
+                        f'ON POC is now resistance; ONL ({on_low_s}) is the next downside target.')
                 guidance = (f'Bullish signal invalidated — two closes below ON POC. '
-                            f'Overnight sellers back in control. ON POC ({on_poc_s}) is now resistance.')
-                watch = {'price': on_poc, 'label': 'ON POC — now resistance', 'significance': 'close above → re-evaluate'}
+                            f'ON POC ({on_poc_s}) is now resistance; overnight sellers in control. '
+                            f'Next support: ONL ({on_low_s}).')
+                watch = {'price': on_low, 'label': 'ONL', 'significance': 'close below → breakdown'}
 
     elif bias in ('BEARISH', 'BEARISH_LEAN'):
         if on_low is None or on_poc is None:
@@ -7510,13 +7522,24 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
             pts_gap = round(last_close - on_low, 2)
             pts_to_poc = round(on_poc - last_close, 2)
             if first_warning and prev_zone is not None:
-                read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}) — '
-                        f'first test of ONL as support. One period is noise. '
-                        f'ON POC ({on_poc_s}) is the next key level to watch.')
-                guidance = (f'First period above ONL — one period is noise. '
-                            f'If next period also closes above ONL, OA two-sided behaviour is confirmed. '
-                            f'ON POC ({on_poc_s}) is the critical pivot above.')
-                watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
+                if last_close > on_poc + straddle_t:
+                    # Jumped past CRITICAL straight into INVALIDATED territory in one bar.
+                    pts_above_poc = round(last_close - on_poc, 2)
+                    read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_above_poc} pts above ON POC ({on_poc_s}) — '
+                            f'first close above the key resistance. Signal approaching invalidation. '
+                            f'A second close above ON POC fully invalidates the bearish setup.')
+                    guidance = (f'First close above ON POC ({on_poc_s}) — one period is noise, but sellers must respond. '
+                                f'A second close above confirms the bearish thesis is broken; ON POC becomes support. '
+                                f'Cover remaining shorts; no new entries until price falls back below ON POC.')
+                    watch = {'price': on_poc, 'label': 'ON POC — first breach', 'significance': 'second close above → fully invalidated'}
+                else:
+                    read = (f'⚠ {period_label} closed at {last_close:.2f}, {pts_gap} pts above ONL ({on_low_s}) — '
+                            f'first test of ONL as support. One period is noise. '
+                            f'ON POC ({on_poc_s}) is the next key level to watch.')
+                    guidance = (f'First period above ONL — one period is noise. '
+                                f'If next period also closes above ONL, OA two-sided behaviour is confirmed. '
+                                f'ON POC ({on_poc_s}) is the critical pivot above.')
+                    watch = {'price': on_poc, 'label': 'ON POC', 'significance': 'close above → invalidated'}
             else:
                 _wk_range = on_poc - on_low
                 _pct = (last_close - on_low) / _wk_range if _wk_range > 0 else 0
@@ -7564,10 +7587,11 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
             else:
                 read = (f'{period_label} closed at {last_close:.2f}, {pts_above} pts above ON POC ({on_poc_s}). '
                         f'Bearish IB signal invalidated — two consecutive closes above ON POC. '
-                        f'Overnight buyers reasserted control; ON POC is now support.')
+                        f'ON POC is now support; ONH ({on_high_s}) is the next upside target.')
                 guidance = (f'Bearish signal invalidated — two closes above ON POC. '
-                            f'Overnight buyers back in control. ON POC ({on_poc_s}) is now support.')
-                watch = {'price': on_poc, 'label': 'ON POC — now support', 'significance': 'close below → re-evaluate'}
+                            f'ON POC ({on_poc_s}) is now support; overnight buyers in control. '
+                            f'Next resistance: ONH ({on_high_s}).')
+                watch = {'price': on_high, 'label': 'ONH', 'significance': 'close above → breakout'}
 
     else:
         # NEUTRAL / OA day
