@@ -130,12 +130,6 @@ export default function AskAI() {
               <span style={{ color: '#e2e8f0', fontSize: '13px', fontWeight: 700 }}>
                 Ask AI
               </span>
-              <span
-                className="rounded px-1.5 py-0.5 text-xs font-semibold"
-                style={{ background: 'rgba(168,85,247,0.12)', color: '#a855f7' }}
-              >
-                Gemini 2.0 Flash
-              </span>
             </div>
             <div className="flex items-center gap-3">
               {history.length > 0 && (
