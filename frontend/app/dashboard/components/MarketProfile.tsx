@@ -1370,12 +1370,14 @@ export default function MarketProfile() {
         </div>
       </div>
 
-      {/* ── Key Levels Strip ── */}
+      {/* ── Key Levels Strip ── sticky so it stays visible while scrolling */}
       {data && (
         <div style={{
           display: 'flex', alignItems: 'stretch', marginBottom: '20px',
           background: 'var(--bg-panel)', border: '1px solid var(--border)',
           borderRadius: '12px', overflow: 'hidden',
+          position: 'sticky', top: 0, zIndex: 40,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
         }}>
           {/* Current Price */}
           <div style={{ padding: '12px 20px', display: 'flex', alignItems: 'center',
