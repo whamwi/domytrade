@@ -163,20 +163,44 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
         return float(s.iloc[-1])
 
     # ── Squeeze state (most restrictive level wins) ───────────────────────────
-    if b(extra_sq_in):    sq_state = 'EXTRA_IN'
-    elif b(extra_sq_out): sq_state = 'EXTRA_OUT'
-    elif b(orig_sq_in):   sq_state = 'ORIG_IN'
-    elif b(orig_sq_out):  sq_state = 'ORIG_OUT'
-    elif b(pre_sq_in):    sq_state = 'PRE_IN'
-    elif b(pre_sq_out):   sq_state = 'PRE_OUT'
-    else:                 sq_state = 'FIRED'
+    # Color scheme matches TOS SqueezePRO / squeeze_live.py:
+    #   EXTRA_IN / EXTRA_OUT  → DARK_RED  (BB inside KC 1.0×ATR — tightest coil)
+    #   ORIG_IN  / ORIG_OUT   → RED       (BB inside KC 1.5×ATR — original squeeze)
+    #   PRE_IN   / PRE_OUT    → PINK      (BB inside KC 2.0×ATR — pre-squeeze forming)
+    #   FIRED                 → GREEN     (BB outside all KC levels — expansion active)
+    # _IN  = lower BB rising  (squeeze tightening)
+    # _OUT = lower BB falling (squeeze loosening / about to fire)
+    if b(extra_sq_in):
+        sq_state = 'EXTRA_IN';  sq_color = 'DARK_RED'; sq_label = 'EXTRA SQUEEZE — tightening'
+    elif b(extra_sq_out):
+        sq_state = 'EXTRA_OUT'; sq_color = 'DARK_RED'; sq_label = 'EXTRA SQUEEZE — loosening ⚡ watch'
+    elif b(orig_sq_in):
+        sq_state = 'ORIG_IN';   sq_color = 'RED';      sq_label = 'ORIGINAL SQUEEZE — tightening'
+    elif b(orig_sq_out):
+        sq_state = 'ORIG_OUT';  sq_color = 'RED';      sq_label = 'ORIGINAL SQUEEZE — loosening ⚡ watch'
+    elif b(pre_sq_in):
+        sq_state = 'PRE_IN';    sq_color = 'PINK';     sq_label = 'PRE-SQUEEZE — building'
+    elif b(pre_sq_out):
+        sq_state = 'PRE_OUT';   sq_color = 'YELLOW';   sq_label = 'PRE-SQUEEZE — releasing'
+    else:
+        sq_state = 'FIRED';     sq_color = 'GREEN';    sq_label = 'NO SQUEEZE — BB outside KC'
 
     # ── Momentum state ────────────────────────────────────────────────────────
-    if b(pos & up):   mo_state = 'POS_UP'
-    elif b(pos & dn): mo_state = 'POS_DN'
-    elif b(neg & dn): mo_state = 'NEG_DN'
-    elif b(neg & up): mo_state = 'NEG_UP'
-    else:             mo_state = 'UNKNOWN'
+    # Histogram color scheme matches TOS SqueezePRO / squeeze_live.py:
+    #   POS_UP → CYAN   (positive & rising  — bullish acceleration)
+    #   POS_DN → BLUE   (positive & falling — bullish momentum fading)
+    #   NEG_DN → RED    (negative & falling — bearish acceleration)
+    #   NEG_UP → YELLOW (negative & rising  — bearish momentum recovering)
+    if b(pos & up):
+        mo_state = 'POS_UP'; mo_color = 'CYAN';   mo_label = 'positive & rising — bullish'
+    elif b(pos & dn):
+        mo_state = 'POS_DN'; mo_color = 'BLUE';   mo_label = 'positive & falling — fading'
+    elif b(neg & dn):
+        mo_state = 'NEG_DN'; mo_color = 'RED';    mo_label = 'negative & falling — bearish'
+    elif b(neg & up):
+        mo_state = 'NEG_UP'; mo_color = 'YELLOW'; mo_label = 'negative & rising — recovering'
+    else:
+        mo_state = 'UNKNOWN'; mo_color = 'GRAY';  mo_label = 'unknown'
 
     # ── Recently fired detection ──────────────────────────────────────────────
     any_sq           = pre_sq | orig_sq | extra_sq
@@ -192,14 +216,33 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
                 bars_since_fired = lookback - 1
                 break
 
+    if recently_fired and bars_since_fired:
+        sq_label = f'FIRED — expansion in progress ({bars_since_fired} bars ago)'
+
     return {
+        # State codes (used by squeeze_confirms_signal and API consumers)
         'sq_state'        : sq_state,
         'mo_state'        : mo_state,
+        # Human-readable labels and display colors (matches TOS SqueezePRO palette)
+        'sq_color'        : sq_color,
+        'sq_label'        : sq_label,
+        'mo_color'        : mo_color,
+        'mo_label'        : mo_label,
+        # Momentum value and flags
         'momo_value'      : round(v(momo), 4),
         'just_fired'      : just_fired,
         'recently_fired'  : recently_fired,
         'bars_since_fired': bars_since_fired,
         'bars_used'       : len(df),
+        # Band values — useful for debugging and UI display
+        'upper_bb'        : round(v(upper_bb), 2),
+        'lower_bb'        : round(v(lower_bb), 2),
+        'upper_kc_high'   : round(v(upper_kc_high), 2),
+        'lower_kc_high'   : round(v(lower_kc_high), 2),
+        'upper_kc_mid'    : round(v(upper_kc_mid), 2),
+        'lower_kc_mid'    : round(v(lower_kc_mid), 2),
+        'upper_kc_low'    : round(v(upper_kc_low), 2),
+        'lower_kc_low'    : round(v(lower_kc_low), 2),
     }
 
 
