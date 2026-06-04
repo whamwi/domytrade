@@ -21,7 +21,7 @@ NUM_DEV_UP  = +2.0
 FACTOR_HIGH = 1.0
 FACTOR_MID  = 1.5
 FACTOR_LOW  = 2.0
-TOLERANCE   = 0.05   # boundary tolerance to match TOS rounding
+TOLERANCE   = 0.0    # TOS uses strict comparisons — no tolerance
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -116,8 +116,9 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
     low   = df['Low']
 
     # Bollinger Bands — EMA midline (TOS averageType=EXPONENTIAL)
+    # ddof=1 matches TOS StDev() which uses sample standard deviation (divides by n-1)
     mid_bb   = _ema(close, LENGTH)
-    sdev     = close.rolling(LENGTH).std(ddof=0)
+    sdev     = close.rolling(LENGTH).std(ddof=1)
     upper_bb = mid_bb + NUM_DEV_UP * sdev
     lower_bb = mid_bb + NUM_DEV_DN * sdev
 
@@ -170,20 +171,21 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
     #   FIRED                 → GREEN     (BB outside all KC levels — expansion active)
     # _IN  = lower BB rising  (squeeze tightening)
     # _OUT = lower BB falling (squeeze loosening / about to fire)
+    # TOS label names: EXTRA=SQZ:EXTRA  ORIG=SQZ:HIGH  PRE=SQZ:LOW  FIRED=SQZ:OFF
     if b(extra_sq_in):
-        sq_state = 'EXTRA_IN';  sq_color = 'DARK_RED'; sq_label = 'EXTRA SQUEEZE — tightening'
+        sq_state = 'EXTRA_IN';  sq_color = 'DARK_RED'; sq_label = 'SQZ: EXTRA — tightening'
     elif b(extra_sq_out):
-        sq_state = 'EXTRA_OUT'; sq_color = 'DARK_RED'; sq_label = 'EXTRA SQUEEZE — loosening ⚡ watch'
+        sq_state = 'EXTRA_OUT'; sq_color = 'DARK_RED'; sq_label = 'SQZ: EXTRA — loosening ⚡ watch'
     elif b(orig_sq_in):
-        sq_state = 'ORIG_IN';   sq_color = 'RED';      sq_label = 'ORIGINAL SQUEEZE — tightening'
+        sq_state = 'ORIG_IN';   sq_color = 'RED';      sq_label = 'SQZ: HIGH — tightening'
     elif b(orig_sq_out):
-        sq_state = 'ORIG_OUT';  sq_color = 'RED';      sq_label = 'ORIGINAL SQUEEZE — loosening ⚡ watch'
+        sq_state = 'ORIG_OUT';  sq_color = 'RED';      sq_label = 'SQZ: HIGH — loosening ⚡ watch'
     elif b(pre_sq_in):
-        sq_state = 'PRE_IN';    sq_color = 'PINK';     sq_label = 'PRE-SQUEEZE — building'
+        sq_state = 'PRE_IN';    sq_color = 'PINK';     sq_label = 'SQZ: LOW — building'
     elif b(pre_sq_out):
-        sq_state = 'PRE_OUT';   sq_color = 'YELLOW';   sq_label = 'PRE-SQUEEZE — releasing'
+        sq_state = 'PRE_OUT';   sq_color = 'YELLOW';   sq_label = 'SQZ: LOW — releasing'
     else:
-        sq_state = 'FIRED';     sq_color = 'GREEN';    sq_label = 'NO SQUEEZE — BB outside KC'
+        sq_state = 'FIRED';     sq_color = 'GREEN';    sq_label = 'SQZ: OFF — BB outside KC'
 
     # ── Momentum state ────────────────────────────────────────────────────────
     # Histogram color scheme matches TOS SqueezePRO / squeeze_live.py:
