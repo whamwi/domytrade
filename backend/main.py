@@ -6463,17 +6463,20 @@ def _build_overnight_tpo_profile(bars: list[dict], tick: float) -> dict:
     }
 
 
-def _classify_opening(open_price: float, a_period: dict | None,
+def _classify_opening(open_price: float, ib_high: float | None, ib_low: float | None,
                       prior_vah: float | None, prior_val: float | None,
                       prior_poc: float | None, tick: float) -> dict:
-    """Classify opening type: OA / OD / OTD / ORR."""
+    """Classify opening type: OA / OD / OTD / ORR.
+
+    Uses IB high/low (A+B combined) so the classification is based on the full
+    initial balance, not just the first 30-minute A period alone.
+    """
     if prior_vah is None or prior_val is None:
         return {'type': 'UNKNOWN', 'label': 'Unknown',
                 'description': 'No prior session data.', 'inside_prior_va': None}
 
     inside_va = prior_val <= open_price <= prior_vah
     above_va  = open_price > prior_vah
-    below_va  = open_price < prior_val
 
     vs_vah = round(open_price - prior_vah, 2)
     vs_val = round(open_price - prior_val, 2)
@@ -6482,7 +6485,7 @@ def _classify_opening(open_price: float, a_period: dict | None,
     base = {'inside_prior_va': inside_va, 'vs_prior_vah': vs_vah,
             'vs_prior_val': vs_val, 'vs_prior_poc': vs_poc}
 
-    if a_period is None:
+    if ib_high is None or ib_low is None:
         # No bars yet — pre-open context only
         if inside_va:
             return {**base, 'type': 'OA', 'label': 'Open Auction',
@@ -6492,9 +6495,7 @@ def _classify_opening(open_price: float, a_period: dict | None,
         ref = prior_vah if above_va else prior_val
         return {**base, 'type': 'PENDING', 'label': f'Outside Value ({loc.capitalize()})',
                 'description': f'Opened {"above VAH" if above_va else "below VAL"} ({ref:.2f}). '
-                               f'Watching A period for OD confirmation or ORR failure.'}
-
-    a_high, a_low = a_period['high'], a_period['low']
+                               f'Watching IB for OD confirmation or ORR failure.'}
 
     if inside_va:
         return {**base, 'type': 'OA', 'label': 'Open Auction',
@@ -6502,30 +6503,30 @@ def _classify_opening(open_price: float, a_period: dict | None,
                                f'Two-sided auction. Buy VAL / sell VAH until a clear break.'}
 
     if above_va:
-        # OTD ↑: A tested VAH from above (barely dipped to/near it) then drove higher.
-        if prior_vah <= a_low <= prior_vah + 2 * tick:
+        # OTD ↑: IB tested VAH from above (barely dipped to/near it) then drove higher.
+        if prior_vah <= ib_low <= prior_vah + 2 * tick:
             return {**base, 'type': 'OTD', 'label': 'Open Test Drive ↑',
-                    'description': f'Opened above VAH ({prior_vah:.2f}), A period tested it then drove higher. '
+                    'description': f'Opened above VAH ({prior_vah:.2f}), IB tested it then drove higher. '
                                    f'Bullish. Buy pullbacks to {prior_vah:.2f}.'}
-        # ORR ↓: A actually reversed back THROUGH VAH into prior value area.
-        if a_low < prior_vah:
+        # ORR ↓: IB reversed back THROUGH VAH into prior value area.
+        if ib_low < prior_vah:
             return {**base, 'type': 'ORR', 'label': 'Open Rejection Reverse ↓',
-                    'description': f'Opened above VAH ({prior_vah:.2f}) but A reversed back through it. Bearish. '
+                    'description': f'Opened above VAH ({prior_vah:.2f}) but IB reversed back through it. Bearish. '
                                    f'Sell rallies to {prior_vah:.2f}, target VAL {prior_val:.2f}.'}
         return {**base, 'type': 'OD', 'label': 'Open Drive ↑',
                 'description': f'Opened above VAH ({prior_vah:.2f}) and drove higher. '
                                f'One-timeframe buyers in control — do not fade. Trail stops.'}
 
     # Below VA
-    # OTD ↓: A tested VAL from below (barely rose to/near it) then drove lower.
-    if prior_val - 2 * tick <= a_high <= prior_val:
+    # OTD ↓: IB tested VAL from below (barely rose to/near it) then drove lower.
+    if prior_val - 2 * tick <= ib_high <= prior_val:
         return {**base, 'type': 'OTD', 'label': 'Open Test Drive ↓',
-                'description': f'Opened below VAL ({prior_val:.2f}), A period tested it then drove lower. '
+                'description': f'Opened below VAL ({prior_val:.2f}), IB tested it then drove lower. '
                                f'Bearish. Sell bounces to {prior_val:.2f}.'}
-    # ORR ↑: A actually reversed back THROUGH VAL into prior value area.
-    if a_high > prior_val:
+    # ORR ↑: IB reversed back THROUGH VAL into prior value area.
+    if ib_high > prior_val:
         return {**base, 'type': 'ORR', 'label': 'Open Rejection Reverse ↑',
-                'description': f'Opened below VAL ({prior_val:.2f}) but A reversed back through it. Bullish. '
+                'description': f'Opened below VAL ({prior_val:.2f}) but IB reversed back through it. Bullish. '
                                f'Buy pullbacks to {prior_val:.2f}, target VAH {prior_vah:.2f}.'}
     return {**base, 'type': 'OD', 'label': 'Open Drive ↓',
             'description': f'Opened below VAL ({prior_val:.2f}) and drove lower. '
@@ -7885,8 +7886,13 @@ async def api_market_profile(symbol: str):
     if 'B' in pr:
         b_period = pr['B']
 
+    # Use IB (A+B combined) for opening type classification; fall back to A-only
+    # when B hasn't closed yet so we always have a developing classification.
+    ib_high_cl = today_prof.get('ib_high') or (a_period['high'] if a_period else None)
+    ib_low_cl  = today_prof.get('ib_low')  or (a_period['low']  if a_period else None)
+
     opening = _classify_opening(
-        open_price or 0.0, a_period,
+        open_price or 0.0, ib_high_cl, ib_low_cl,
         prior_prof.get('vah'), prior_prof.get('val'), prior_prof.get('poc'), tick,
     ) if open_price else {'type': 'PREMARKET', 'label': 'Pre-Market',
                           'description': 'RTH has not started yet.', 'inside_prior_va': None}
