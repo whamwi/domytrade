@@ -779,6 +779,81 @@ const SIGNAL_CFG: Record<string, { color: string; dot: string }> = {
   INFO:     { color: '#64748b', dot: '#475569' },   // grey — informational, no action
 }
 
+// ── Tooltip component ─────────────────────────────────────────────────────────
+function Tip({ text, children }: { text: string; children: React.ReactNode }) {
+  const [v, setV] = useState(false)
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex', cursor: 'help' }}
+      onMouseEnter={() => setV(true)} onMouseLeave={() => setV(false)}>
+      {children}
+      {v && (
+        <div style={{
+          position: 'absolute', bottom: 'calc(100% + 6px)', left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#1e293b', border: '1px solid rgba(255,255,255,0.12)',
+          borderRadius: '8px', padding: '7px 11px',
+          fontSize: '11px', lineHeight: 1.55, color: '#cbd5e1',
+          width: '220px', zIndex: 1000, pointerEvents: 'none',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.55)',
+        }}>
+          {text}
+          <div style={{ position: 'absolute', top: '100%', left: '50%',
+            transform: 'translateX(-50%)', width: 0, height: 0,
+            borderLeft: '5px solid transparent', borderRight: '5px solid transparent',
+            borderTop: '5px solid rgba(255,255,255,0.12)' }} />
+        </div>
+      )}
+    </span>
+  )
+}
+
+const TIPS: Record<string, string> = {
+  // Level abbreviations
+  'ONH':      'Overnight High — highest price during the overnight session (6 PM–9:30 AM ET). Acts as resistance on a gap-up open.',
+  'ONL':      'Overnight Low — lowest price during the overnight session. Acts as support on a gap-down open.',
+  'ON POC':   'Overnight Point of Control — price with the most time/activity overnight. Key pivot: bulls must hold above it, bears must break below it.',
+  'ON VAH':   'Overnight Value Area High — upper boundary where 70% of overnight activity occurred.',
+  'ON VAL':   'Overnight Value Area Low — lower boundary where 70% of overnight activity occurred.',
+  'POC':      'Point of Control — price level with the most TPO touches today. Acts as a magnet and mean-reversion target.',
+  'VAH':      'Value Area High — upper boundary of today\'s 70% value area (where price spent most of its time).',
+  'VAL':      'Value Area Low — lower boundary of today\'s 70% value area.',
+  'IB High':  'Initial Balance High — highest price during the first 60 min of RTH (9:30–10:30 AM). A close above = buyers extending.',
+  'IB Low':   'Initial Balance Low — lowest price during the first 60 min of RTH. A close below = sellers extending.',
+  'Prior VAH':'Prior session Value Area High — first upside extension target for a bullish day.',
+  'Prior VAL':'Prior session Value Area Low — first downside extension target for a bearish day.',
+  'Prior RTH POC': 'Prior session Point of Control — key pivot from yesterday. Price often revisits it.',
+  // Opening types
+  'OA':       'Open Auction — price opened inside prior day\'s value area. Overnight traders still in control. Two-sided auction expected: buy VAL, sell VAH until a break.',
+  'OD ↑':     'Open Drive Up — opened above prior VAH and continued higher without reversing. Buyers in full control. Do not fade.',
+  'OD ↓':     'Open Drive Down — opened below prior VAL and continued lower. Sellers in full control. Do not fade.',
+  'OTD ↑':    'Open Test Drive Up — opened above prior VAH, briefly tested it, then drove higher. Directional bullish move.',
+  'OTD ↓':    'Open Test Drive Down — opened below prior VAL, briefly tested it, then drove lower. Directional bearish move.',
+  'ORR ↑':    'Open Rejection Reverse Up — opened below prior VAL but A period reversed back inside value. Gap down failed. Buy the reversal back toward VAH.',
+  'ORR ↓':    'Open Rejection Reverse Down — opened above prior VAH but A period reversed back below it. Gap up failed. Sell the reversal back toward VAL.',
+  // Zone status
+  'CONFIRMED':   'Price extended beyond IB High (bullish) or IB Low (bearish). Sellers/buyers accelerating — trend day developing. Ride the move.',
+  'INTACT':      'Signal holding. Bullish: closed above ONH. Bearish: closed below ONL. Excess defending as support/resistance.',
+  'WEAKENING':   'Signal fading — price returned inside overnight range. Two-sided OA behaviour active. Reduce position 50%, no new entries.',
+  'CRITICAL':    'Last defence — price at ON POC. One more close on the wrong side confirms signal failure.',
+  'INVALIDATED': 'Signal broken — price closed through ON POC. Original thesis wrong. Reverse plan.',
+  // Day types
+  'Trend':          'Trend Day — one-timeframe control, price extended 2.5× the IB range. Do not fade, trail stops.',
+  'Normal Var ↑':   'Normal Variation Up — buyers won the IB auction, one-sided extension above IB High.',
+  'Normal Var ↓':   'Normal Variation Down — sellers won the IB auction, one-sided extension below IB Low.',
+  'Normal':         'Normal Day — wide IB, both sides active, balanced range day.',
+  'Neutral':        'Neutral Day — both sides tested IB extremes but neither won. No directional edge.',
+  'Neutral Extreme':'Neutral Extreme — both sides extended significantly but balanced. High volatility, no trend.',
+  // Other
+  'IB':             'Initial Balance — the price range of the first 60 minutes (A+B periods, 9:30–10:30 AM). Sets the day\'s directional hypothesis.',
+  'TPO':            'Time Price Opportunity — each 30-min period = one letter. TPO count = how many periods touched a price.',
+  'Single Prints':  'Prices touched by only one period — fast move, unconfirmed structure. Often revisited as price returns to fill the gap.',
+  'Value Area':     '70% of activity. VAH and VAL define where most trading occurred. Price gravitates back to value on balanced days.',
+  'Prior RTH':      'Prior Regular Trading Hours session (yesterday 9:30 AM–4:00 PM). Value area and POC from yesterday act as reference levels.',
+  'Overnight':      'Overnight session (6:00 PM–9:30 AM ET). Establishes the context for today\'s open and initial inventory positioning.',
+  'Initial Balance':'First 60 minutes of RTH (A+B periods, 9:30–10:30 AM). The most important reference range — everything after tests or extends it.',
+  'Developing':     'Today\'s developing profile — POC, VAH, and VAL update as the session progresses.',
+}
+
 // ── Pre-Market Read ───────────────────────────────────────────────────────────
 const GAP_CFG: Record<string, { bg: string; color: string; border: string; icon: string }> = {
   BULLISH: { bg: 'rgba(74,222,128,0.12)',  color: '#4ade80', border: 'rgba(74,222,128,0.3)',  icon: '▲' },
@@ -864,9 +939,11 @@ function PreMarketRead({ pm }: { pm: PreMarketReadData }) {
             <span style={{ fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>
               Expected open
             </span>
-            <span style={{ fontSize: '12px', fontWeight: 700, color: gcfg.color }}>
-              {pm.expected_open}
-            </span>
+            <Tip text={TIPS[pm.expected_open] ?? pm.expected_open}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: gcfg.color, cursor: 'help' }}>
+                {pm.expected_open}
+              </span>
+            </Tip>
           </div>
         )}
 
@@ -899,7 +976,9 @@ function PreMarketRead({ pm }: { pm: PreMarketReadData }) {
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between',
                     alignItems: 'center', padding: '3px 0',
                     borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <span style={{ fontSize: '12px', color: klColor }}>{kl.label}</span>
+                    <span style={{ fontSize: '12px', color: klColor }}>
+                    {TIPS[kl.label] ? <Tip text={TIPS[kl.label]}>{kl.label}</Tip> : kl.label}
+                  </span>
                     <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace',
                       color: isCurrent ? '#fbbf24' : 'var(--text-primary)' }}>
                       {fmt(kl.level)}
@@ -1061,11 +1140,13 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
             </span>
           )}
           {/* Zone status badge */}
-          <span style={{ fontSize: '12px', fontWeight: 700, color: cfg.color,
-            background: cfg.bg, border: `1px solid ${cfg.border}`,
-            borderRadius: '5px', padding: '2px 10px' }}>
-            {cfg.label}
-          </span>
+          <Tip text={TIPS[lr.status] ?? cfg.label}>
+            <span style={{ fontSize: '12px', fontWeight: 700, color: cfg.color,
+              background: cfg.bg, border: `1px solid ${cfg.border}`,
+              borderRadius: '5px', padding: '2px 10px' }}>
+              {cfg.label}
+            </span>
+          </Tip>
         </div>
       </div>
 
@@ -1354,14 +1435,16 @@ export default function MarketProfile() {
               {/* Section label */}
               <div style={{ fontSize: '9px', fontWeight: 700, color,
                 textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                {label}
+                {TIPS[label] ? <Tip text={TIPS[label]}>{label}</Tip> : label}
               </div>
               {/* Items in a row */}
               <div style={{ display: 'flex', gap: '14px' }}>
                 {items.map(({ key, value, color: c }) => value != null && (
                   <div key={key}>
                     <div style={{ fontSize: '9px', color: 'var(--text-dim)', fontWeight: 600,
-                      letterSpacing: '0.05em', marginBottom: '1px' }}>{key}</div>
+                      letterSpacing: '0.05em', marginBottom: '1px' }}>
+                      {TIPS[key] ? <Tip text={TIPS[key]}>{key}</Tip> : key}
+                    </div>
                     <div style={{ fontSize: '13px', fontWeight: 700, color: c,
                       fontFamily: "'SF Mono', monospace" }}>
                       {fmt(value)}
@@ -1371,6 +1454,29 @@ export default function MarketProfile() {
               </div>
             </div>
           ))}
+
+          {/* Opening type + Day type badges */}
+          <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column',
+            justifyContent: 'center', gap: '5px', borderRight: '1px solid var(--border)' }}>
+            <div style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)',
+              textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '2px' }}>Session</div>
+            <Tip text={TIPS[data.opening.label] ?? `${data.opening.label}: ${data.opening.description ?? ''}`}>
+              <span style={{ fontSize: '11px', fontWeight: 700,
+                color: openCfg.color, background: openCfg.bg,
+                border: `1px solid ${openCfg.border}`,
+                borderRadius: '4px', padding: '2px 8px', cursor: 'help' }}>
+                {data.opening.label}
+              </span>
+            </Tip>
+            <Tip text={TIPS[data.day_type.label] ?? data.day_type.label}>
+              <span style={{ fontSize: '11px', fontWeight: 700,
+                color: dayCfg.color, background: `${dayCfg.bg}`,
+                border: `1px solid ${dayCfg.color}33`,
+                borderRadius: '4px', padding: '2px 8px', cursor: 'help' }}>
+                {data.day_type.label}
+              </span>
+            </Tip>
+          </div>
 
           {/* Help button — right edge */}
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', padding: '0 16px' }}>
@@ -1528,7 +1634,9 @@ export default function MarketProfile() {
                 ].map(({ label, val, color }) => (
                   <div key={label} style={{ display: 'flex', justifyContent: 'space-between',
                     alignItems: 'center' }}>
-                    <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{label}</span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                      {TIPS[label] ? <Tip text={TIPS[label]}>{label}</Tip> : label}
+                    </span>
                     <span style={{ fontSize: '11px', fontWeight: 600, color, fontFamily: 'monospace' }}>
                       {val}
                     </span>
@@ -1543,7 +1651,7 @@ export default function MarketProfile() {
                 border: '1px solid rgba(248,113,113,0.2)', borderRadius: '10px' }}>
                 <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171',
                   textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
-                  ⚠ Single Prints (Poor Structure)
+                  ⚠ <Tip text={TIPS['Single Prints']}>Single Prints</Tip> (Poor Structure)
                 </div>
                 <p style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '8px', lineHeight: 1.4 }}>
                   Prices touched by only 1 period — fast move, likely to be revisited.
