@@ -1475,7 +1475,7 @@ export default function MarketProfile() {
           {/* ── Right panel: context cards ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-            {data.opening?.type === 'PREMARKET' ? (
+            {data.premarket_read?.active === true ? (
               /* ── PRE-MARKET VIEW ── */
               <>
                 {/* Pre-market gap + inventory + opening scenario */}
