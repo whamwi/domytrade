@@ -6502,28 +6502,30 @@ def _classify_opening(open_price: float, a_period: dict | None,
                                f'Two-sided auction. Buy VAL / sell VAH until a clear break.'}
 
     if above_va:
-        # Tested VAH during A period?
-        if a_low <= prior_vah + 2 * tick:
+        # OTD ↑: A tested VAH from above (barely dipped to/near it) then drove higher.
+        if prior_vah <= a_low <= prior_vah + 2 * tick:
             return {**base, 'type': 'OTD', 'label': 'Open Test Drive ↑',
                     'description': f'Opened above VAH ({prior_vah:.2f}), A period tested it then drove higher. '
                                    f'Bullish. Buy pullbacks to {prior_vah:.2f}.'}
-        # Reversed back through open?
-        if a_low < open_price - 4 * tick:
+        # ORR ↓: A actually reversed back THROUGH VAH into prior value area.
+        if a_low < prior_vah:
             return {**base, 'type': 'ORR', 'label': 'Open Rejection Reverse ↓',
-                    'description': f'Opened above VAH but reversed back. Bearish. '
+                    'description': f'Opened above VAH ({prior_vah:.2f}) but A reversed back through it. Bearish. '
                                    f'Sell rallies to {prior_vah:.2f}, target VAL {prior_val:.2f}.'}
         return {**base, 'type': 'OD', 'label': 'Open Drive ↑',
                 'description': f'Opened above VAH ({prior_vah:.2f}) and drove higher. '
                                f'One-timeframe buyers in control — do not fade. Trail stops.'}
 
     # Below VA
-    if a_high >= prior_val - 2 * tick:
+    # OTD ↓: A tested VAL from below (barely rose to/near it) then drove lower.
+    if prior_val - 2 * tick <= a_high <= prior_val:
         return {**base, 'type': 'OTD', 'label': 'Open Test Drive ↓',
                 'description': f'Opened below VAL ({prior_val:.2f}), A period tested it then drove lower. '
                                f'Bearish. Sell bounces to {prior_val:.2f}.'}
-    if a_high > open_price + 4 * tick:
+    # ORR ↑: A actually reversed back THROUGH VAL into prior value area.
+    if a_high > prior_val:
         return {**base, 'type': 'ORR', 'label': 'Open Rejection Reverse ↑',
-                'description': f'Opened below VAL but reversed back into value. Bullish. '
+                'description': f'Opened below VAL ({prior_val:.2f}) but A reversed back through it. Bullish. '
                                f'Buy pullbacks to {prior_val:.2f}, target VAH {prior_vah:.2f}.'}
     return {**base, 'type': 'OD', 'label': 'Open Drive ↓',
             'description': f'Opened below VAL ({prior_val:.2f}) and drove lower. '
