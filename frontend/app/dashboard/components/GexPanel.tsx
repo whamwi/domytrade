@@ -133,8 +133,9 @@ export default function GexPanel() {
   const [loading, setLoading]           = useState(false)
   const [error,   setError]             = useState<string | null>(null)
   const [lastFetch, setLastFetch]       = useState<Date | null>(null)
-  const [showAll,   setShowAll]         = useState(false)
-  const [elapsed,   setElapsed]         = useState(0)      // ms while loading
+  const [showAll,          setShowAll]          = useState(false)
+  const [showDeltaHelp,    setShowDeltaHelp]    = useState(false)
+  const [elapsed,          setElapsed]          = useState(0)      // ms while loading
   const [fetchMs,   setFetchMs]         = useState<number | null>(null)  // final duration
   const refreshRef  = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -505,21 +506,33 @@ export default function GexPanel() {
             )}
             {data.delta_distribution && (
               <>
-                <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
-                  Calls{' '}
-                  <span style={{ color: '#4ade80' }}>
-                    {data.delta_distribution.volume_based
-                      ? `${(data.delta_distribution.call_vol / 1000).toFixed(0)}K vol`
-                      : `${(data.delta_distribution.call_oi  / 1000).toFixed(0)}K OI`}
-                  </span>
+                <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                  <span style={{ color: '#4ade80', fontWeight: 600 }}>▲ Calls </span>
+                  {data.delta_distribution.volume_based && (
+                    <><span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_vol / 1000).toFixed(0)}K</span>
+                    <span style={{ color: 'var(--text-dim)' }}> vol</span>
+                    <span style={{ color: 'var(--text-dim)' }}> · </span>
+                    <span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K</span>
+                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
+                  )}
+                  {!data.delta_distribution.volume_based && (
+                    <><span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K</span>
+                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
+                  )}
                 </span>
-                <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
-                  Puts{' '}
-                  <span style={{ color: '#f87171' }}>
-                    {data.delta_distribution.volume_based
-                      ? `${(data.delta_distribution.put_vol / 1000).toFixed(0)}K vol`
-                      : `${(data.delta_distribution.put_oi  / 1000).toFixed(0)}K OI`}
-                  </span>
+                <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                  <span style={{ color: '#f87171', fontWeight: 600 }}>▼ Puts </span>
+                  {data.delta_distribution.volume_based && (
+                    <><span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_vol / 1000).toFixed(0)}K</span>
+                    <span style={{ color: 'var(--text-dim)' }}> vol</span>
+                    <span style={{ color: 'var(--text-dim)' }}> · </span>
+                    <span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K</span>
+                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
+                  )}
+                  {!data.delta_distribution.volume_based && (
+                    <><span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K</span>
+                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
+                  )}
                 </span>
               </>
             )}
@@ -542,6 +555,20 @@ export default function GexPanel() {
                 }
               </span>
             )}
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={() => setShowDeltaHelp(v => !v)}
+              className="text-xs px-2 py-0.5 rounded transition-colors"
+              style={{
+                background: showDeltaHelp ? 'rgba(251,191,36,0.12)' : 'transparent',
+                color:      '#fbbf24',
+                border:     `1px solid ${showDeltaHelp ? 'rgba(251,191,36,0.6)' : 'rgba(251,191,36,0.35)'}`,
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Δ Explained
+            </button>
           </div>
 
           {/* Delta distribution — 5 bucket columns */}
@@ -561,7 +588,7 @@ export default function GexPanel() {
                   return (
                     <div key={b} className="flex flex-col gap-1.5">
                       {/* Bucket label */}
-                      <div style={{ fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.05em', textAlign: 'center' }}>
+                      <div style={{ fontSize: 9, color: '#94a3b8', letterSpacing: '0.05em', textAlign: 'center' }}>
                         {LABELS[i]}
                       </div>
                       {/* Call bar + % */}
@@ -569,7 +596,7 @@ export default function GexPanel() {
                         <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
                           <div style={{ width: `${(cPct / maxPct) * 100}%`, height: '100%', background: '#4ade80', opacity: 0.85 }} />
                         </div>
-                        <div style={{ fontSize: 11, color: '#4ade80', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                        <div style={{ fontSize: 13, color: '#4ade80', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
                           {cPct.toFixed(0)}%
                         </div>
                       </div>
@@ -578,7 +605,7 @@ export default function GexPanel() {
                         <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
                           <div style={{ width: `${(pPct / maxPct) * 100}%`, height: '100%', background: '#f87171', opacity: 0.85 }} />
                         </div>
-                        <div style={{ fontSize: 11, color: '#f87171', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                        <div style={{ fontSize: 13, color: '#f87171', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
                           {pPct.toFixed(0)}%
                         </div>
                       </div>
@@ -588,6 +615,61 @@ export default function GexPanel() {
               </div>
             )
           })()}
+
+          {/* ── Delta explanation panel ─────────────────────────────────── */}
+          {showDeltaHelp && (
+            <div
+              className="mt-3 rounded"
+              style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', padding: '10px 12px' }}
+            >
+              <div className="text-xs font-semibold mb-2" style={{ color: '#818cf8', letterSpacing: '0.08em' }}>
+                DELTA RANGES — WHAT THEY MEAN
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0 10px' }}>
+                {[
+                  {
+                    range: '0–20Δ',
+                    name: 'Far OTM',
+                    call: 'Cheap speculative bets. Buyers expect a large move up. Low probability, high reward if it moves.',
+                    put:  'Cheap insurance / tail-risk hedges. Far below market — protect against a crash.',
+                  },
+                  {
+                    range: '21–40Δ',
+                    name: 'OTM',
+                    call: 'Directional plays with moderate premium. Retail buying for leveraged upside exposure.',
+                    put:  'Active hedging zone. Funds and traders buying protection against a moderate pullback.',
+                  },
+                  {
+                    range: '41–60Δ',
+                    name: 'ATM zone',
+                    call: 'Highest gamma — most sensitive to price movement. Near 50Δ = reacts 1:1 with stock.',
+                    put:  'ATM puts decay fast but are most reactive. Often used for short-term directional plays.',
+                  },
+                  {
+                    range: '61–80Δ',
+                    name: 'ITM',
+                    call: 'Behaves like leveraged stock. Less time value, more intrinsic. Institutional / professional.',
+                    put:  'Deep hedges or synthetic short positions. High delta = strong downside protection.',
+                  },
+                  {
+                    range: '81–100Δ',
+                    name: 'Deep ITM',
+                    call: 'Stock replacement strategy. Very low time value. Used in covered calls or LEAPS.',
+                    put:  'Near-certain payout. Essentially a short stock with limited downside risk.',
+                  },
+                ].map(({ range, name, call, put }) => (
+                  <div key={range} className="flex flex-col gap-1">
+                    <div style={{ fontSize: 9, color: '#94a3b8', letterSpacing: '0.05em', textAlign: 'center' }}>
+                      {range}
+                    </div>
+                    <div className="text-center text-xs font-semibold" style={{ color: '#818cf8', fontSize: 9 }}>{name}</div>
+                    <div style={{ fontSize: 9, color: '#4ade80', lineHeight: 1.45, opacity: 0.9 }}>{call}</div>
+                    <div style={{ fontSize: 9, color: '#f87171', lineHeight: 1.45, opacity: 0.9, marginTop: 2 }}>{put}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

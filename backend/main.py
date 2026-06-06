@@ -4864,10 +4864,19 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         stats_put_map  = put_map
     else:
         try:
-            wide_chain     = get_option_chain(schwab_sym, strike_count=None)
-            stats_call_map = wide_chain.get('callExpDateMap', {}) or call_map
-            stats_put_map  = wide_chain.get('putExpDateMap',  {}) or put_map
-        except Exception:
+            import logging as _log
+            # Pass a very large strikeCount — Schwab caps at their max (all available strikes)
+            wide_chain     = get_option_chain(schwab_sym, strike_count=9999)
+            wc_calls       = wide_chain.get('callExpDateMap', {})
+            wc_puts        = wide_chain.get('putExpDateMap',  {})
+            stats_call_map = wc_calls if wc_calls else call_map
+            stats_put_map  = wc_puts  if wc_puts  else put_map
+            _log.getLogger(__name__).info(
+                'wide chain: %d call expiries, %d put expiries',
+                len(stats_call_map), len(stats_put_map)
+            )
+        except Exception as _e:
+            _log.getLogger(__name__).warning('wide chain failed (%s), falling back to limited chain', _e)
             stats_call_map = call_map
             stats_put_map  = put_map
 
