@@ -4971,19 +4971,23 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
                 p_oi_total  += oi
                 p_dist[_dbucket(delta)] += oi   # OI-based distribution
 
-    # OI-based P/C — Schwab's API caps strike count so volume numbers are partial;
-    # OI near ATM is representative of full-chain positioning (most contracts cluster near ATM).
-    pc_ratio = round(p_oi_total / c_oi_total, 3) if c_oi_total > 0 else None
+    # Two P/C ratios — each tells a different story:
+    # OI  = accumulated positioning (Thursday's snapshot pre-crash; call-heavy from run-up)
+    # Vol = today's activity (Friday crash day; put-heavy as traders piled into puts)
+    pc_ratio_oi  = round(p_oi_total  / c_oi_total,  3) if c_oi_total  > 0 else None
+    pc_ratio_vol = round(p_vol_total / c_vol_total,  3) if c_vol_total > 0 else None
+    pc_ratio     = pc_ratio_oi  # keep for backward compat with DB storage
 
     def _pct(dist: dict, total: int) -> dict:
         return {b: round(dist[b] / total * 100, 1) if total > 0 else 0.0 for b in DBUCKETS}
 
     delta_distribution = {
-        'calls'       : _pct(c_dist, c_oi_total),
-        'puts'        : _pct(p_dist, p_oi_total),
-        'call_oi'     : c_oi_total,
-        'put_oi'      : p_oi_total,
-        'volume_based': False,
+        'calls'        : _pct(c_dist, c_oi_total),
+        'puts'         : _pct(p_dist, p_oi_total),
+        'call_oi'      : c_oi_total,
+        'put_oi'       : p_oi_total,
+        'pc_ratio_oi'  : pc_ratio_oi,
+        'pc_ratio_vol' : pc_ratio_vol,
     }
 
     # ── Underlying quote context (open, prev close, VWAP) ────────────────────

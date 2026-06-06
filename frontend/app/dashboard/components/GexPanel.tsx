@@ -71,13 +71,12 @@ interface GexData {
   underlying_open?: number | null
   underlying_prev_close?: number | null
   delta_distribution?: {
-    calls:        Record<string, number>
-    puts:         Record<string, number>
-    call_vol:     number
-    put_vol:      number
-    call_oi:      number
-    put_oi:       number
-    volume_based: boolean
+    calls:         Record<string, number>
+    puts:          Record<string, number>
+    call_oi:       number
+    put_oi:        number
+    pc_ratio_oi?:  number | null
+    pc_ratio_vol?: number | null
   } | null
 }
 
@@ -485,29 +484,42 @@ export default function GexPanel() {
               <span style={{ color: '#f87171', fontWeight: 700 }}>P</span>
               <span style={{ color: 'var(--text-dim)' }}> delta distribution</span>
             </span>
-            {data.pc_ratio != null && data.delta_distribution && (
-              <span className="text-xs" title="Put/Call ratio by Open Interest — shows accumulated structural positioning. OI reflects who is positioned where, not just today's activity.">
-                <span style={{ color: 'var(--text-dim)' }}>P/C (OI) </span>
-                <span
-                  className="font-bold tabular-nums"
-                  style={{ color: data.pc_ratio > 1.2 ? '#f87171' : data.pc_ratio < 0.8 ? '#4ade80' : 'var(--text-muted)' }}
-                >
-                  {data.pc_ratio.toFixed(2)}
-                </span>
-                <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>
-                  {data.pc_ratio > 1.2 ? ' put-heavy' : data.pc_ratio < 0.8 ? ' call-heavy' : ''}
-                </span>
-              </span>
-            )}
             {data.delta_distribution && (
               <>
+                {/* OI-based P/C — accumulated positioning (last close snapshot) */}
+                {data.delta_distribution.pc_ratio_oi != null && (
+                  <span className="text-xs" title="P/C by Open Interest — accumulated positioning from the last close. Call-heavy = longs built up during the run-up.">
+                    <span style={{ color: 'var(--text-dim)' }}>P/C OI </span>
+                    <span className="font-bold tabular-nums" style={{
+                      color: data.delta_distribution.pc_ratio_oi > 1.2 ? '#f87171'
+                           : data.delta_distribution.pc_ratio_oi < 0.8 ? '#4ade80'
+                           : 'var(--text-muted)'
+                    }}>
+                      {data.delta_distribution.pc_ratio_oi.toFixed(2)}
+                    </span>
+                  </span>
+                )}
+                {/* Vol-based P/C — today's activity */}
+                {data.delta_distribution.pc_ratio_vol != null && (
+                  <span className="text-xs" title="P/C by today's volume — what traders actually bought/sold today. Put-heavy on crash days.">
+                    <span style={{ color: 'var(--text-dim)' }}>Vol </span>
+                    <span className="font-bold tabular-nums" style={{
+                      color: data.delta_distribution.pc_ratio_vol > 1.2 ? '#f87171'
+                           : data.delta_distribution.pc_ratio_vol < 0.8 ? '#4ade80'
+                           : 'var(--text-muted)'
+                    }}>
+                      {data.delta_distribution.pc_ratio_vol.toFixed(2)}
+                    </span>
+                  </span>
+                )}
+                <span style={{ width: 1, height: 12, background: 'var(--border)', flexShrink: 0 }} />
                 <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                  <span style={{ color: '#4ade80', fontWeight: 600 }}>▲ Calls </span>
+                  <span style={{ color: '#4ade80', fontWeight: 600 }}>▲ </span>
                   <span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K</span>
                   <span style={{ color: 'var(--text-dim)' }}> OI</span>
                 </span>
                 <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                  <span style={{ color: '#f87171', fontWeight: 600 }}>▼ Puts </span>
+                  <span style={{ color: '#f87171', fontWeight: 600 }}>▼ </span>
                   <span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K</span>
                   <span style={{ color: 'var(--text-dim)' }}> OI</span>
                 </span>
