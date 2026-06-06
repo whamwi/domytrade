@@ -4907,6 +4907,63 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         vix = _get_vix()
     iv_env = _classify_iv_environment(vix)
 
+    # ── P/C ratio + delta distribution (across all expiries in chain) ─────────
+    def _dbucket(d: float) -> str:
+        a = abs(d)
+        if a <= 0.20: return '0_20'
+        if a <= 0.40: return '21_40'
+        if a <= 0.60: return '41_60'
+        if a <= 0.80: return '61_80'
+        return '81_100'
+
+    DBUCKETS = ['0_20', '21_40', '41_60', '61_80', '81_100']
+    c_oi_total = p_oi_total = 0
+    c_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
+    p_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
+
+    for _, strikes_dict in call_map.items():
+        for _, opts in strikes_dict.items():
+            for opt in opts:
+                oi    = int(opt.get('openInterest') or 0)
+                delta = float(opt.get('delta') or 0)
+                c_oi_total += oi
+                c_dist[_dbucket(delta)] += oi
+
+    for _, strikes_dict in put_map.items():
+        for _, opts in strikes_dict.items():
+            for opt in opts:
+                oi    = int(opt.get('openInterest') or 0)
+                delta = float(opt.get('delta') or 0)
+                p_oi_total += oi
+                p_dist[_dbucket(delta)] += oi
+
+    pc_ratio = round(p_oi_total / c_oi_total, 3) if c_oi_total > 0 else None
+
+    def _pct(dist: dict, total: int) -> dict:
+        return {b: round(dist[b] / total * 100, 1) if total > 0 else 0.0 for b in DBUCKETS}
+
+    delta_distribution = {
+        'calls'   : _pct(c_dist, c_oi_total),
+        'puts'    : _pct(p_dist, p_oi_total),
+        'call_oi' : c_oi_total,
+        'put_oi'  : p_oi_total,
+    }
+
+    # ── Underlying VWAP ───────────────────────────────────────────────────────
+    underlying_vwap: float | None = None
+    try:
+        from schwab_client import get_quotes
+        qdata = get_quotes([schwab_sym])
+        q     = qdata.get(schwab_sym, {}).get('quote', qdata.get(schwab_sym, {}))
+        underlying_vwap = (
+            q.get('vwap') or q.get('VWAP') or
+            q.get('mark') or q.get('lastPrice') or q.get('last')
+        )
+        if underlying_vwap:
+            underlying_vwap = round(float(underlying_vwap), 2)
+    except Exception:
+        pass
+
     return {
         # Identity & context
         'symbol'             : display_sym,
@@ -4939,6 +4996,11 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         'call_wall_monthly'  : layer_monthly['call_wall'],
         'put_wall_monthly'   : layer_monthly['put_wall'],
         'zero_gamma_monthly' : layer_monthly['zero_gamma'],
+
+        # Options flow stats
+        'pc_ratio'           : pc_ratio,
+        'delta_distribution' : delta_distribution,
+        'underlying_vwap'    : underlying_vwap,
 
         # Strike rows per layer — frontend switches between these for the bar chart
         'strikes'            : layer_all.get('strikes', []),
@@ -4988,10 +5050,13 @@ def _refresh_gex_indices(is_baseline: bool = False) -> None:
                 'nearest_expiry'      : data['nearest_expiry'],
                 'nearest_dte'         : data['nearest_dte'],
                 'strikes_json'        : _json.dumps({
-                    'all'         : data['strikes'],
-                    'ex_next'     : data['strikes_ex_next'],
-                    'monthly'     : data['strikes_monthly'],
-                    'expiry_dates': data.get('expiries', []),
+                    'all'                : data['strikes'],
+                    'ex_next'            : data['strikes_ex_next'],
+                    'monthly'            : data['strikes_monthly'],
+                    'expiry_dates'       : data.get('expiries', []),
+                    'pc_ratio'           : data.get('pc_ratio'),
+                    'delta_distribution' : data.get('delta_distribution'),
+                    'underlying_vwap'    : data.get('underlying_vwap'),
                 }),
             }
             save_gex_snapshot(row)
@@ -5033,9 +5098,13 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                         strikes_all     = raw.get('all',     [])
                         strikes_ex_next = raw.get('ex_next', [])
                         strikes_monthly = raw.get('monthly', [])
-                    expiry_dates = raw.get('expiry_dates', []) if isinstance(raw, dict) else []
+                    expiry_dates        = raw.get('expiry_dates', []) if isinstance(raw, dict) else []
+                    pc_ratio_stored     = raw.get('pc_ratio') if isinstance(raw, dict) else None
+                    delta_dist_stored   = raw.get('delta_distribution') if isinstance(raw, dict) else None
+                    vwap_stored         = raw.get('underlying_vwap') if isinstance(raw, dict) else None
                 except Exception:
                     expiry_dates = []
+                    pc_ratio_stored = delta_dist_stored = vwap_stored = None
                 nearest = row.get('nearest_expiry', '')
                 # Always serve a live VIX — the stored vix_ref may be stale
                 # or absent (weekend baseline skipped).  Fetch is fast (~50ms).
@@ -5051,6 +5120,9 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                     'iv_environment'       : _classify_iv_environment(vix_out),
                     'expiry_type'          : _classify_expiry_type(nearest, expiry_dates or None),
                     'is_post_expiry_monday': _is_post_expiry_monday(),
+                    'pc_ratio'             : pc_ratio_stored,
+                    'delta_distribution'   : delta_dist_stored,
+                    'underlying_vwap'      : vwap_stored,
                     'source'               : 'baseline' if row.get('is_daily_baseline') else 'intraday',
                 }
         except Exception as exc:
