@@ -35,7 +35,9 @@ interface GexData {
   iv_environment: string
   nearest_expiry: string
   nearest_dte: number | null
-  expiries: string[]
+  expiries?: string[]        // present on live compute; absent when served from DB
+  expiry_type?: '0DTE' | 'QUARTERLY' | 'MONTHLY' | 'WEEKLY' | 'DAILY'
+  is_post_expiry_monday?: boolean
   source: 'baseline' | 'intraday' | 'live' | 'transient_cache'
   captured_at?: string
 
@@ -60,8 +62,20 @@ interface GexData {
   put_wall_monthly: number
   zero_gamma_monthly: number | null
 
-  strikes: StrikeRow[]
+  strikes: StrikeRow[]           // all-expiry layer
+  strikes_ex_next?: StrikeRow[]  // excluding nearest expiry
+  strikes_monthly?: StrikeRow[]  // monthly only
   strike_count: number
+  pc_ratio?: number | null
+  underlying_vwap?: number | null
+  underlying_open?: number | null
+  underlying_prev_close?: number | null
+  delta_distribution?: {
+    calls: Record<string, number>
+    puts:  Record<string, number>
+    call_oi: number
+    put_oi:  number
+  } | null
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -117,22 +131,37 @@ export default function GexPanel() {
   const [error,   setError]             = useState<string | null>(null)
   const [lastFetch, setLastFetch]       = useState<Date | null>(null)
   const [showAll,   setShowAll]         = useState(false)
-  const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [elapsed,   setElapsed]         = useState(0)      // ms while loading
+  const [fetchMs,   setFetchMs]         = useState<number | null>(null)  // final duration
+  const refreshRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+  const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const fetchStart  = useRef<number>(0)
 
   const fetchGex = useCallback(async (sym: string) => {
+    // Start timer
+    fetchStart.current = performance.now()
+    setElapsed(0)
+    setFetchMs(null)
     setLoading(true)
     setError(null)
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = setInterval(() => {
+      setElapsed(Math.round(performance.now() - fetchStart.current))
+    }, 100)
+
     try {
-      const res  = await fetch(`${API_URL}/api/gex/${encodeURIComponent(sym)}?strike_count=60`)
+      const res  = await fetch(`${API_URL}/api/gex/${encodeURIComponent(sym)}?strike_count=100`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       if (json.error) throw new Error(json.error)
       setData(json as GexData)
       setLastFetch(new Date())
+      setFetchMs(Math.round(performance.now() - fetchStart.current))
     } catch (e: any) {
       setError(e.message ?? 'Failed to load GEX')
     } finally {
       setLoading(false)
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
     }
   }, [])
 
@@ -147,7 +176,7 @@ export default function GexPanel() {
 
   function selectSymbol(sym: string) {
     const s = sym.toUpperCase().trim()
-    if (s) { setActiveSymbol(s); setCustomInput('') }
+    if (s) { setData(null); setActiveSymbol(s); setCustomInput('') }
   }
 
   function handleCustomSubmit(e: React.FormEvent) {
@@ -158,12 +187,28 @@ export default function GexPanel() {
   // ── Active layer values ──────────────────────────────────────────────────
   const lv = data ? layerValues(data, layer) : null
 
-  // ── Strike rows for bar chart ────────────────────────────────────────────
-  const strikes = data?.strikes ?? []
+  // ── Strike rows for bar chart — switch by active layer ──────────────────
+  const strikes = (() => {
+    if (!data) return []
+    if (layer === 'ex_next')  return data.strikes_ex_next ?? data.strikes ?? []
+    if (layer === 'monthly')  return data.strikes_monthly ?? data.strikes ?? []
+    return data.strikes ?? []
+  })()
   const maxAbs  = strikes.reduce(
     (m, r) => Math.max(m, r.call_gex_mm, r.put_gex_mm), 1
   )
   const atmIdx = strikes.findIndex(r => r.is_atm)
+
+  // Detect weekend / pre-open OI blackout: OCC publishes OI after each session close;
+  // Schwab zeroes it out on weekends. If every strike shows zero GEX, data is unavailable.
+  const allZeroOI = data != null
+    && data.strikes.length > 0
+    && data.strikes.every(r => r.call_gex_mm === 0 && r.put_gex_mm === 0)
+
+  // Detect when a wall is outside the fetched strike range
+  const strikeSet = new Set(strikes.map(r => r.strike))
+  const callWallInRange = lv?.call_wall != null && strikeSet.has(lv.call_wall)
+  const putWallInRange  = lv?.put_wall  != null && strikeSet.has(lv.put_wall)
 
   const visibleRows = showAll
     ? [...strikes].reverse()
@@ -252,6 +297,13 @@ export default function GexPanel() {
           </span>
         )}
 
+        {/* Fetch duration */}
+        {fetchMs != null && !loading && (
+          <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
+            {fetchMs < 1000 ? `${fetchMs}ms` : `${(fetchMs / 1000).toFixed(1)}s`}
+          </span>
+        )}
+
         {/* Refresh */}
         <button
           onClick={() => fetchGex(activeSymbol)}
@@ -277,7 +329,7 @@ export default function GexPanel() {
           style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-panel)' }}
         >
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold" style={{ color: 'var(--text-dim)', letterSpacing: '0.1em' }}>VIX</span>
+            <span className="text-xs font-semibold" style={{ color: 'var(--text-dim)', letterSpacing: '0.1em' }}>FEAR INDEX</span>
             <span className="text-sm font-bold tabular-nums" style={{ color: ivColor(data.iv_environment) }}>
               {data.vix_ref != null ? data.vix_ref.toFixed(2) : '—'}
             </span>
@@ -285,7 +337,7 @@ export default function GexPanel() {
               className="text-xs px-1.5 py-0.5 rounded font-semibold"
               style={{ background: `${ivColor(data.iv_environment)}18`, color: ivColor(data.iv_environment), fontSize: 10 }}
             >
-              {data.iv_environment} IV
+              {data.iv_environment === 'UNKNOWN' ? 'VIX' : `${data.iv_environment} IV`}
             </span>
             <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
               {data.iv_environment === 'LOW'     && '— Walls very sticky'}
@@ -303,10 +355,29 @@ export default function GexPanel() {
               </span>
             )}
           </span>
+
+          {/* Expiry type badge */}
+          {data.expiry_type && data.expiry_type !== 'DAILY' && data.expiry_type !== 'WEEKLY' && (
+            <ExpiryBadge type={data.expiry_type} />
+          )}
+
+          {/* Post-expiry Monday warning */}
+          {data.is_post_expiry_monday && (
+            <span
+              className="text-xs px-2 py-0.5 rounded font-semibold"
+              style={{ background: 'rgba(251,191,36,0.12)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.25)', fontSize: 10 }}
+              title="Post-expiry Monday — dealers re-hedge from scratch. Flows can be erratic until ~10:30 AM ET."
+            >
+              ⚠ POST-EXPIRY MON
+            </span>
+          )}
+
           <div style={{ flex: 1 }} />
-          <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
-            {data.expiries.slice(0, 4).join(' · ')}
-          </span>
+          {data.expiries && data.expiries.length > 0 && (
+            <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
+              {data.expiries.slice(0, 4).join(' · ')}
+            </span>
+          )}
         </div>
       )}
 
@@ -359,13 +430,13 @@ export default function GexPanel() {
           <Card
             label="CALL WALL"
             value={lv.call_wall != null ? `$${fmt(lv.call_wall, lv.call_wall >= 1000 ? 0 : 1)}` : '—'}
-            sub="resistance"
+            sub={!callWallInRange && lv.call_wall != null ? '↑ above chart range' : 'resistance'}
             color="#f87171"
           />
           <Card
             label="PUT WALL"
             value={lv.put_wall != null ? `$${fmt(lv.put_wall, lv.put_wall >= 1000 ? 0 : 1)}` : '—'}
-            sub="support"
+            sub={!putWallInRange && lv.put_wall != null ? '↓ below chart range' : 'support'}
             color="#4ade80"
           />
           <Card
@@ -395,8 +466,125 @@ export default function GexPanel() {
         </div>
       )}
 
+      {/* ── Options flow stats ───────────────────────────────────────────── */}
+      {data && (data.pc_ratio != null || data.underlying_vwap != null || data.delta_distribution) && (
+        <div
+          className="px-5 py-2 shrink-0"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          {/* Top row: P/C (OI), OI totals, price context */}
+          <div className="flex items-center gap-4 mb-2 flex-wrap">
+            <span className="text-xs font-semibold" style={{ color: 'var(--text-dim)', letterSpacing: '0.1em' }}>OPTIONS FLOW</span>
+            {data.pc_ratio != null && (
+              <span className="text-xs" title="Put/Call ratio by Open Interest (structural positioning). TOS shows volume-based P/C which reflects today's trading activity.">
+                <span style={{ color: 'var(--text-dim)' }}>P/C (OI) </span>
+                <span
+                  className="font-bold tabular-nums"
+                  style={{ color: data.pc_ratio > 1.2 ? '#f87171' : data.pc_ratio < 0.8 ? '#4ade80' : 'var(--text-muted)' }}
+                >
+                  {data.pc_ratio.toFixed(2)}
+                </span>
+                <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>
+                  {data.pc_ratio > 1.2 ? ' put-heavy' : data.pc_ratio < 0.8 ? ' call-heavy' : ''}
+                </span>
+              </span>
+            )}
+            {data.delta_distribution && (
+              <>
+                <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
+                  Calls <span style={{ color: '#4ade80' }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K OI</span>
+                </span>
+                <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
+                  Puts <span style={{ color: '#f87171' }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K OI</span>
+                </span>
+              </>
+            )}
+            {data.underlying_prev_close != null && (
+              <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
+                Prev Close <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>${fmt(data.underlying_prev_close)}</span>
+              </span>
+            )}
+            {data.underlying_open != null && (
+              <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
+                Open <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>${fmt(data.underlying_open)}</span>
+              </span>
+            )}
+            {data.underlying_vwap != null && (
+              <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }} title="VWAP computed from 1-minute bars for the current session">
+                VWAP <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>${fmt(data.underlying_vwap)}</span>
+                {data.underlying > data.underlying_vwap
+                  ? <span style={{ color: '#4ade80' }}> ↑ above</span>
+                  : <span style={{ color: '#f87171' }}> ↓ below</span>
+                }
+              </span>
+            )}
+          </div>
+
+          {/* Delta distribution rows */}
+          {data.delta_distribution && (
+            <div style={{ display: 'grid', gridTemplateColumns: '36px 1fr 1fr 1fr 1fr 1fr', gap: '2px 6px', alignItems: 'center' }}>
+              {/* Header */}
+              <div />
+              {['0–20', '21–40', '41–60', '61–80', '81–100'].map(b => (
+                <div key={b} className="text-center" style={{ fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.05em' }}>{b}Δ</div>
+              ))}
+              {/* Calls row */}
+              <div style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>CALLS</div>
+              {['0_20', '21_40', '41_60', '61_80', '81_100'].map(b => {
+                const pct = data.delta_distribution!.calls[b] ?? 0
+                return (
+                  <div key={b} className="flex flex-col items-center gap-0.5">
+                    <div style={{ width: '100%', height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', background: '#4ade80', opacity: 0.7 }} />
+                    </div>
+                    <span style={{ fontSize: 9, color: 'var(--text-dim)', lineHeight: 1 }}>{pct.toFixed(0)}%</span>
+                  </div>
+                )
+              })}
+              {/* Puts row */}
+              <div style={{ fontSize: 9, color: '#f87171', fontWeight: 600 }}>PUTS</div>
+              {['0_20', '21_40', '41_60', '61_80', '81_100'].map(b => {
+                const pct = data.delta_distribution!.puts[b] ?? 0
+                return (
+                  <div key={b} className="flex flex-col items-center gap-0.5">
+                    <div style={{ width: '100%', height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', background: '#f87171', opacity: 0.7 }} />
+                    </div>
+                    <span style={{ fontSize: 9, color: 'var(--text-dim)', lineHeight: 1 }}>{pct.toFixed(0)}%</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── OI unavailable banner (weekends / pre-open blackout) ─────────── */}
+      {allZeroOI && (
+        <div
+          className="flex items-start gap-3 px-5 py-3 shrink-0"
+          style={{
+            borderBottom: '1px solid var(--border)',
+            background: 'rgba(251,191,36,0.05)',
+            borderLeft: '3px solid rgba(251,191,36,0.4)',
+          }}
+        >
+          <span style={{ fontSize: 18 }}>🌙</span>
+          <div>
+            <div className="text-xs font-semibold" style={{ color: '#fbbf24', marginBottom: 2 }}>
+              Open Interest unavailable
+            </div>
+            <div className="text-xs" style={{ color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              OCC (Options Clearing Corporation) publishes OI figures after each session close.
+              Schwab resets all OI to zero over the weekend — this is expected, not a bug.
+              GEX data will populate after <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Monday's pre-market open</span>.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Legend ───────────────────────────────────────────────────────── */}
-      {data && (
+      {data && !allZeroOI && (
         <div className="flex items-center gap-4 px-5 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
           <LegendDot color="#4ade80" label="Put GEX → support" />
           <LegendDot color="#f87171" label="Call GEX → resistance" />
@@ -413,15 +601,49 @@ export default function GexPanel() {
         </div>
       )}
 
-      {/* ── Loading ───────────────────────────────────────────────────────── */}
+      {/* ── Loading spinner ───────────────────────────────────────────────── */}
       {loading && !data && (
-        <div className="flex-1 flex items-center justify-center" style={{ color: 'var(--text-dim)' }}>
-          <span className="text-sm">Loading option chain…</span>
+        <div className="flex-1 flex flex-col items-center justify-center gap-3">
+          <div style={{
+            width: 32, height: 32, borderRadius: '50%',
+            border: '3px solid var(--border)',
+            borderTopColor: 'var(--accent-blue)',
+            animation: 'gex-spin 0.8s linear infinite',
+          }} />
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              Fetching {activeSymbol} option chain…
+            </span>
+            <span className="text-xs tabular-nums font-mono" style={{ color: 'var(--accent-blue)' }}>
+              {elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`}
+            </span>
+          </div>
+          <style>{`@keyframes gex-spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {/* ── No-data placeholder (OI blackout) ────────────────────────────── */}
+      {data && allZeroOI && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 py-12">
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', textAlign: 'center', maxWidth: 340, lineHeight: 1.7 }}>
+            Gamma bars require Open Interest data — come back after Monday's open.<br />
+            The greeks (gamma, delta) are still present in the chain; only OI is zeroed by the exchange.
+          </div>
+          {data.nearest_expiry && (
+            <div
+              className="text-xs px-3 py-2 rounded"
+              style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}
+            >
+              Nearest expiry on record: <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{data.nearest_expiry}</span>
+              {data.nearest_dte != null && ` (${data.nearest_dte}d)`}
+              {' · '}{data.strike_count} strikes fetched
+            </div>
+          )}
         </div>
       )}
 
       {/* ── Bar chart ────────────────────────────────────────────────────── */}
-      {data && (
+      {data && !allZeroOI && (
         <div className="flex-1 overflow-y-auto min-h-0 px-5 py-2">
           {/* Column headers */}
           <div
@@ -558,6 +780,36 @@ function Badge({ color, children }: { color: string; children: React.ReactNode }
       style={{ background: `${color}18`, color, fontSize: 9, fontWeight: 700, whiteSpace: 'nowrap' }}
     >
       {children}
+    </span>
+  )
+}
+
+function ExpiryBadge({ type }: { type: string }) {
+  const cfg = {
+    QUARTERLY: {
+      label: '⚡ TRIPLE WITCHING',
+      color: '#a855f7',
+      title: 'Quarterly expiry (Triple Witching) — stock options + index options + index futures expire simultaneously. Highest volume day of the quarter. Expect elevated volatility Friday and the following Monday.',
+    },
+    MONTHLY: {
+      label: '📅 MONTHLY EXPIRY',
+      color: '#f97316',
+      title: 'Standard monthly expiry (3rd Friday). Options positioning unwinds at close. Monday repositioning flows can be volatile.',
+    },
+    '0DTE': {
+      label: '🔴 0DTE',
+      color: '#f87171',
+      title: 'Options expire today — gamma is extreme and decays rapidly. Large intraday moves possible as 0DTE hedging flows dominate.',
+    },
+  }[type]
+  if (!cfg) return null
+  return (
+    <span
+      className="text-xs px-2 py-0.5 rounded font-semibold"
+      style={{ background: `${cfg.color}15`, color: cfg.color, border: `1px solid ${cfg.color}30`, fontSize: 10, whiteSpace: 'nowrap' }}
+      title={cfg.title}
+    >
+      {cfg.label}
     </span>
   )
 }

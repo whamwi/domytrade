@@ -4949,20 +4949,34 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         'put_oi'  : p_oi_total,
     }
 
-    # ── Underlying VWAP ───────────────────────────────────────────────────────
-    underlying_vwap: float | None = None
+    # ── Underlying quote context (open, prev close, VWAP) ────────────────────
+    underlying_open:       float | None = None
+    underlying_prev_close: float | None = None
+    underlying_vwap:       float | None = None
     try:
         from schwab_client import get_quotes
         qdata = get_quotes([schwab_sym])
-        q     = qdata.get(schwab_sym, {}).get('quote', qdata.get(schwab_sym, {}))
-        underlying_vwap = (
-            q.get('vwap') or q.get('VWAP') or
-            q.get('mark') or q.get('lastPrice') or q.get('last')
-        )
-        if underlying_vwap:
-            underlying_vwap = round(float(underlying_vwap), 2)
+        q = qdata.get(schwab_sym, {}).get('quote', qdata.get(schwab_sym, {}))
+        if q.get('openPrice'):
+            underlying_open = round(float(q['openPrice']), 2)
+        if q.get('closePrice'):
+            underlying_prev_close = round(float(q['closePrice']), 2)
     except Exception:
         pass
+
+    # VWAP: computed from 1-min bars — only for equities (index VWAP is meaningless,
+    # cash indices have no true volume).  Adds ~1 extra API call for transient symbols.
+    is_index_sym = display_sym in _SCHWAB_INDEX_MAP or display_sym in GEX_INDEX_SYMBOLS
+    if not is_index_sym:
+        try:
+            from schwab_client import get_candles
+            candles = get_candles(schwab_sym, lookback_days=1, freq_min=1)
+            if candles:
+                total_pv  = sum((c['high'] + c['low'] + c['close']) / 3 * c['volume'] for c in candles)
+                total_vol = sum(c['volume'] for c in candles)
+                underlying_vwap = round(total_pv / total_vol, 2) if total_vol > 0 else None
+        except Exception:
+            pass
 
     return {
         # Identity & context
@@ -4998,9 +5012,11 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         'zero_gamma_monthly' : layer_monthly['zero_gamma'],
 
         # Options flow stats
-        'pc_ratio'           : pc_ratio,
-        'delta_distribution' : delta_distribution,
-        'underlying_vwap'    : underlying_vwap,
+        'pc_ratio'             : pc_ratio,
+        'delta_distribution'   : delta_distribution,
+        'underlying_vwap'      : underlying_vwap,
+        'underlying_open'      : underlying_open,
+        'underlying_prev_close': underlying_prev_close,
 
         # Strike rows per layer — frontend switches between these for the bar chart
         'strikes'            : layer_all.get('strikes', []),
@@ -5054,9 +5070,11 @@ def _refresh_gex_indices(is_baseline: bool = False) -> None:
                     'ex_next'            : data['strikes_ex_next'],
                     'monthly'            : data['strikes_monthly'],
                     'expiry_dates'       : data.get('expiries', []),
-                    'pc_ratio'           : data.get('pc_ratio'),
-                    'delta_distribution' : data.get('delta_distribution'),
-                    'underlying_vwap'    : data.get('underlying_vwap'),
+                    'pc_ratio'             : data.get('pc_ratio'),
+                    'delta_distribution'   : data.get('delta_distribution'),
+                    'underlying_vwap'      : data.get('underlying_vwap'),
+                    'underlying_open'      : data.get('underlying_open'),
+                    'underlying_prev_close': data.get('underlying_prev_close'),
                 }),
             }
             save_gex_snapshot(row)
@@ -5102,9 +5120,12 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                     pc_ratio_stored     = raw.get('pc_ratio') if isinstance(raw, dict) else None
                     delta_dist_stored   = raw.get('delta_distribution') if isinstance(raw, dict) else None
                     vwap_stored         = raw.get('underlying_vwap') if isinstance(raw, dict) else None
+                    open_stored         = raw.get('underlying_open') if isinstance(raw, dict) else None
+                    prev_close_stored   = raw.get('underlying_prev_close') if isinstance(raw, dict) else None
                 except Exception:
                     expiry_dates = []
                     pc_ratio_stored = delta_dist_stored = vwap_stored = None
+                    open_stored = prev_close_stored = None
                 nearest = row.get('nearest_expiry', '')
                 # Always serve a live VIX — the stored vix_ref may be stale
                 # or absent (weekend baseline skipped).  Fetch is fast (~50ms).
@@ -5123,6 +5144,8 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                     'pc_ratio'             : pc_ratio_stored,
                     'delta_distribution'   : delta_dist_stored,
                     'underlying_vwap'      : vwap_stored,
+                    'underlying_open'      : open_stored,
+                    'underlying_prev_close': prev_close_stored,
                     'source'               : 'baseline' if row.get('is_daily_baseline') else 'intraday',
                 }
         except Exception as exc:
