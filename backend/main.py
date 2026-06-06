@@ -4813,8 +4813,8 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     )
 
     layer_all     = _summarize_layer(c_all,     p_all,     spot, include_strike_rows=True)
-    layer_exnext  = _summarize_layer(c_exnext,  p_exnext,  spot)
-    layer_monthly = _summarize_layer(c_monthly, p_monthly, spot)
+    layer_exnext  = _summarize_layer(c_exnext,  p_exnext,  spot, include_strike_rows=True)
+    layer_monthly = _summarize_layer(c_monthly, p_monthly, spot, include_strike_rows=True)
 
     # ── Expected 1-day move from ATM IV ───────────────────────────────────────
     expected_move_pct: float | None = None
@@ -4876,8 +4876,10 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         'put_wall_monthly'   : layer_monthly['put_wall'],
         'zero_gamma_monthly' : layer_monthly['zero_gamma'],
 
-        # Full strike rows (all-expiry layer only — used for bar chart)
+        # Strike rows per layer — frontend switches between these for the bar chart
         'strikes'            : layer_all.get('strikes', []),
+        'strikes_ex_next'    : layer_exnext.get('strikes', []),
+        'strikes_monthly'    : layer_monthly.get('strikes', []),
         'strike_count'       : len(layer_all.get('strikes', [])),
     }
 
@@ -4921,7 +4923,11 @@ def _refresh_gex_indices(is_baseline: bool = False) -> None:
                 'zero_gamma_monthly'  : data['zero_gamma_monthly'],
                 'nearest_expiry'      : data['nearest_expiry'],
                 'nearest_dte'         : data['nearest_dte'],
-                'strikes_json'        : _json.dumps(data['strikes']),
+                'strikes_json'        : _json.dumps({
+                    'all'    : data['strikes'],
+                    'ex_next': data['strikes_ex_next'],
+                    'monthly': data['strikes_monthly'],
+                }),
             }
             save_gex_snapshot(row)
             log.info('GEX snapshot saved: %s  net=%.1fM  regime=%s  %s',
@@ -4951,17 +4957,26 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
             import json as _json
             row = await asyncio.to_thread(get_latest_gex, display_sym)
             if row:
-                # Parse strikes_json back to list
-                strikes = []
+                # Parse strikes_json — new format: {"all": [...], "ex_next": [...], "monthly": [...]}
+                # Old format (plain list) treated as all-layer only for backward compat.
+                strikes_all, strikes_ex_next, strikes_monthly = [], [], []
                 try:
-                    strikes = _json.loads(row.get('strikes_json') or '[]')
+                    raw = _json.loads(row.get('strikes_json') or '{}')
+                    if isinstance(raw, list):
+                        strikes_all = raw          # legacy single-layer format
+                    else:
+                        strikes_all     = raw.get('all',     [])
+                        strikes_ex_next = raw.get('ex_next', [])
+                        strikes_monthly = raw.get('monthly', [])
                 except Exception:
                     pass
                 return {
                     **{k: v for k, v in row.items() if k not in ('strikes_json', 'id')},
-                    'strikes'     : strikes,
-                    'strike_count': len(strikes),
-                    'source'      : 'baseline' if row.get('is_daily_baseline') else 'intraday',
+                    'strikes'         : strikes_all,
+                    'strikes_ex_next' : strikes_ex_next,
+                    'strikes_monthly' : strikes_monthly,
+                    'strike_count'    : len(strikes_all),
+                    'source'          : 'baseline' if row.get('is_daily_baseline') else 'intraday',
                 }
         except Exception as exc:
             log.warning('GEX DB fetch failed for %s, falling back to live: %s', display_sym, exc)
