@@ -4559,6 +4559,23 @@ _gex_cache: dict[str, dict] = {}
 _GEX_CACHE_TTL = 300  # 5 minutes
 
 
+# Schwab requires the $ prefix for cash-settled index options
+_SCHWAB_INDEX_MAP = {
+    'SPX': '$SPX', 'NDX': '$NDX', 'RUT': '$RUT',
+    'VIX': '$VIX', 'DJX': '$DJX', 'XSP': '$XSP',
+}
+
+
+def _normalize_gex_symbol(sym: str) -> tuple[str, str]:
+    """Return (schwab_symbol, display_symbol).
+    Index options need a $ prefix on Schwab (SPX → $SPX).
+    """
+    upper = sym.upper().lstrip('$')
+    schwab_sym  = _SCHWAB_INDEX_MAP.get(upper, upper)
+    display_sym = upper   # always show clean name to user
+    return schwab_sym, display_sym
+
+
 def _compute_gex(symbol: str, strike_count: int = 50) -> dict:
     """Fetch option chain from Schwab and compute GEX metrics.
 
@@ -4576,10 +4593,11 @@ def _compute_gex(symbol: str, strike_count: int = 50) -> dict:
     """
     from schwab_client import get_option_chain
 
-    chain   = get_option_chain(symbol, strike_count=strike_count)
+    schwab_sym, display_sym = _normalize_gex_symbol(symbol)
+    chain   = get_option_chain(schwab_sym, strike_count=strike_count)
     spot    = chain.get('underlyingPrice') or chain.get('underlying', {}).get('last', 0)
     if not spot:
-        raise ValueError(f'No underlying price for {symbol}')
+        raise ValueError(f'No underlying price for {schwab_sym}')
 
     call_map = chain.get('callExpDateMap', {})
     put_map  = chain.get('putExpDateMap',  {})
@@ -4694,7 +4712,7 @@ def _compute_gex(symbol: str, strike_count: int = 50) -> dict:
 
     expiry_dates.sort()
     return {
-        'symbol'              : symbol,
+        'symbol'              : display_sym,
         'underlying'          : round(spot, 2),
         'net_gex_mm'          : total_net_gex,
         'gamma_regime'        : gamma_regime,
@@ -4722,21 +4740,22 @@ async def get_gex(ticker: str, strike_count: int = Query(50)):
         expiries[], strikes[{strike, call_gex_mm, put_gex_mm, net_gex_mm,
                              is_atm, is_call_wall, is_put_wall, is_zero_gamma}]
     """
-    sym = ticker.upper()
+    # Normalize: SPX → $SPX internally, but cache under the clean display name
+    _, display_sym = _normalize_gex_symbol(ticker)
 
     # Serve from cache if fresh
-    cached = _gex_cache.get(sym)
+    cached = _gex_cache.get(display_sym)
     if cached and (time.time() - cached['ts']) < _GEX_CACHE_TTL:
         return cached['data']
 
     try:
-        data = await asyncio.to_thread(_compute_gex, sym, strike_count)
+        data = await asyncio.to_thread(_compute_gex, display_sym, strike_count)
     except Exception as exc:
         import logging
-        logging.getLogger(__name__).warning('GEX compute error for %s: %s', sym, exc)
+        logging.getLogger(__name__).warning('GEX compute error for %s: %s', display_sym, exc)
         return JSONResponse({'error': str(exc)}, status_code=500)
 
-    _gex_cache[sym] = {'data': data, 'ts': time.time()}
+    _gex_cache[display_sym] = {'data': data, 'ts': time.time()}
     return data
 
 
