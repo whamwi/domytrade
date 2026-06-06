@@ -4551,6 +4551,195 @@ async def _refresh_global_markets() -> dict:
     return {'asia': asia, 'fx': fx}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# GEX  —  Gamma Exposure by strike (Schwab option chain)
+# ══════════════════════════════════════════════════════════════════════════════
+# Cache: {ticker: {'data': {...}, 'ts': float}}  TTL = 5 minutes
+_gex_cache: dict[str, dict] = {}
+_GEX_CACHE_TTL = 300  # 5 minutes
+
+
+def _compute_gex(symbol: str, strike_count: int = 50) -> dict:
+    """Fetch option chain from Schwab and compute GEX metrics.
+
+    GEX formula (SpotGamma convention):
+        call_gex_mm  = +call_OI × call_gamma × 100 × spot / 1_000_000
+        put_gex_mm   = -put_OI  × put_gamma  × 100 × spot / 1_000_000
+        net_gex_mm   = call_gex_mm + put_gex_mm
+
+    Positive net GEX → dealers long delta → damping → tight range
+    Negative net GEX → dealers short delta → amplifying → volatile
+
+    Call Wall  = strike with highest call gamma notional (resistance)
+    Put Wall   = strike with highest put gamma notional (support)
+    Zero Gamma = interpolated price where cumulative GEX crosses zero
+    """
+    from schwab_client import get_option_chain
+
+    chain   = get_option_chain(symbol, strike_count=strike_count)
+    spot    = chain.get('underlyingPrice') or chain.get('underlying', {}).get('last', 0)
+    if not spot:
+        raise ValueError(f'No underlying price for {symbol}')
+
+    call_map = chain.get('callExpDateMap', {})
+    put_map  = chain.get('putExpDateMap',  {})
+
+    # ── Aggregate GEX across ALL expiries ──────────────────────────────────────
+    # Per strike: sum gamma × OI across every expiry (weighted by gamma)
+    call_gex_raw: dict[float, float] = {}  # strike → call gamma notional ($M)
+    put_gex_raw:  dict[float, float] = {}  # strike → put gamma notional ($M)
+
+    expiry_dates: list[str] = []
+
+    for exp_key, strikes_data in call_map.items():
+        date_part = exp_key.split(':')[0]
+        if date_part not in expiry_dates:
+            expiry_dates.append(date_part)
+        for strike_str, opt_list in strikes_data.items():
+            strike = float(strike_str)
+            opt    = opt_list[0] if opt_list else {}
+            oi     = opt.get('openInterest') or 0
+            gamma  = opt.get('gamma') or 0
+            gex    = oi * gamma * 100 * spot / 1_000_000   # $M
+            call_gex_raw[strike] = call_gex_raw.get(strike, 0.0) + gex
+
+    for exp_key, strikes_data in put_map.items():
+        date_part = exp_key.split(':')[0]
+        if date_part not in expiry_dates:
+            expiry_dates.append(date_part)
+        for strike_str, opt_list in strikes_data.items():
+            strike = float(strike_str)
+            opt    = opt_list[0] if opt_list else {}
+            oi     = opt.get('openInterest') or 0
+            gamma  = opt.get('gamma') or 0
+            gex    = oi * gamma * 100 * spot / 1_000_000   # $M
+            put_gex_raw[strike] = put_gex_raw.get(strike, 0.0) + gex
+
+    # ── Build per-strike rows ──────────────────────────────────────────────────
+    all_strikes = sorted(set(call_gex_raw) | set(put_gex_raw))
+    rows: list[dict] = []
+    for s in all_strikes:
+        c_gex = call_gex_raw.get(s, 0.0)
+        p_gex = put_gex_raw.get(s,  0.0)
+        net   = round(c_gex - p_gex, 4)
+        rows.append({
+            'strike'      : s,
+            'call_gex_mm' : round(c_gex, 4),
+            'put_gex_mm'  : round(p_gex, 4),
+            'net_gex_mm'  : net,
+            'is_atm'      : abs(s - spot) <= (spot * 0.005),   # within 0.5%
+        })
+
+    if not rows:
+        raise ValueError(f'No option chain rows for {symbol}')
+
+    # ── Summary metrics ────────────────────────────────────────────────────────
+    total_net_gex = round(sum(r['net_gex_mm'] for r in rows), 2)
+    gamma_regime  = 'POSITIVE' if total_net_gex >= 0 else 'NEGATIVE'
+
+    # Call Wall = highest call gamma notional (resistance above spot)
+    call_wall_row  = max(rows, key=lambda r: r['call_gex_mm'])
+    call_wall      = call_wall_row['strike']
+
+    # Put Wall = highest put gamma notional (support below spot)
+    put_wall_row   = max(rows, key=lambda r: r['put_gex_mm'])
+    put_wall       = put_wall_row['strike']
+
+    # Mark walls on rows
+    for r in rows:
+        r['is_call_wall'] = (r['strike'] == call_wall)
+        r['is_put_wall']  = (r['strike'] == put_wall)
+
+    # Zero Gamma Level — interpolate where cumulative net GEX crosses zero
+    cum = 0.0
+    zero_gamma_level: float | None = None
+    prev_s, prev_cum = None, 0.0
+    for r in rows:
+        cum += r['net_gex_mm']
+        if prev_cum < 0 <= cum and prev_s is not None:
+            # Linear interpolation
+            frac = abs(prev_cum) / (abs(prev_cum) + abs(cum))
+            zero_gamma_level = round(prev_s + frac * (r['strike'] - prev_s), 2)
+            break
+        if prev_cum > 0 >= cum and prev_s is not None:
+            frac = abs(prev_cum) / (abs(prev_cum) + abs(cum))
+            zero_gamma_level = round(prev_s + frac * (r['strike'] - prev_s), 2)
+            break
+        prev_s, prev_cum = r['strike'], cum
+
+    # Mark zero gamma level on rows
+    if zero_gamma_level is not None:
+        for r in rows:
+            r['is_zero_gamma'] = (
+                abs(r['strike'] - zero_gamma_level) <=
+                abs(rows[1]['strike'] - rows[0]['strike']) * 0.6
+            )
+    else:
+        for r in rows:
+            r['is_zero_gamma'] = False
+
+    # Expected 1-day move: ≈ 68% confidence interval from near-ATM IV
+    # Use ATM call IV as proxy for expected move: spot × IV × sqrt(1/252)
+    expected_move_pct: float | None = None
+    try:
+        atm_exp  = sorted(call_map.keys())[0]
+        atm_opts = sorted(call_map[atm_exp].items(), key=lambda kv: abs(float(kv[0]) - spot))
+        if atm_opts:
+            iv = atm_opts[0][1][0].get('volatility', 0) or 0
+            if iv > 0:
+                import math
+                expected_move_pct = round(iv / 100 * math.sqrt(1 / 252) * 100, 2)
+    except Exception:
+        pass
+
+    expiry_dates.sort()
+    return {
+        'symbol'              : symbol,
+        'underlying'          : round(spot, 2),
+        'net_gex_mm'          : total_net_gex,
+        'gamma_regime'        : gamma_regime,
+        'call_wall'           : call_wall,
+        'put_wall'            : put_wall,
+        'zero_gamma_level'    : zero_gamma_level,
+        'expected_move_pct'   : expected_move_pct,
+        'expected_move_pts'   : round(spot * expected_move_pct / 100, 2) if expected_move_pct else None,
+        'expiries'            : expiry_dates[:6],
+        'strikes'             : rows,
+        'strike_count'        : len(rows),
+    }
+
+
+@app.get('/api/gex/{ticker}')
+async def get_gex(ticker: str, strike_count: int = Query(50)):
+    """Gamma Exposure (GEX) by strike for any optionable equity or ETF.
+
+    Fetches live option chain from Schwab, computes dealer gamma exposure per
+    strike across all expiries.  Results are cached for 5 minutes.
+
+    Response:
+        symbol, underlying, net_gex_mm, gamma_regime (POSITIVE/NEGATIVE),
+        call_wall, put_wall, zero_gamma_level, expected_move_pct,
+        expiries[], strikes[{strike, call_gex_mm, put_gex_mm, net_gex_mm,
+                             is_atm, is_call_wall, is_put_wall, is_zero_gamma}]
+    """
+    sym = ticker.upper()
+
+    # Serve from cache if fresh
+    cached = _gex_cache.get(sym)
+    if cached and (time.time() - cached['ts']) < _GEX_CACHE_TTL:
+        return cached['data']
+
+    try:
+        data = await asyncio.to_thread(_compute_gex, sym, strike_count)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning('GEX compute error for %s: %s', sym, exc)
+        return JSONResponse({'error': str(exc)}, status_code=500)
+
+    _gex_cache[sym] = {'data': data, 'ts': time.time()}
+    return data
+
+
 @app.get('/api/global-markets')
 async def get_global_markets():
     """Asian market daily close change % and FX risk-on/off pairs.

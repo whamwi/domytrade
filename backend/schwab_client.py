@@ -395,6 +395,48 @@ def get_session_bars(symbol: str) -> list[dict]:
     return resp.json().get('candles', [])
 
 
+CHAINS_URL = 'https://api.schwabapi.com/marketdata/v1/chains'
+
+
+def get_option_chain(
+    symbol: str,
+    strike_count: int = 50,
+    from_date: str | None = None,   # YYYY-MM-DD  — filter by expiry start
+    to_date:   str | None = None,   # YYYY-MM-DD  — filter by expiry end
+) -> dict:
+    """Fetch full option chain for a symbol from Schwab marketdata/v1/chains.
+
+    Returns the raw Schwab response dict containing:
+        underlyingPrice, callExpDateMap, putExpDateMap
+    Each expiry map: { 'YYYY-MM-DD:DTE': { strike_str: [option_obj] } }
+    Each option_obj includes: bid, ask, openInterest, delta, gamma, theta, vega,
+        impliedVolatility, daysToExpiration, inTheMoney, mark, totalVolume.
+    """
+    params: dict = {
+        'symbol'                : symbol,
+        'contractType'          : 'ALL',
+        'strikeCount'           : strike_count,
+        'includeUnderlyingQuote': 'true',
+        'strategy'              : 'SINGLE',
+        'optionType'            : 'ALL',
+    }
+    if from_date:
+        params['fromDate'] = from_date
+    if to_date:
+        params['toDate'] = to_date
+
+    resp = requests.get(CHAINS_URL, headers=_headers(), params=params, timeout=30)
+    if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
+        resp = requests.get(CHAINS_URL, headers=_headers(), params=params, timeout=30)
+    if not resp.ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            'get_option_chain(%s) HTTP %s: %s', symbol, resp.status_code, resp.text[:300])
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_current_hour_ohlc(symbol: str) -> dict | None:
     """Fetch the current ET hour's running OHLC from 1-min bars."""
     from zoneinfo import ZoneInfo

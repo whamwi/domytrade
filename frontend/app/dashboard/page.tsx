@@ -10,6 +10,7 @@ import SectorStrip, { SectorItem } from './components/SectorStrip'
 import BriefingModal from './components/BriefingModal'
 import AlertToast from './components/AlertToast'
 import MarketProfile from './components/MarketProfile'
+import GexPanel from './components/GexPanel'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
 import AskAI from './components/AskAI'
@@ -507,8 +508,13 @@ export default function DashboardPage() {
         <MarketProfile />
       </div>
 
+      {/* GEX tab */}
+      <div className="flex-1 min-w-0 overflow-hidden" style={{ display: activeTab === 'gex' ? undefined : 'none' }}>
+        <GexPanel />
+      </div>
+
       {/* Main content — dashboard tab */}
-      <div className="flex flex-col flex-1 min-w-0" style={{ display: activeTab === 'agent' ? 'none' : undefined }}>
+      <div className="flex flex-col flex-1 min-w-0" style={{ display: (activeTab === 'agent' || activeTab === 'gex') ? 'none' : undefined }}>
         {/* Header */}
         <header
           className="flex items-center gap-4 px-5 py-3 shrink-0"

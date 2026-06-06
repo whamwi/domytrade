@@ -112,6 +112,40 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
           </svg>
         </button>
 
+        {/* GEX nav item */}
+        <button
+          title="GEX — Gamma Exposure"
+          className="flex items-center justify-center w-full rounded-lg py-2.5 transition-colors"
+          style={{
+            background: activeTab === 'gex' ? 'var(--accent-blue-dim)' : 'transparent',
+            color: activeTab === 'gex' ? 'var(--accent-blue)' : 'var(--text-muted)',
+          }}
+          onMouseEnter={(e) => {
+            if (activeTab !== 'gex') {
+              e.currentTarget.style.background = 'var(--bg-row)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeTab !== 'gex') {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-muted)'
+            }
+          }}
+          onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.set('tab', 'gex')
+            window.history.pushState({}, '', url)
+            window.dispatchEvent(new Event('popstate'))
+          }}
+        >
+          {/* Gamma / options wave icon */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 12 Q4 4 6 12 Q8 20 10 12 Q12 4 14 12 Q16 20 18 12 Q20 4 22 12" />
+            <line x1="2" y1="18" x2="22" y2="18" strokeDasharray="2 2" strokeWidth="1.2" />
+          </svg>
+        </button>
+
         {/* Settings nav item */}
         <button
           title="Settings"
