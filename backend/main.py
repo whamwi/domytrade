@@ -2330,9 +2330,10 @@ async def background_loop():
                     log.warning('VBH weekly stocks recompute error: %s', e)
                 last_vbh_stocks_vbh_run = _today
 
-            # 6:00 AM ET — GEX daily baseline snapshot (full official OI, pre-market)
-            # Runs just after VBH update so Schwab token is already fresh.
-            if _et_hhmm == 6 * 60 and last_gex_baseline_run != _today:
+            # 6:00 AM ET on weekdays — GEX daily baseline snapshot (full official OI, pre-market)
+            # Weekday check required: OCC only reports OI after session close — Schwab returns
+            # zero OI all weekend, so a weekend baseline snapshot is useless noise.
+            if _et_hhmm == 6 * 60 and last_gex_baseline_run != _today and _weekday < 5:
                 try:
                     await asyncio.to_thread(_refresh_gex_indices, True)
                     log.info('GEX daily baseline snapshots saved for %s', GEX_INDEX_SYMBOLS)
