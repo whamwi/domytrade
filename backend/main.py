@@ -4959,7 +4959,7 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
                 delta = float(opt.get('delta') or 0)
                 c_vol_total += vol
                 c_oi_total  += oi
-                c_dist[_dbucket(delta)] += vol
+                c_dist[_dbucket(delta)] += oi   # OI-based distribution
 
     for _, strikes_dict in stats_put_map.items():
         for _, opts in strikes_dict.items():
@@ -4969,53 +4969,22 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
                 delta = float(opt.get('delta') or 0)
                 p_vol_total += vol
                 p_oi_total  += oi
-                p_dist[_dbucket(delta)] += vol
+                p_dist[_dbucket(delta)] += oi   # OI-based distribution
 
-    # Volume-based P/C (matches TOS); fall back to OI-based if no volume yet (pre-market/weekend)
-    if c_vol_total > 0 or p_vol_total > 0:
-        pc_ratio = round(p_vol_total / c_vol_total, 3) if c_vol_total > 0 else None
-    else:
-        pc_ratio = round(p_oi_total / c_oi_total, 3) if c_oi_total > 0 else None
+    # OI-based P/C — Schwab's API caps strike count so volume numbers are partial;
+    # OI near ATM is representative of full-chain positioning (most contracts cluster near ATM).
+    pc_ratio = round(p_oi_total / c_oi_total, 3) if c_oi_total > 0 else None
 
     def _pct(dist: dict, total: int) -> dict:
         return {b: round(dist[b] / total * 100, 1) if total > 0 else 0.0 for b in DBUCKETS}
 
-    # If no volume (weekend/pre-market), fall back to OI for distribution
-    if c_vol_total > 0 or p_vol_total > 0:
-        delta_distribution = {
-            'calls'      : _pct(c_dist, c_vol_total),
-            'puts'       : _pct(p_dist, p_vol_total),
-            'call_vol'   : c_vol_total,
-            'put_vol'    : p_vol_total,
-            'call_oi'    : c_oi_total,
-            'put_oi'     : p_oi_total,
-            'volume_based': True,
-        }
-    else:
-        # Pre-market / weekend — no volume yet, show OI distribution as fallback
-        c_oi_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
-        p_oi_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
-        for _, strikes_dict in stats_call_map.items():
-            for _, opts in strikes_dict.items():
-                for opt in opts:
-                    oi    = int(opt.get('openInterest') or 0)
-                    delta = float(opt.get('delta') or 0)
-                    c_oi_dist[_dbucket(delta)] += oi
-        for _, strikes_dict in stats_put_map.items():
-            for _, opts in strikes_dict.items():
-                for opt in opts:
-                    oi    = int(opt.get('openInterest') or 0)
-                    delta = float(opt.get('delta') or 0)
-                    p_oi_dist[_dbucket(delta)] += oi
-        delta_distribution = {
-            'calls'       : _pct(c_oi_dist, c_oi_total),
-            'puts'        : _pct(p_oi_dist, p_oi_total),
-            'call_vol'    : 0,
-            'put_vol'     : 0,
-            'call_oi'     : c_oi_total,
-            'put_oi'      : p_oi_total,
-            'volume_based': False,
-        }
+    delta_distribution = {
+        'calls'       : _pct(c_dist, c_oi_total),
+        'puts'        : _pct(p_dist, p_oi_total),
+        'call_oi'     : c_oi_total,
+        'put_oi'      : p_oi_total,
+        'volume_based': False,
+    }
 
     # ── Underlying quote context (open, prev close, VWAP) ────────────────────
     underlying_open:       float | None = None

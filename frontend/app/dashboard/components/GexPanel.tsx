@@ -486,13 +486,8 @@ export default function GexPanel() {
               <span style={{ color: 'var(--text-dim)' }}> delta distribution</span>
             </span>
             {data.pc_ratio != null && data.delta_distribution && (
-              <span className="text-xs" title={data.delta_distribution.volume_based
-                ? 'Put/Call ratio by today\'s volume — matches TOS Today\'s Options Statistics'
-                : 'Put/Call ratio by Open Interest (pre-market / no volume yet)'
-              }>
-                <span style={{ color: 'var(--text-dim)' }}>
-                  P/C {data.delta_distribution.volume_based ? '(Vol)' : '(OI)'}{' '}
-                </span>
+              <span className="text-xs" title="Put/Call ratio by Open Interest — shows accumulated structural positioning. OI reflects who is positioned where, not just today's activity.">
+                <span style={{ color: 'var(--text-dim)' }}>P/C (OI) </span>
                 <span
                   className="font-bold tabular-nums"
                   style={{ color: data.pc_ratio > 1.2 ? '#f87171' : data.pc_ratio < 0.8 ? '#4ade80' : 'var(--text-muted)' }}
@@ -508,31 +503,13 @@ export default function GexPanel() {
               <>
                 <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
                   <span style={{ color: '#4ade80', fontWeight: 600 }}>▲ Calls </span>
-                  {data.delta_distribution.volume_based && (
-                    <><span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_vol / 1000).toFixed(0)}K</span>
-                    <span style={{ color: 'var(--text-dim)' }}> vol</span>
-                    <span style={{ color: 'var(--text-dim)' }}> · </span>
-                    <span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K</span>
-                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
-                  )}
-                  {!data.delta_distribution.volume_based && (
-                    <><span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K</span>
-                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
-                  )}
+                  <span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K</span>
+                  <span style={{ color: 'var(--text-dim)' }}> OI</span>
                 </span>
                 <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
                   <span style={{ color: '#f87171', fontWeight: 600 }}>▼ Puts </span>
-                  {data.delta_distribution.volume_based && (
-                    <><span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_vol / 1000).toFixed(0)}K</span>
-                    <span style={{ color: 'var(--text-dim)' }}> vol</span>
-                    <span style={{ color: 'var(--text-dim)' }}> · </span>
-                    <span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K</span>
-                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
-                  )}
-                  {!data.delta_distribution.volume_based && (
-                    <><span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K</span>
-                    <span style={{ color: 'var(--text-dim)' }}> OI</span></>
-                  )}
+                  <span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K</span>
+                  <span style={{ color: 'var(--text-dim)' }}> OI</span>
                 </span>
               </>
             )}
