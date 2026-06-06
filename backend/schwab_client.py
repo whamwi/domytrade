@@ -400,7 +400,7 @@ CHAINS_URL = 'https://api.schwabapi.com/marketdata/v1/chains'
 
 def get_option_chain(
     symbol: str,
-    strike_count: int = 50,
+    strike_count: int | None = 50,  # None = omit param → Schwab returns all strikes
     from_date: str | None = None,   # YYYY-MM-DD  — filter by expiry start
     to_date:   str | None = None,   # YYYY-MM-DD  — filter by expiry end
 ) -> dict:
@@ -411,15 +411,19 @@ def get_option_chain(
     Each expiry map: { 'YYYY-MM-DD:DTE': { strike_str: [option_obj] } }
     Each option_obj includes: bid, ask, openInterest, delta, gamma, theta, vega,
         impliedVolatility, daysToExpiration, inTheMoney, mark, totalVolume.
+
+    Pass strike_count=None to omit the limit and fetch all available strikes
+    (needed for accurate P/C and delta distribution statistics).
     """
     params: dict = {
         'symbol'                : symbol,
         'contractType'          : 'ALL',
-        'strikeCount'           : strike_count,
         'includeUnderlyingQuote': 'true',
         'strategy'              : 'SINGLE',
         'optionType'            : 'ALL',
     }
+    if strike_count is not None:
+        params['strikeCount'] = strike_count
     if from_date:
         params['fromDate'] = from_date
     if to_date:

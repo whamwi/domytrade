@@ -4845,6 +4845,8 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     from schwab_client import get_option_chain
 
     schwab_sym, display_sym = _normalize_gex_symbol(symbol)
+
+    # GEX chain — limited strike range for chart bars (fast, near-ATM only)
     chain = get_option_chain(schwab_sym, strike_count=strike_count)
     spot  = chain.get('underlyingPrice') or 0
     if not spot:
@@ -4852,6 +4854,22 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
 
     call_map = chain.get('callExpDateMap', {})
     put_map  = chain.get('putExpDateMap',  {})
+
+    # Stats chain — no strike limit so P/C ratio and delta distribution count ALL
+    # strikes (matching TOS "Today's Options Statistics"). Index symbols skip this
+    # since they have huge chains and GEX data is sufficient.
+    is_index_sym = display_sym in _SCHWAB_INDEX_MAP or display_sym in GEX_INDEX_SYMBOLS
+    if is_index_sym:
+        stats_call_map = call_map
+        stats_put_map  = put_map
+    else:
+        try:
+            wide_chain     = get_option_chain(schwab_sym, strike_count=None)
+            stats_call_map = wide_chain.get('callExpDateMap', {}) or call_map
+            stats_put_map  = wide_chain.get('putExpDateMap',  {}) or put_map
+        except Exception:
+            stats_call_map = call_map
+            stats_put_map  = put_map
 
     # ── Collect and classify all expiry dates ─────────────────────────────────
     all_dates: list[str] = sorted(
@@ -4924,7 +4942,7 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     c_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
     p_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
 
-    for _, strikes_dict in call_map.items():
+    for _, strikes_dict in stats_call_map.items():
         for _, opts in strikes_dict.items():
             for opt in opts:
                 vol   = int(opt.get('totalVolume') or 0)
@@ -4934,7 +4952,7 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
                 c_oi_total  += oi
                 c_dist[_dbucket(delta)] += vol
 
-    for _, strikes_dict in put_map.items():
+    for _, strikes_dict in stats_put_map.items():
         for _, opts in strikes_dict.items():
             for opt in opts:
                 vol   = int(opt.get('totalVolume') or 0)
@@ -4968,13 +4986,13 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         # Pre-market / weekend — no volume yet, show OI distribution as fallback
         c_oi_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
         p_oi_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
-        for _, strikes_dict in call_map.items():
+        for _, strikes_dict in stats_call_map.items():
             for _, opts in strikes_dict.items():
                 for opt in opts:
                     oi    = int(opt.get('openInterest') or 0)
                     delta = float(opt.get('delta') or 0)
                     c_oi_dist[_dbucket(delta)] += oi
-        for _, strikes_dict in put_map.items():
+        for _, strikes_dict in stats_put_map.items():
             for _, opts in strikes_dict.items():
                 for opt in opts:
                     oi    = int(opt.get('openInterest') or 0)
