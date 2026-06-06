@@ -4710,11 +4710,13 @@ def _classify_iv_environment(vix: float | None) -> str:
 
 
 def _get_vix() -> float | None:
-    """Fetch live VIX from Schwab. Returns None on failure."""
+    """Fetch live VIX from Schwab. Tries $VIX first, falls back to $VIX.X."""
     try:
         from schwab_client import get_quotes
-        q = get_quotes(['$VIX.X'])
-        return float(q.get('$VIX.X', {}).get('last') or 0) or None
+        q = get_quotes(['$VIX', '$VIX.X'])
+        val = (q.get('$VIX', {}).get('last')
+               or q.get('$VIX.X', {}).get('last'))
+        return float(val) if val else None
     except Exception:
         return None
 
@@ -5035,12 +5037,18 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                 except Exception:
                     expiry_dates = []
                 nearest = row.get('nearest_expiry', '')
+                # Always serve a live VIX — the stored vix_ref may be stale
+                # or absent (weekend baseline skipped).  Fetch is fast (~50ms).
+                live_vix = await asyncio.to_thread(_get_vix)
+                vix_out  = live_vix or row.get('vix_ref')
                 return {
                     **{k: v for k, v in row.items() if k not in ('strikes_json', 'id')},
                     'strikes'              : strikes_all,
                     'strikes_ex_next'      : strikes_ex_next,
                     'strikes_monthly'      : strikes_monthly,
                     'strike_count'         : len(strikes_all),
+                    'vix_ref'              : vix_out,
+                    'iv_environment'       : _classify_iv_environment(vix_out),
                     'expiry_type'          : _classify_expiry_type(nearest, expiry_dates or None),
                     'is_post_expiry_monday': _is_post_expiry_monday(),
                     'source'               : 'baseline' if row.get('is_daily_baseline') else 'intraday',
