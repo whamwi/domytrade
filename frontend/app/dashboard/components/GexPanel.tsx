@@ -71,10 +71,13 @@ interface GexData {
   underlying_open?: number | null
   underlying_prev_close?: number | null
   delta_distribution?: {
-    calls: Record<string, number>
-    puts:  Record<string, number>
-    call_oi: number
-    put_oi:  number
+    calls:        Record<string, number>
+    puts:         Record<string, number>
+    call_vol:     number
+    put_vol:      number
+    call_oi:      number
+    put_oi:       number
+    volume_based: boolean
   } | null
 }
 
@@ -475,9 +478,20 @@ export default function GexPanel() {
           {/* Top row: P/C (OI), OI totals, price context */}
           <div className="flex items-center gap-4 mb-2 flex-wrap">
             <span className="text-xs font-semibold" style={{ color: 'var(--text-dim)', letterSpacing: '0.1em' }}>OPTIONS FLOW</span>
-            {data.pc_ratio != null && (
-              <span className="text-xs" title="Put/Call ratio by Open Interest (structural positioning). TOS shows volume-based P/C which reflects today's trading activity.">
-                <span style={{ color: 'var(--text-dim)' }}>P/C (OI) </span>
+            <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
+              <span style={{ color: '#4ade80', fontWeight: 700 }}>C</span>
+              <span style={{ color: 'var(--text-dim)' }}> / </span>
+              <span style={{ color: '#f87171', fontWeight: 700 }}>P</span>
+              <span style={{ color: 'var(--text-dim)' }}> delta distribution</span>
+            </span>
+            {data.pc_ratio != null && data.delta_distribution && (
+              <span className="text-xs" title={data.delta_distribution.volume_based
+                ? 'Put/Call ratio by today\'s volume — matches TOS Today\'s Options Statistics'
+                : 'Put/Call ratio by Open Interest (pre-market / no volume yet)'
+              }>
+                <span style={{ color: 'var(--text-dim)' }}>
+                  P/C {data.delta_distribution.volume_based ? '(Vol)' : '(OI)'}{' '}
+                </span>
                 <span
                   className="font-bold tabular-nums"
                   style={{ color: data.pc_ratio > 1.2 ? '#f87171' : data.pc_ratio < 0.8 ? '#4ade80' : 'var(--text-muted)' }}
@@ -492,10 +506,20 @@ export default function GexPanel() {
             {data.delta_distribution && (
               <>
                 <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
-                  Calls <span style={{ color: '#4ade80' }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K OI</span>
+                  Calls{' '}
+                  <span style={{ color: '#4ade80' }}>
+                    {data.delta_distribution.volume_based
+                      ? `${(data.delta_distribution.call_vol / 1000).toFixed(0)}K vol`
+                      : `${(data.delta_distribution.call_oi  / 1000).toFixed(0)}K OI`}
+                  </span>
                 </span>
                 <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
-                  Puts <span style={{ color: '#f87171' }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K OI</span>
+                  Puts{' '}
+                  <span style={{ color: '#f87171' }}>
+                    {data.delta_distribution.volume_based
+                      ? `${(data.delta_distribution.put_vol / 1000).toFixed(0)}K vol`
+                      : `${(data.delta_distribution.put_oi  / 1000).toFixed(0)}K OI`}
+                  </span>
                 </span>
               </>
             )}
@@ -520,42 +544,50 @@ export default function GexPanel() {
             )}
           </div>
 
-          {/* Delta distribution rows */}
-          {data.delta_distribution && (
-            <div style={{ display: 'grid', gridTemplateColumns: '36px 1fr 1fr 1fr 1fr 1fr', gap: '2px 6px', alignItems: 'center' }}>
-              {/* Header */}
-              <div />
-              {['0–20', '21–40', '41–60', '61–80', '81–100'].map(b => (
-                <div key={b} className="text-center" style={{ fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.05em' }}>{b}Δ</div>
-              ))}
-              {/* Calls row */}
-              <div style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>CALLS</div>
-              {['0_20', '21_40', '41_60', '61_80', '81_100'].map(b => {
-                const pct = data.delta_distribution!.calls[b] ?? 0
-                return (
-                  <div key={b} className="flex flex-col items-center gap-0.5">
-                    <div style={{ width: '100%', height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{ width: `${pct}%`, height: '100%', background: '#4ade80', opacity: 0.7 }} />
+          {/* Delta distribution — 5 bucket columns */}
+          {data.delta_distribution && (() => {
+            const BUCKETS = ['0_20', '21_40', '41_60', '61_80', '81_100'] as const
+            const LABELS  = ['0–20Δ', '21–40Δ', '41–60Δ', '61–80Δ', '81–100Δ']
+            const allPcts = BUCKETS.flatMap(b => [
+              data.delta_distribution!.calls[b] ?? 0,
+              data.delta_distribution!.puts[b]  ?? 0,
+            ])
+            const maxPct = Math.max(...allPcts, 1)
+            return (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0 10px', marginTop: 6 }}>
+                {BUCKETS.map((b, i) => {
+                  const cPct = data.delta_distribution!.calls[b] ?? 0
+                  const pPct = data.delta_distribution!.puts[b]  ?? 0
+                  return (
+                    <div key={b} className="flex flex-col gap-1.5">
+                      {/* Bucket label */}
+                      <div style={{ fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.05em', textAlign: 'center' }}>
+                        {LABELS[i]}
+                      </div>
+                      {/* Call bar + % */}
+                      <div className="flex flex-col gap-0.5">
+                        <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{ width: `${(cPct / maxPct) * 100}%`, height: '100%', background: '#4ade80', opacity: 0.85 }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: '#4ade80', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                          {cPct.toFixed(0)}%
+                        </div>
+                      </div>
+                      {/* Put bar + % */}
+                      <div className="flex flex-col gap-0.5">
+                        <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{ width: `${(pPct / maxPct) * 100}%`, height: '100%', background: '#f87171', opacity: 0.85 }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: '#f87171', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                          {pPct.toFixed(0)}%
+                        </div>
+                      </div>
                     </div>
-                    <span style={{ fontSize: 9, color: 'var(--text-dim)', lineHeight: 1 }}>{pct.toFixed(0)}%</span>
-                  </div>
-                )
-              })}
-              {/* Puts row */}
-              <div style={{ fontSize: 9, color: '#f87171', fontWeight: 600 }}>PUTS</div>
-              {['0_20', '21_40', '41_60', '61_80', '81_100'].map(b => {
-                const pct = data.delta_distribution!.puts[b] ?? 0
-                return (
-                  <div key={b} className="flex flex-col items-center gap-0.5">
-                    <div style={{ width: '100%', height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{ width: `${pct}%`, height: '100%', background: '#f87171', opacity: 0.7 }} />
-                    </div>
-                    <span style={{ fontSize: 9, color: 'var(--text-dim)', lineHeight: 1 }}>{pct.toFixed(0)}%</span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
+                  )
+                })}
+              </div>
+            )
+          })()}
         </div>
       )}
 

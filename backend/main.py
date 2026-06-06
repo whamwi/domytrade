@@ -4907,7 +4907,9 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         vix = _get_vix()
     iv_env = _classify_iv_environment(vix)
 
-    # ── P/C ratio + delta distribution (across all expiries in chain) ─────────
+    # ── P/C ratio + delta distribution (volume-based, matches TOS "Today's Options Statistics") ──
+    # Uses totalVolume (today's traded contracts), NOT openInterest (accumulated positions).
+    # OI-based P/C reflects structural positioning; volume-based P/C reflects today's activity.
     def _dbucket(d: float) -> str:
         a = abs(d)
         if a <= 0.20: return '0_20'
@@ -4917,37 +4919,76 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         return '81_100'
 
     DBUCKETS = ['0_20', '21_40', '41_60', '61_80', '81_100']
-    c_oi_total = p_oi_total = 0
+    c_vol_total = p_vol_total = 0
+    c_oi_total  = p_oi_total  = 0   # kept for GEX computation reference only
     c_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
     p_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
 
     for _, strikes_dict in call_map.items():
         for _, opts in strikes_dict.items():
             for opt in opts:
+                vol   = int(opt.get('totalVolume') or 0)
                 oi    = int(opt.get('openInterest') or 0)
                 delta = float(opt.get('delta') or 0)
-                c_oi_total += oi
-                c_dist[_dbucket(delta)] += oi
+                c_vol_total += vol
+                c_oi_total  += oi
+                c_dist[_dbucket(delta)] += vol
 
     for _, strikes_dict in put_map.items():
         for _, opts in strikes_dict.items():
             for opt in opts:
+                vol   = int(opt.get('totalVolume') or 0)
                 oi    = int(opt.get('openInterest') or 0)
                 delta = float(opt.get('delta') or 0)
-                p_oi_total += oi
-                p_dist[_dbucket(delta)] += oi
+                p_vol_total += vol
+                p_oi_total  += oi
+                p_dist[_dbucket(delta)] += vol
 
-    pc_ratio = round(p_oi_total / c_oi_total, 3) if c_oi_total > 0 else None
+    # Volume-based P/C (matches TOS); fall back to OI-based if no volume yet (pre-market/weekend)
+    if c_vol_total > 0 or p_vol_total > 0:
+        pc_ratio = round(p_vol_total / c_vol_total, 3) if c_vol_total > 0 else None
+    else:
+        pc_ratio = round(p_oi_total / c_oi_total, 3) if c_oi_total > 0 else None
 
     def _pct(dist: dict, total: int) -> dict:
         return {b: round(dist[b] / total * 100, 1) if total > 0 else 0.0 for b in DBUCKETS}
 
-    delta_distribution = {
-        'calls'   : _pct(c_dist, c_oi_total),
-        'puts'    : _pct(p_dist, p_oi_total),
-        'call_oi' : c_oi_total,
-        'put_oi'  : p_oi_total,
-    }
+    # If no volume (weekend/pre-market), fall back to OI for distribution
+    if c_vol_total > 0 or p_vol_total > 0:
+        delta_distribution = {
+            'calls'      : _pct(c_dist, c_vol_total),
+            'puts'       : _pct(p_dist, p_vol_total),
+            'call_vol'   : c_vol_total,
+            'put_vol'    : p_vol_total,
+            'call_oi'    : c_oi_total,
+            'put_oi'     : p_oi_total,
+            'volume_based': True,
+        }
+    else:
+        # Pre-market / weekend — no volume yet, show OI distribution as fallback
+        c_oi_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
+        p_oi_dist: dict[str, int] = {b: 0 for b in DBUCKETS}
+        for _, strikes_dict in call_map.items():
+            for _, opts in strikes_dict.items():
+                for opt in opts:
+                    oi    = int(opt.get('openInterest') or 0)
+                    delta = float(opt.get('delta') or 0)
+                    c_oi_dist[_dbucket(delta)] += oi
+        for _, strikes_dict in put_map.items():
+            for _, opts in strikes_dict.items():
+                for opt in opts:
+                    oi    = int(opt.get('openInterest') or 0)
+                    delta = float(opt.get('delta') or 0)
+                    p_oi_dist[_dbucket(delta)] += oi
+        delta_distribution = {
+            'calls'       : _pct(c_oi_dist, c_oi_total),
+            'puts'        : _pct(p_oi_dist, p_oi_total),
+            'call_vol'    : 0,
+            'put_vol'     : 0,
+            'call_oi'     : c_oi_total,
+            'put_oi'      : p_oi_total,
+            'volume_based': False,
+        }
 
     # ── Underlying quote context (open, prev close, VWAP) ────────────────────
     underlying_open:       float | None = None
