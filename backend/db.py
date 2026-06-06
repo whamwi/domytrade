@@ -626,3 +626,83 @@ def load_vbh_stats_from_db() -> dict[str, dict[str, list[tuple]]]:
             float(row['l4'] or 0),
         )
     return result
+
+
+# ── GEX Snapshots ──────────────────────────────────────────────────────────────
+
+def save_gex_snapshot(row: dict) -> None:
+    """Insert one GEX snapshot row into gex_snapshots.
+
+    Required keys: symbol, captured_at, underlying, net_gex_mm, gamma_regime,
+    call_wall, put_wall, zero_gamma, strikes_json.
+    All other columns are optional.
+    """
+    get_db().table('gex_snapshots').insert(row).execute()
+
+
+def get_latest_gex(symbol: str) -> dict | None:
+    """Return the most recent GEX snapshot for a symbol, or None."""
+    res = (
+        get_db()
+        .table('gex_snapshots')
+        .select('*')
+        .eq('symbol', symbol.upper())
+        .order('captured_at', desc=True)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def get_latest_gex_all() -> dict[str, dict]:
+    """Return {symbol: latest_row} for all tracked GEX symbols."""
+    # Fetch last 10 rows per symbol — we only need the freshest one per symbol
+    res = (
+        get_db()
+        .table('gex_snapshots')
+        .select('*')
+        .order('captured_at', desc=True)
+        .limit(50)
+        .execute()
+    )
+    seen: dict[str, dict] = {}
+    for row in res.data:
+        sym = row['symbol']
+        if sym not in seen:
+            seen[sym] = row
+    return seen
+
+
+def get_gex_history(symbol: str, hours: int = 8) -> list[dict]:
+    """Return intraday GEX history for charting (last N hours, key metrics only)."""
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    res = (
+        get_db()
+        .table('gex_snapshots')
+        .select(
+            'captured_at,underlying,net_gex_mm,gamma_regime,'
+            'call_wall,put_wall,zero_gamma,vix_ref,iv_environment,'
+            'is_daily_baseline,is_intraday_estimate'
+        )
+        .eq('symbol', symbol.upper())
+        .gte('captured_at', cutoff)
+        .order('captured_at')
+        .execute()
+    )
+    return res.data
+
+
+def purge_old_gex_snapshots(keep_days: int = 5) -> int:
+    """Delete intraday GEX rows older than keep_days. Keeps daily baselines."""
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+    res = (
+        get_db()
+        .table('gex_snapshots')
+        .delete()
+        .eq('is_daily_baseline', False)
+        .lt('captured_at', cutoff)
+        .execute()
+    )
+    return len(res.data) if res.data else 0

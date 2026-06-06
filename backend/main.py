@@ -2171,6 +2171,9 @@ async def background_loop():
     last_vbh_stocks_vbh_run = ''   # 'YYYY-MM-DD' of last Saturday VBH recompute for stocks
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
     last_archive_run        = ''   # 'YYYY-MM-DD' of last entry_log → archive move
+    last_gex_baseline_run   = ''   # 'YYYY-MM-DD' of last 6:00 AM GEX baseline snapshot
+    last_gex_intraday_ts    = 0.0  # epoch of last 15-min GEX intraday refresh
+    GEX_INTRADAY_SECS       = 900  # 15 minutes
 
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 30s cadence
@@ -2327,10 +2330,40 @@ async def background_loop():
                     log.warning('VBH weekly stocks recompute error: %s', e)
                 last_vbh_stocks_vbh_run = _today
 
+            # 6:00 AM ET — GEX daily baseline snapshot (full official OI, pre-market)
+            # Runs just after VBH update so Schwab token is already fresh.
+            if _et_hhmm == 6 * 60 and last_gex_baseline_run != _today:
+                try:
+                    await asyncio.to_thread(_refresh_gex_indices, True)
+                    log.info('GEX daily baseline snapshots saved for %s', GEX_INDEX_SYMBOLS)
+                except Exception as e:
+                    log.warning('GEX baseline error: %s', e)
+                last_gex_baseline_run = _today
+
             # 6:00 AM ET — refresh stock fundamental profiles (yfinance)
             if _et_hhmm == 6 * 60 and last_profiles_run != _today:
                 asyncio.create_task(refresh_stock_profiles())
                 last_profiles_run = _today
+
+            # Every 15 min during RTH (9:30 AM – 4:00 PM ET) — GEX intraday estimate
+            # Uses live Schwab chain; volume proxies OI changes — approximate but directional.
+            _is_rth = 9 * 60 + 30 <= _et_hhmm <= 16 * 60
+            if _is_rth and (time.time() - last_gex_intraday_ts) >= GEX_INTRADAY_SECS:
+                try:
+                    await asyncio.to_thread(_refresh_gex_indices, False)
+                except Exception as e:
+                    log.warning('GEX intraday refresh error: %s', e)
+                last_gex_intraday_ts = time.time()
+
+            # Purge old intraday GEX rows (keep 5 days) — runs with daily candle purge
+            if time.time() - last_candle_purge < 5:   # candle purge just ran
+                try:
+                    from db import purge_old_gex_snapshots
+                    purged = await asyncio.to_thread(purge_old_gex_snapshots, 5)
+                    if purged:
+                        log.info('Purged %d old GEX intraday rows', purged)
+                except Exception:
+                    pass
 
             if time.time() - last_daily_refresh >= 86400:   # full re-sync once per day
                 asyncio.create_task(refresh_daily_candles(incremental=False))
@@ -4554,12 +4587,24 @@ async def _refresh_global_markets() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 # GEX  —  Gamma Exposure by strike (Schwab option chain)
 # ══════════════════════════════════════════════════════════════════════════════
-# Cache: {ticker: {'data': {...}, 'ts': float}}  TTL = 5 minutes
-_gex_cache: dict[str, dict] = {}
-_GEX_CACHE_TTL = 300  # 5 minutes
+#
+# Architecture:
+#   DB-tracked (scheduled): SPX, NDX, RUT — baseline 6am ET + 15-min RTH refresh
+#   Transient (on-demand):  any other ticker — computed live, 5-min memory cache
+#
+# Three expiry layers per snapshot:
+#   all      — full aggregate across all expirations
+#   ex_next  — excluding nearest expiry (removes 0DTE for SPX; nearest weekly for NDX/RUT)
+#   monthly  — only 3rd-Friday monthly expirations (structural backdrop)
 
+# Symbols tracked in DB — these are fetched on schedule and served from Supabase
+GEX_INDEX_SYMBOLS = ('SPX', 'NDX', 'RUT')
 
-# Schwab requires the $ prefix for cash-settled index options
+# Transient cache for on-demand symbols (non-index tickers like AMZN)
+_gex_transient_cache: dict[str, dict] = {}
+_GEX_TRANSIENT_TTL = 300   # 5 minutes
+
+# Schwab requires $ prefix for cash-settled index options
 _SCHWAB_INDEX_MAP = {
     'SPX': '$SPX', 'NDX': '$NDX', 'RUT': '$RUT',
     'VIX': '$VIX', 'DJX': '$DJX', 'XSP': '$XSP',
@@ -4567,196 +4612,389 @@ _SCHWAB_INDEX_MAP = {
 
 
 def _normalize_gex_symbol(sym: str) -> tuple[str, str]:
-    """Return (schwab_symbol, display_symbol).
-    Index options need a $ prefix on Schwab (SPX → $SPX).
-    """
-    upper = sym.upper().lstrip('$')
+    """Return (schwab_symbol, display_symbol). SPX → $SPX etc."""
+    upper       = sym.upper().lstrip('$')
     schwab_sym  = _SCHWAB_INDEX_MAP.get(upper, upper)
-    display_sym = upper   # always show clean name to user
+    display_sym = upper
     return schwab_sym, display_sym
 
 
-def _compute_gex(symbol: str, strike_count: int = 50) -> dict:
-    """Fetch option chain from Schwab and compute GEX metrics.
+def _is_third_friday(date_str: str) -> bool:
+    """Return True if date_str (YYYY-MM-DD) is the 3rd Friday of its month."""
+    from datetime import date as _date
+    try:
+        d = _date.fromisoformat(date_str)
+    except ValueError:
+        return False
+    if d.weekday() != 4:   # not a Friday
+        return False
+    friday_count = sum(
+        1 for day in range(1, d.day + 1)
+        if _date(d.year, d.month, day).weekday() == 4
+    )
+    return friday_count == 3
 
-    GEX formula (SpotGamma convention):
-        call_gex_mm  = +call_OI × call_gamma × 100 × spot / 1_000_000
-        put_gex_mm   = -put_OI  × put_gamma  × 100 × spot / 1_000_000
-        net_gex_mm   = call_gex_mm + put_gex_mm
 
-    Positive net GEX → dealers long delta → damping → tight range
-    Negative net GEX → dealers short delta → amplifying → volatile
+def _classify_iv_environment(vix: float | None) -> str:
+    """Map VIX level to IV environment label."""
+    if vix is None:
+        return 'UNKNOWN'
+    if vix < 15:
+        return 'LOW'
+    if vix < 25:
+        return 'NORMAL'
+    if vix < 35:
+        return 'HIGH'
+    return 'EXTREME'
 
-    Call Wall  = strike with highest call gamma notional (resistance)
-    Put Wall   = strike with highest put gamma notional (support)
-    Zero Gamma = interpolated price where cumulative GEX crosses zero
+
+def _get_vix() -> float | None:
+    """Fetch live VIX from Schwab. Returns None on failure."""
+    try:
+        from schwab_client import get_quotes
+        q = get_quotes(['$VIX.X'])
+        return float(q.get('$VIX.X', {}).get('last') or 0) or None
+    except Exception:
+        return None
+
+
+def _gex_strikes_from_maps(
+    call_map: dict, put_map: dict,
+    include_expiries: set[str], spot: float
+) -> tuple[dict[float, float], dict[float, float]]:
+    """Aggregate call/put GEX by strike for a subset of expiry dates.
+
+    Returns (call_gex_by_strike, put_gex_by_strike) — values in $M.
     """
+    call_gex: dict[float, float] = {}
+    put_gex:  dict[float, float] = {}
+
+    for exp_key, strikes_data in call_map.items():
+        if exp_key.split(':')[0] not in include_expiries:
+            continue
+        for strike_str, opt_list in strikes_data.items():
+            strike = float(strike_str)
+            opt    = opt_list[0] if opt_list else {}
+            oi     = opt.get('openInterest') or 0
+            gamma  = opt.get('gamma') or 0
+            gex    = oi * gamma * 100 * spot / 1_000_000
+            call_gex[strike] = call_gex.get(strike, 0.0) + gex
+
+    for exp_key, strikes_data in put_map.items():
+        if exp_key.split(':')[0] not in include_expiries:
+            continue
+        for strike_str, opt_list in strikes_data.items():
+            strike = float(strike_str)
+            opt    = opt_list[0] if opt_list else {}
+            oi     = opt.get('openInterest') or 0
+            gamma  = opt.get('gamma') or 0
+            gex    = oi * gamma * 100 * spot / 1_000_000
+            put_gex[strike] = put_gex.get(strike, 0.0) + gex
+
+    return call_gex, put_gex
+
+
+def _summarize_layer(
+    call_gex: dict[float, float],
+    put_gex:  dict[float, float],
+    spot: float,
+    include_strike_rows: bool = False,
+) -> dict:
+    """Compute summary metrics for one GEX expiry layer.
+
+    Returns: net_gex_mm, gamma_regime, call_wall, put_wall, zero_gamma[, strikes].
+    """
+    import math as _math
+    all_strikes = sorted(set(call_gex) | set(put_gex))
+    if not all_strikes:
+        return {
+            'net_gex_mm': 0.0, 'gamma_regime': 'POSITIVE',
+            'call_wall': None, 'put_wall': None, 'zero_gamma': None,
+        }
+
+    rows = []
+    for s in all_strikes:
+        c = call_gex.get(s, 0.0)
+        p = put_gex.get(s,  0.0)
+        rows.append({
+            'strike'      : s,
+            'call_gex_mm' : round(c, 4),
+            'put_gex_mm'  : round(p, 4),
+            'net_gex_mm'  : round(c - p, 4),
+            'is_atm'      : abs(s - spot) <= (spot * 0.005),
+        })
+
+    total_net  = round(sum(r['net_gex_mm'] for r in rows), 2)
+    call_wall  = max(rows, key=lambda r: r['call_gex_mm'])['strike']
+    put_wall   = max(rows, key=lambda r: r['put_gex_mm'])['strike']
+
+    # Mark walls
+    for r in rows:
+        r['is_call_wall'] = (r['strike'] == call_wall)
+        r['is_put_wall']  = (r['strike'] == put_wall)
+
+    # Interpolate zero-gamma flip
+    zero_gamma: float | None = None
+    prev_s, prev_cum = None, 0.0
+    cum = 0.0
+    for r in rows:
+        cum += r['net_gex_mm']
+        if prev_s is not None and (
+            (prev_cum < 0 <= cum) or (prev_cum > 0 >= cum)
+        ):
+            frac = abs(prev_cum) / (abs(prev_cum) + abs(cum))
+            zero_gamma = round(prev_s + frac * (r['strike'] - prev_s), 2)
+            break
+        prev_s, prev_cum = r['strike'], cum
+
+    # Mark zero-gamma on rows
+    step = abs(rows[1]['strike'] - rows[0]['strike']) * 0.6 if len(rows) > 1 else 1
+    for r in rows:
+        r['is_zero_gamma'] = (
+            zero_gamma is not None and abs(r['strike'] - zero_gamma) <= step
+        )
+
+    result = {
+        'net_gex_mm'   : total_net,
+        'gamma_regime' : 'POSITIVE' if total_net >= 0 else 'NEGATIVE',
+        'call_wall'    : call_wall,
+        'put_wall'     : put_wall,
+        'zero_gamma'   : zero_gamma,
+    }
+    if include_strike_rows:
+        result['strikes'] = rows
+    return result
+
+
+def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) -> dict:
+    """Fetch Schwab option chain and compute GEX across three expiry layers.
+
+    Layers:
+      all     — all expirations combined (primary view)
+      ex_next — excluding the nearest expiry (removes 0DTE for SPX; nearest weekly for NDX/RUT)
+      monthly — only 3rd-Friday monthly expirations (structural backdrop)
+
+    GEX formula: call_gex = +OI × gamma × 100 × spot / 1M
+                 put_gex  = same (put gamma contribution)
+                 net_gex  = call_gex - put_gex per strike
+    """
+    import math as _math
     from schwab_client import get_option_chain
 
     schwab_sym, display_sym = _normalize_gex_symbol(symbol)
-    chain   = get_option_chain(schwab_sym, strike_count=strike_count)
-    spot    = chain.get('underlyingPrice') or chain.get('underlying', {}).get('last', 0)
+    chain = get_option_chain(schwab_sym, strike_count=strike_count)
+    spot  = chain.get('underlyingPrice') or 0
     if not spot:
         raise ValueError(f'No underlying price for {schwab_sym}')
 
     call_map = chain.get('callExpDateMap', {})
     put_map  = chain.get('putExpDateMap',  {})
 
-    # ── Aggregate GEX across ALL expiries ──────────────────────────────────────
-    # Per strike: sum gamma × OI across every expiry (weighted by gamma)
-    call_gex_raw: dict[float, float] = {}  # strike → call gamma notional ($M)
-    put_gex_raw:  dict[float, float] = {}  # strike → put gamma notional ($M)
+    # ── Collect and classify all expiry dates ─────────────────────────────────
+    all_dates: list[str] = sorted(
+        {exp_key.split(':')[0] for exp_key in list(call_map) + list(put_map)}
+    )
+    if not all_dates:
+        raise ValueError(f'No option expiry dates for {schwab_sym}')
 
-    expiry_dates: list[str] = []
+    nearest_date  = all_dates[0]
+    monthly_dates = {d for d in all_dates if _is_third_friday(d)}
+    ex_next_dates = set(all_dates[1:])           # all except the nearest
+    all_dates_set = set(all_dates)
 
-    for exp_key, strikes_data in call_map.items():
-        date_part = exp_key.split(':')[0]
-        if date_part not in expiry_dates:
-            expiry_dates.append(date_part)
-        for strike_str, opt_list in strikes_data.items():
-            strike = float(strike_str)
-            opt    = opt_list[0] if opt_list else {}
-            oi     = opt.get('openInterest') or 0
-            gamma  = opt.get('gamma') or 0
-            gex    = oi * gamma * 100 * spot / 1_000_000   # $M
-            call_gex_raw[strike] = call_gex_raw.get(strike, 0.0) + gex
+    # ── Compute each layer ────────────────────────────────────────────────────
+    c_all, p_all     = _gex_strikes_from_maps(call_map, put_map, all_dates_set, spot)
+    c_exnext, p_exnext = _gex_strikes_from_maps(call_map, put_map, ex_next_dates, spot)
+    c_monthly, p_monthly = _gex_strikes_from_maps(
+        call_map, put_map,
+        monthly_dates if monthly_dates else ex_next_dates,   # fallback if no monthly found
+        spot
+    )
 
-    for exp_key, strikes_data in put_map.items():
-        date_part = exp_key.split(':')[0]
-        if date_part not in expiry_dates:
-            expiry_dates.append(date_part)
-        for strike_str, opt_list in strikes_data.items():
-            strike = float(strike_str)
-            opt    = opt_list[0] if opt_list else {}
-            oi     = opt.get('openInterest') or 0
-            gamma  = opt.get('gamma') or 0
-            gex    = oi * gamma * 100 * spot / 1_000_000   # $M
-            put_gex_raw[strike] = put_gex_raw.get(strike, 0.0) + gex
+    layer_all     = _summarize_layer(c_all,     p_all,     spot, include_strike_rows=True)
+    layer_exnext  = _summarize_layer(c_exnext,  p_exnext,  spot)
+    layer_monthly = _summarize_layer(c_monthly, p_monthly, spot)
 
-    # ── Build per-strike rows ──────────────────────────────────────────────────
-    all_strikes = sorted(set(call_gex_raw) | set(put_gex_raw))
-    rows: list[dict] = []
-    for s in all_strikes:
-        c_gex = call_gex_raw.get(s, 0.0)
-        p_gex = put_gex_raw.get(s,  0.0)
-        net   = round(c_gex - p_gex, 4)
-        rows.append({
-            'strike'      : s,
-            'call_gex_mm' : round(c_gex, 4),
-            'put_gex_mm'  : round(p_gex, 4),
-            'net_gex_mm'  : net,
-            'is_atm'      : abs(s - spot) <= (spot * 0.005),   # within 0.5%
-        })
-
-    if not rows:
-        raise ValueError(f'No option chain rows for {symbol}')
-
-    # ── Summary metrics ────────────────────────────────────────────────────────
-    total_net_gex = round(sum(r['net_gex_mm'] for r in rows), 2)
-    gamma_regime  = 'POSITIVE' if total_net_gex >= 0 else 'NEGATIVE'
-
-    # Call Wall = highest call gamma notional (resistance above spot)
-    call_wall_row  = max(rows, key=lambda r: r['call_gex_mm'])
-    call_wall      = call_wall_row['strike']
-
-    # Put Wall = highest put gamma notional (support below spot)
-    put_wall_row   = max(rows, key=lambda r: r['put_gex_mm'])
-    put_wall       = put_wall_row['strike']
-
-    # Mark walls on rows
-    for r in rows:
-        r['is_call_wall'] = (r['strike'] == call_wall)
-        r['is_put_wall']  = (r['strike'] == put_wall)
-
-    # Zero Gamma Level — interpolate where cumulative net GEX crosses zero
-    cum = 0.0
-    zero_gamma_level: float | None = None
-    prev_s, prev_cum = None, 0.0
-    for r in rows:
-        cum += r['net_gex_mm']
-        if prev_cum < 0 <= cum and prev_s is not None:
-            # Linear interpolation
-            frac = abs(prev_cum) / (abs(prev_cum) + abs(cum))
-            zero_gamma_level = round(prev_s + frac * (r['strike'] - prev_s), 2)
-            break
-        if prev_cum > 0 >= cum and prev_s is not None:
-            frac = abs(prev_cum) / (abs(prev_cum) + abs(cum))
-            zero_gamma_level = round(prev_s + frac * (r['strike'] - prev_s), 2)
-            break
-        prev_s, prev_cum = r['strike'], cum
-
-    # Mark zero gamma level on rows
-    if zero_gamma_level is not None:
-        for r in rows:
-            r['is_zero_gamma'] = (
-                abs(r['strike'] - zero_gamma_level) <=
-                abs(rows[1]['strike'] - rows[0]['strike']) * 0.6
-            )
-    else:
-        for r in rows:
-            r['is_zero_gamma'] = False
-
-    # Expected 1-day move: ≈ 68% confidence interval from near-ATM IV
-    # Use ATM call IV as proxy for expected move: spot × IV × sqrt(1/252)
+    # ── Expected 1-day move from ATM IV ───────────────────────────────────────
     expected_move_pct: float | None = None
     try:
-        atm_exp  = sorted(call_map.keys())[0]
-        atm_opts = sorted(call_map[atm_exp].items(), key=lambda kv: abs(float(kv[0]) - spot))
+        nearest_key = next(k for k in call_map if k.startswith(nearest_date))
+        atm_opts = sorted(
+            call_map[nearest_key].items(), key=lambda kv: abs(float(kv[0]) - spot)
+        )
         if atm_opts:
-            iv = atm_opts[0][1][0].get('volatility', 0) or 0
+            iv = atm_opts[0][1][0].get('volatility') or 0
             if iv > 0:
-                import math
-                expected_move_pct = round(iv / 100 * math.sqrt(1 / 252) * 100, 2)
+                expected_move_pct = round(iv / 100 * _math.sqrt(1 / 252) * 100, 2)
     except Exception:
         pass
 
-    expiry_dates.sort()
+    # ── DTE for nearest expiry ────────────────────────────────────────────────
+    nearest_dte: int | None = None
+    try:
+        from datetime import date as _date
+        nearest_dte = (
+            _date.fromisoformat(nearest_date) - _date.today()
+        ).days
+    except Exception:
+        pass
+
+    # ── VIX context ───────────────────────────────────────────────────────────
+    if vix is None:
+        vix = _get_vix()
+    iv_env = _classify_iv_environment(vix)
+
     return {
-        'symbol'              : display_sym,
-        'underlying'          : round(spot, 2),
-        'net_gex_mm'          : total_net_gex,
-        'gamma_regime'        : gamma_regime,
-        'call_wall'           : call_wall,
-        'put_wall'            : put_wall,
-        'zero_gamma_level'    : zero_gamma_level,
-        'expected_move_pct'   : expected_move_pct,
-        'expected_move_pts'   : round(spot * expected_move_pct / 100, 2) if expected_move_pct else None,
-        'expiries'            : expiry_dates[:6],
-        'strikes'             : rows,
-        'strike_count'        : len(rows),
+        # Identity & context
+        'symbol'             : display_sym,
+        'underlying'         : round(spot, 2),
+        'vix_ref'            : vix,
+        'iv_environment'     : iv_env,
+        'nearest_expiry'     : nearest_date,
+        'nearest_dte'        : nearest_dte,
+        'expiries'           : all_dates[:8],
+
+        # All-expiry layer (primary)
+        'net_gex_mm'         : layer_all['net_gex_mm'],
+        'gamma_regime'       : layer_all['gamma_regime'],
+        'call_wall'          : layer_all['call_wall'],
+        'put_wall'           : layer_all['put_wall'],
+        'zero_gamma'         : layer_all['zero_gamma'],
+        'expected_move_pct'  : expected_move_pct,
+        'expected_move_pts'  : round(spot * expected_move_pct / 100, 2) if expected_move_pct else None,
+
+        # Ex-next layer
+        'net_gex_ex_next_mm' : layer_exnext['net_gex_mm'],
+        'call_wall_ex_next'  : layer_exnext['call_wall'],
+        'put_wall_ex_next'   : layer_exnext['put_wall'],
+        'zero_gamma_ex_next' : layer_exnext['zero_gamma'],
+
+        # Monthly structural layer
+        'net_gex_monthly_mm' : layer_monthly['net_gex_mm'],
+        'call_wall_monthly'  : layer_monthly['call_wall'],
+        'put_wall_monthly'   : layer_monthly['put_wall'],
+        'zero_gamma_monthly' : layer_monthly['zero_gamma'],
+
+        # Full strike rows (all-expiry layer only — used for bar chart)
+        'strikes'            : layer_all.get('strikes', []),
+        'strike_count'       : len(layer_all.get('strikes', [])),
     }
 
 
-@app.get('/api/gex/{ticker}')
-async def get_gex(ticker: str, strike_count: int = Query(50)):
-    """Gamma Exposure (GEX) by strike for any optionable equity or ETF.
+def _refresh_gex_indices(is_baseline: bool = False) -> None:
+    """Compute GEX for all tracked index symbols and persist to Supabase.
 
-    Fetches live option chain from Schwab, computes dealer gamma exposure per
-    strike across all expiries.  Results are cached for 5 minutes.
-
-    Response:
-        symbol, underlying, net_gex_mm, gamma_regime (POSITIVE/NEGATIVE),
-        call_wall, put_wall, zero_gamma_level, expected_move_pct,
-        expiries[], strikes[{strike, call_gex_mm, put_gex_mm, net_gex_mm,
-                             is_atm, is_call_wall, is_put_wall, is_zero_gamma}]
+    Called from background_loop:
+      - is_baseline=True  at 6am ET  → full OI, authoritative
+      - is_baseline=False every 15min during RTH → intraday estimate
     """
-    # Normalize: SPX → $SPX internally, but cache under the clean display name
-    _, display_sym = _normalize_gex_symbol(ticker)
+    import json as _json
+    from db import save_gex_snapshot
 
-    # Serve from cache if fresh
-    cached = _gex_cache.get(display_sym)
-    if cached and (time.time() - cached['ts']) < _GEX_CACHE_TTL:
-        return cached['data']
+    vix = _get_vix()   # fetch once, share across all three symbols
+
+    for sym in GEX_INDEX_SYMBOLS:
+        try:
+            data = _compute_gex(sym, strike_count=60, vix=vix)
+            row = {
+                'symbol'              : sym,
+                'is_daily_baseline'   : is_baseline,
+                'is_intraday_estimate': not is_baseline,
+                'underlying'          : data['underlying'],
+                'vix_ref'             : data['vix_ref'],
+                'iv_environment'      : data['iv_environment'],
+                'net_gex_mm'          : data['net_gex_mm'],
+                'gamma_regime'        : data['gamma_regime'],
+                'call_wall'           : data['call_wall'],
+                'put_wall'            : data['put_wall'],
+                'zero_gamma'          : data['zero_gamma'],
+                'expected_move_pct'   : data['expected_move_pct'],
+                'expected_move_pts'   : data['expected_move_pts'],
+                'net_gex_ex_next_mm'  : data['net_gex_ex_next_mm'],
+                'call_wall_ex_next'   : data['call_wall_ex_next'],
+                'put_wall_ex_next'    : data['put_wall_ex_next'],
+                'zero_gamma_ex_next'  : data['zero_gamma_ex_next'],
+                'net_gex_monthly_mm'  : data['net_gex_monthly_mm'],
+                'call_wall_monthly'   : data['call_wall_monthly'],
+                'put_wall_monthly'    : data['put_wall_monthly'],
+                'zero_gamma_monthly'  : data['zero_gamma_monthly'],
+                'nearest_expiry'      : data['nearest_expiry'],
+                'nearest_dte'         : data['nearest_dte'],
+                'strikes_json'        : _json.dumps(data['strikes']),
+            }
+            save_gex_snapshot(row)
+            log.info('GEX snapshot saved: %s  net=%.1fM  regime=%s  %s',
+                     sym, data['net_gex_mm'], data['gamma_regime'],
+                     '(BASELINE)' if is_baseline else '(intraday)')
+        except Exception as exc:
+            log.warning('GEX refresh failed for %s: %s', sym, exc)
+
+
+@app.get('/api/gex/{ticker}')
+async def get_gex(ticker: str, strike_count: int = Query(60)):
+    """Gamma Exposure (GEX) for any symbol.
+
+    For SPX / NDX / RUT → served from Supabase (latest DB snapshot, seconds old).
+    For any other ticker  → computed live from Schwab, 5-min transient cache.
+
+    Response includes three expiry layers:
+      primary (all expirations), ex_next (no 0DTE/nearest), monthly (structural).
+    """
+    _, display_sym = _normalize_gex_symbol(ticker)
+    is_index = display_sym in GEX_INDEX_SYMBOLS
+
+    # ── Index symbols: serve from DB ─────────────────────────────────────────
+    if is_index:
+        try:
+            from db import get_latest_gex
+            import json as _json
+            row = await asyncio.to_thread(get_latest_gex, display_sym)
+            if row:
+                # Parse strikes_json back to list
+                strikes = []
+                try:
+                    strikes = _json.loads(row.get('strikes_json') or '[]')
+                except Exception:
+                    pass
+                return {
+                    **{k: v for k, v in row.items() if k not in ('strikes_json', 'id')},
+                    'strikes'     : strikes,
+                    'strike_count': len(strikes),
+                    'source'      : 'baseline' if row.get('is_daily_baseline') else 'intraday',
+                }
+        except Exception as exc:
+            log.warning('GEX DB fetch failed for %s, falling back to live: %s', display_sym, exc)
+
+    # ── Transient symbols (or DB fallback): compute live ─────────────────────
+    cached = _gex_transient_cache.get(display_sym)
+    if cached and (time.time() - cached['ts']) < _GEX_TRANSIENT_TTL:
+        return {**cached['data'], 'source': 'transient_cache'}
 
     try:
         data = await asyncio.to_thread(_compute_gex, display_sym, strike_count)
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning('GEX compute error for %s: %s', display_sym, exc)
+        log.warning('GEX compute error for %s: %s', display_sym, exc)
         return JSONResponse({'error': str(exc)}, status_code=500)
 
-    _gex_cache[display_sym] = {'data': data, 'ts': time.time()}
+    data['source'] = 'live'
+    _gex_transient_cache[display_sym] = {'data': data, 'ts': time.time()}
     return data
+
+
+@app.get('/api/gex/{ticker}/history')
+async def get_gex_history(ticker: str, hours: int = Query(8)):
+    """Return intraday GEX history for a tracked index symbol (SPX/NDX/RUT).
+    Used to show how call wall / put wall moved through the session.
+    """
+    _, display_sym = _normalize_gex_symbol(ticker)
+    if display_sym not in GEX_INDEX_SYMBOLS:
+        return JSONResponse({'error': 'History only available for SPX, NDX, RUT'}, status_code=400)
+    try:
+        from db import get_gex_history as _get_hist
+        rows = await asyncio.to_thread(_get_hist, display_sym, hours)
+        return {'symbol': display_sym, 'hours': hours, 'rows': rows}
+    except Exception as exc:
+        return JSONResponse({'error': str(exc)}, status_code=500)
 
 
 @app.get('/api/global-markets')
