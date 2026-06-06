@@ -4636,22 +4636,42 @@ def _is_third_friday(date_str: str) -> bool:
     return friday_count == 3
 
 
-def _classify_expiry_type(nearest_date: str) -> str:
-    """Classify the nearest expiry.
+def _classify_expiry_type(nearest_date: str, all_dates: list[str] | None = None) -> str:
+    """Classify the most significant expiry event this week.
+
+    Looks at the nearest expiry first, then scans the full expiry list for any
+    QUARTERLY or MONTHLY event within the next 7 days.  This ensures SPX (which
+    has daily expirations so nearest is always 0DTE/1DTE) still surfaces a
+    QUARTERLY badge during a Triple Witching week.
 
     Returns one of:
-      '0DTE'       — expires today
-      'QUARTERLY'  — 3rd Friday of March/June/September/December (Triple Witching)
-      'MONTHLY'    — 3rd Friday of any other month
-      'WEEKLY'     — non-3rd Friday
-      'DAILY'      — non-Friday (SPX Mon/Tue/Wed/Thu expirations)
+      'QUARTERLY'  — 3rd Friday of Mar/Jun/Sep/Dec within 7 days (Triple Witching)
+      'MONTHLY'    — 3rd Friday of any other month within 7 days
+      '0DTE'       — nearest expiry is today
+      'WEEKLY'     — nearest is a non-3rd Friday
+      'DAILY'      — nearest is a non-Friday (SPX Mon/Tue/Wed/Thu)
     """
-    from datetime import date as _date
+    from datetime import date as _date, timedelta
+    today = _date.today()
+
+    # Scan all_dates (full chain) for a quarterly/monthly within 7 days — catches
+    # SPX where nearest is always 0DTE but a monthly lurks later this week.
+    if all_dates:
+        cutoff = today + timedelta(days=7)
+        for ds in all_dates:
+            try:
+                d = _date.fromisoformat(ds)
+            except ValueError:
+                continue
+            if today < d <= cutoff and _is_third_friday(ds):
+                return 'QUARTERLY' if d.month in (3, 6, 9, 12) else 'MONTHLY'
+
+    # Fall back to nearest-expiry classification
     try:
         d = _date.fromisoformat(nearest_date)
     except ValueError:
         return 'WEEKLY'
-    dte = (d - _date.today()).days
+    dte = (d - today).days
     if dte == 0:
         return '0DTE'
     if _is_third_friday(nearest_date):
@@ -4893,7 +4913,7 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         'iv_environment'     : iv_env,
         'nearest_expiry'     : nearest_date,
         'nearest_dte'        : nearest_dte,
-        'expiry_type'        : _classify_expiry_type(nearest_date),
+        'expiry_type'        : _classify_expiry_type(nearest_date, all_dates),
         'is_post_expiry_monday': _is_post_expiry_monday(),
         'expiries'           : all_dates[:8],
 
@@ -4966,9 +4986,10 @@ def _refresh_gex_indices(is_baseline: bool = False) -> None:
                 'nearest_expiry'      : data['nearest_expiry'],
                 'nearest_dte'         : data['nearest_dte'],
                 'strikes_json'        : _json.dumps({
-                    'all'    : data['strikes'],
-                    'ex_next': data['strikes_ex_next'],
-                    'monthly': data['strikes_monthly'],
+                    'all'         : data['strikes'],
+                    'ex_next'     : data['strikes_ex_next'],
+                    'monthly'     : data['strikes_monthly'],
+                    'expiry_dates': data.get('expiries', []),
                 }),
             }
             save_gex_snapshot(row)
@@ -5010,8 +5031,9 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                         strikes_all     = raw.get('all',     [])
                         strikes_ex_next = raw.get('ex_next', [])
                         strikes_monthly = raw.get('monthly', [])
+                    expiry_dates = raw.get('expiry_dates', []) if isinstance(raw, dict) else []
                 except Exception:
-                    pass
+                    expiry_dates = []
                 nearest = row.get('nearest_expiry', '')
                 return {
                     **{k: v for k, v in row.items() if k not in ('strikes_json', 'id')},
@@ -5019,7 +5041,7 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                     'strikes_ex_next'      : strikes_ex_next,
                     'strikes_monthly'      : strikes_monthly,
                     'strike_count'         : len(strikes_all),
-                    'expiry_type'          : _classify_expiry_type(nearest),
+                    'expiry_type'          : _classify_expiry_type(nearest, expiry_dates or None),
                     'is_post_expiry_monday': _is_post_expiry_monday(),
                     'source'               : 'baseline' if row.get('is_daily_baseline') else 'intraday',
                 }
