@@ -4636,6 +4636,46 @@ def _is_third_friday(date_str: str) -> bool:
     return friday_count == 3
 
 
+def _classify_expiry_type(nearest_date: str) -> str:
+    """Classify the nearest expiry.
+
+    Returns one of:
+      '0DTE'       — expires today
+      'QUARTERLY'  — 3rd Friday of March/June/September/December (Triple Witching)
+      'MONTHLY'    — 3rd Friday of any other month
+      'WEEKLY'     — non-3rd Friday
+      'DAILY'      — non-Friday (SPX Mon/Tue/Wed/Thu expirations)
+    """
+    from datetime import date as _date
+    try:
+        d = _date.fromisoformat(nearest_date)
+    except ValueError:
+        return 'WEEKLY'
+    dte = (d - _date.today()).days
+    if dte == 0:
+        return '0DTE'
+    if _is_third_friday(nearest_date):
+        return 'QUARTERLY' if d.month in (3, 6, 9, 12) else 'MONTHLY'
+    if d.weekday() == 4:
+        return 'WEEKLY'
+    return 'DAILY'
+
+
+def _is_post_expiry_monday() -> bool:
+    """True if today is the Monday immediately after a 3rd-Friday monthly expiry.
+
+    Post-expiry Monday: dealers re-hedge from scratch after expirations wiped
+    their gamma book on Friday.  Intraday flows can be erratic and direction
+    is hard to read until the new positioning settles (~10:30 AM ET).
+    """
+    from datetime import date as _date, timedelta
+    today = _date.today()
+    if today.weekday() != 0:          # not Monday
+        return False
+    last_friday = today - timedelta(days=3)
+    return _is_third_friday(last_friday.isoformat())
+
+
 def _classify_iv_environment(vix: float | None) -> str:
     """Map VIX level to IV environment label."""
     if vix is None:
@@ -4853,6 +4893,8 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         'iv_environment'     : iv_env,
         'nearest_expiry'     : nearest_date,
         'nearest_dte'        : nearest_dte,
+        'expiry_type'        : _classify_expiry_type(nearest_date),
+        'is_post_expiry_monday': _is_post_expiry_monday(),
         'expiries'           : all_dates[:8],
 
         # All-expiry layer (primary)
@@ -4970,13 +5012,16 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                         strikes_monthly = raw.get('monthly', [])
                 except Exception:
                     pass
+                nearest = row.get('nearest_expiry', '')
                 return {
                     **{k: v for k, v in row.items() if k not in ('strikes_json', 'id')},
-                    'strikes'         : strikes_all,
-                    'strikes_ex_next' : strikes_ex_next,
-                    'strikes_monthly' : strikes_monthly,
-                    'strike_count'    : len(strikes_all),
-                    'source'          : 'baseline' if row.get('is_daily_baseline') else 'intraday',
+                    'strikes'              : strikes_all,
+                    'strikes_ex_next'      : strikes_ex_next,
+                    'strikes_monthly'      : strikes_monthly,
+                    'strike_count'         : len(strikes_all),
+                    'expiry_type'          : _classify_expiry_type(nearest),
+                    'is_post_expiry_monday': _is_post_expiry_monday(),
+                    'source'               : 'baseline' if row.get('is_daily_baseline') else 'intraday',
                 }
         except Exception as exc:
             log.warning('GEX DB fetch failed for %s, falling back to live: %s', display_sym, exc)
