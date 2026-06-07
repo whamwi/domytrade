@@ -631,16 +631,18 @@ export default function GexPanel() {
               { pct: 0.100, label: '±10%'  },
             ]
             const src    = data.strikes
-            const totalC = src.reduce((s, r) => s + r.call_gex_mm, 0)
-            const totalP = src.reduce((s, r) => s + r.put_gex_mm,  0)
+            const _cVal  = (r: StrikeRow) => syntheticMode && hasSynthetic ? (r.dealer_call_gex_mm ?? r.call_gex_mm) : r.call_gex_mm
+            const _pVal  = (r: StrikeRow) => syntheticMode && hasSynthetic ? (r.dealer_put_gex_mm  ?? r.put_gex_mm)  : r.put_gex_mm
+            const totalC = src.reduce((s, r) => s + _cVal(r), 0)
+            const totalP = src.reduce((s, r) => s + _pVal(r), 0)
             if (totalC <= 0 && totalP <= 0) return null
 
             const bands = BANDS.map(({ pct, label }) => {
               const lo  = spot * (1 - pct)
               const hi  = spot * (1 + pct)
               const sub = src.filter(r => r.strike >= lo && r.strike <= hi)
-              const c   = sub.reduce((s, r) => s + r.call_gex_mm, 0)
-              const p   = sub.reduce((s, r) => s + r.put_gex_mm,  0)
+              const c   = sub.reduce((s, r) => s + _cVal(r), 0)
+              const p   = sub.reduce((s, r) => s + _pVal(r), 0)
               const pts = spot * pct   // dollar move = spot × pct
               return {
                 label,
