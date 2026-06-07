@@ -2172,6 +2172,7 @@ async def background_loop():
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
     last_archive_run        = ''   # 'YYYY-MM-DD' of last entry_log → archive move
     last_gex_baseline_run   = ''   # 'YYYY-MM-DD' of last 6:00 AM GEX baseline snapshot
+    last_gex_stocks_run     = ''   # 'YYYY-MM-DD' of last 5:30 PM stock GEX snapshot
     last_gex_intraday_ts    = 0.0  # epoch of last 15-min GEX intraday refresh
     GEX_INTRADAY_SECS       = 900  # 15 minutes
 
@@ -2340,6 +2341,17 @@ async def background_loop():
                 except Exception as e:
                     log.warning('GEX baseline error: %s', e)
                 last_gex_baseline_run = _today
+
+            # 5:30 PM ET on weekdays — GEX daily baseline for tracked stock symbols
+            # Runs AFTER market close so Schwab still has settled OI for the day.
+            # Index symbols (SPX/NDX/RUT) are handled by the 6 AM baseline above.
+            if _et_hhmm == 17 * 60 + 30 and last_gex_stocks_run != _today and _weekday < 5:
+                try:
+                    await asyncio.to_thread(_refresh_gex_stocks)
+                    log.info('GEX stock baseline snapshots complete')
+                except Exception as e:
+                    log.warning('GEX stock snapshot error: %s', e)
+                last_gex_stocks_run = _today
 
             # 6:00 AM ET — refresh stock fundamental profiles (yfinance)
             if _et_hhmm == 6 * 60 and last_profiles_run != _today:
@@ -5124,6 +5136,183 @@ def _refresh_gex_indices(is_baseline: bool = False) -> None:
                      '(BASELINE)' if is_baseline else '(intraday)')
         except Exception as exc:
             log.warning('GEX refresh failed for %s: %s', sym, exc)
+
+
+def _refresh_gex_stocks() -> None:
+    """Compute and persist GEX baseline snapshots for all tracked stock symbols.
+
+    Runs at 5:30 PM ET on weekdays (after close, OI still live in Schwab).
+    Reads tracked symbols from gex_tracked_symbols table so the list can be
+    managed without a redeploy.
+
+    Also fetches OCC market-maker % per expiry and saves to gex_mm_pct for
+    future Synthetic OI computation.
+    """
+    import json as _json
+    from db import save_gex_snapshot, get_gex_tracked_symbols, upsert_gex_mm_pct
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    symbols  = get_gex_tracked_symbols()
+    vix      = _get_vix()
+    today_et = datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+
+    for sym in symbols:
+        # ── GEX snapshot (via Schwab, same as index baseline) ──────────────
+        try:
+            data = _compute_gex(sym, strike_count=60, vix=vix)
+            row  = {
+                'symbol'              : sym,
+                'is_daily_baseline'   : True,
+                'is_intraday_estimate': False,
+                'underlying'          : data['underlying'],
+                'vix_ref'             : data['vix_ref'],
+                'iv_environment'      : data['iv_environment'],
+                'net_gex_mm'          : data['net_gex_mm'],
+                'gamma_regime'        : data['gamma_regime'],
+                'call_wall'           : data['call_wall'],
+                'put_wall'            : data['put_wall'],
+                'zero_gamma'          : data['zero_gamma'],
+                'expected_move_pct'   : data['expected_move_pct'],
+                'expected_move_pts'   : data['expected_move_pts'],
+                'net_gex_ex_next_mm'  : data['net_gex_ex_next_mm'],
+                'call_wall_ex_next'   : data['call_wall_ex_next'],
+                'put_wall_ex_next'    : data['put_wall_ex_next'],
+                'zero_gamma_ex_next'  : data['zero_gamma_ex_next'],
+                'net_gex_monthly_mm'  : data['net_gex_monthly_mm'],
+                'call_wall_monthly'   : data['call_wall_monthly'],
+                'put_wall_monthly'    : data['put_wall_monthly'],
+                'zero_gamma_monthly'  : data['zero_gamma_monthly'],
+                'nearest_expiry'      : data['nearest_expiry'],
+                'nearest_dte'         : data['nearest_dte'],
+                'strikes_json'        : _json.dumps({
+                    'all'                : data['strikes'],
+                    'ex_next'            : data['strikes_ex_next'],
+                    'monthly'            : data['strikes_monthly'],
+                    'expiry_dates'       : data.get('expiries', []),
+                    'pc_ratio'           : data.get('pc_ratio'),
+                    'delta_distribution' : data.get('delta_distribution'),
+                    'underlying_vwap'    : data.get('underlying_vwap'),
+                    'underlying_open'    : data.get('underlying_open'),
+                    'underlying_prev_close': data.get('underlying_prev_close'),
+                }),
+            }
+            save_gex_snapshot(row)
+            log.info('GEX stock snapshot saved: %s  net=%.1fM  regime=%s',
+                     sym, data['net_gex_mm'], data['gamma_regime'])
+        except Exception as exc:
+            log.warning('GEX stock snapshot failed for %s: %s', sym, exc)
+            continue
+
+        # ── OCC market-maker % per expiry (Synthetic OI seed data) ─────────
+        try:
+            mm_rows = _fetch_occ_mm_pct(sym, today_et)
+            if mm_rows:
+                upsert_gex_mm_pct(mm_rows)
+                log.info('OCC MM%% saved for %s: %d expiries', sym, len(mm_rows))
+        except Exception as exc:
+            log.warning('OCC MM%% fetch failed for %s: %s', sym, exc)
+
+
+def _fetch_occ_mm_pct(symbol: str, snapshot_date: str) -> list[dict]:
+    """Fetch market-maker volume % per expiry from OCC volume-query API.
+
+    Returns a list of dicts ready for upsert_gex_mm_pct().
+    OCC volume-query endpoint returns account-type breakdown per expiry:
+      AccountType 3 = MarketMaker, 1 = Customer, 2 = Firm
+    """
+    import httpx
+    from datetime import date as _date
+
+    report_date = snapshot_date.replace('-', '/')   # YYYY-MM-DD → YYYY/MM/DD
+    # OCC report date format is MM/DD/YYYY
+    d = _date.fromisoformat(snapshot_date)
+    report_date_occ = f'{d.month:02d}/{d.day:02d}/{d.year}'
+
+    url = 'https://www.theocc.com/webapps/volumequery'
+    headers = {
+        'User-Agent'  : 'Mozilla/5.0',
+        'Accept'      : 'application/json, text/javascript, */*',
+        'Referer'     : 'https://www.theocc.com/',
+    }
+
+    # First fetch the list of active expiries for this symbol via series-search
+    series_url = 'https://www.theocc.com/webapps/series-search'
+    try:
+        r = httpx.get(
+            series_url,
+            params={'symbolType': 'U', 'symbol': symbol, 'Product': 'O'},
+            headers=headers,
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        log.warning('OCC series-search failed for %s: %s', symbol, exc)
+        return []
+
+    # Extract unique expiry dates from the series search results
+    expiries: set[str] = set()
+    for row in (data.get('data', {}).get('rows', []) or []):
+        exp = row.get('expirationDate', '')  # format varies — YYYYMMDD or YYYY-MM-DD
+        if exp:
+            expiries.add(exp)
+
+    if not expiries:
+        log.warning('OCC series-search returned no expiries for %s', symbol)
+        return []
+
+    # For each expiry, fetch volume breakdown by account type
+    mm_rows: list[dict] = []
+    for exp_raw in sorted(expiries)[:12]:   # cap at 12 nearest expiries
+        # Normalise expiry to YYYYMMDD for API param and YYYY-MM-DD for DB
+        exp_clean = exp_raw.replace('-', '')[:8]   # → YYYYMMDD
+        exp_db    = f'{exp_clean[:4]}-{exp_clean[4:6]}-{exp_clean[6:]}'  # → YYYY-MM-DD
+
+        try:
+            r2 = httpx.get(
+                url,
+                params={
+                    'reportDate' : report_date_occ,
+                    'symbolType' : 'U',
+                    'symbol'     : symbol,
+                    'contractDt' : exp_clean,
+                },
+                headers=headers,
+                timeout=15,
+            )
+            r2.raise_for_status()
+            vdata = r2.json()
+        except Exception as exc:
+            log.debug('OCC volume-query failed for %s exp=%s: %s', symbol, exp_clean, exc)
+            continue
+
+        # Parse account-type rows → compute MM totals
+        call_mm = put_mm = call_total = put_total = 0
+        for acct in (vdata.get('data', {}).get('rows', []) or []):
+            acct_type  = acct.get('accountType', 0)
+            call_vol   = int(acct.get('callVolume', 0) or 0)
+            put_vol    = int(acct.get('putVolume',  0) or 0)
+            call_total += call_vol
+            put_total  += put_vol
+            if acct_type == 3:   # MarketMaker
+                call_mm += call_vol
+                put_mm  += put_vol
+
+        if call_total == 0 and put_total == 0:
+            continue   # no data for this expiry today
+
+        mm_rows.append({
+            'symbol'        : symbol,
+            'snapshot_date' : snapshot_date,
+            'expiry'        : exp_db,
+            'mm_pct_calls'  : round(call_mm / call_total, 4) if call_total else None,
+            'mm_pct_puts'   : round(put_mm  / put_total,  4) if put_total  else None,
+            'total_call_vol': call_total,
+            'total_put_vol' : put_total,
+        })
+
+    return mm_rows
 
 
 @app.get('/api/gex/{ticker}')

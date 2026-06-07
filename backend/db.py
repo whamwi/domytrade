@@ -706,3 +706,63 @@ def purge_old_gex_snapshots(keep_days: int = 5) -> int:
         .execute()
     )
     return len(res.data) if res.data else 0
+
+
+# ── GEX Tracked Symbols (Phase 2) ─────────────────────────────────────────────
+
+def get_gex_tracked_symbols() -> list[str]:
+    """Return list of active stock symbols to snapshot nightly."""
+    res = (
+        get_db()
+        .table('gex_tracked_symbols')
+        .select('symbol')
+        .eq('is_active', True)
+        .order('symbol')
+        .execute()
+    )
+    return [r['symbol'] for r in (res.data or [])]
+
+
+def add_gex_tracked_symbol(symbol: str) -> None:
+    """Add a symbol to the nightly snapshot list (idempotent)."""
+    get_db().table('gex_tracked_symbols').upsert(
+        {'symbol': symbol.upper(), 'is_active': True},
+        on_conflict='symbol'
+    ).execute()
+
+
+def remove_gex_tracked_symbol(symbol: str) -> None:
+    """Deactivate a symbol from the nightly snapshot list."""
+    get_db().table('gex_tracked_symbols').update(
+        {'is_active': False}
+    ).eq('symbol', symbol.upper()).execute()
+
+
+# ── GEX MM% Snapshots (Phase 2 — Synthetic OI) ────────────────────────────────
+
+def upsert_gex_mm_pct(rows: list[dict]) -> None:
+    """Upsert OCC market-maker % rows.
+
+    Each row must have: symbol, snapshot_date (date str), expiry (date str),
+    mm_pct_calls, mm_pct_puts, total_call_vol, total_put_vol.
+    """
+    if not rows:
+        return
+    get_db().table('gex_mm_pct').upsert(
+        rows,
+        on_conflict='symbol,snapshot_date,expiry'
+    ).execute()
+
+
+def get_gex_mm_pct(symbol: str, snapshot_date: str) -> list[dict]:
+    """Return OCC MM% rows for a symbol on a given date (ISO date string)."""
+    res = (
+        get_db()
+        .table('gex_mm_pct')
+        .select('expiry,mm_pct_calls,mm_pct_puts,total_call_vol,total_put_vol')
+        .eq('symbol', symbol.upper())
+        .eq('snapshot_date', snapshot_date)
+        .order('expiry')
+        .execute()
+    )
+    return res.data or []
