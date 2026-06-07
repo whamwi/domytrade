@@ -766,3 +766,44 @@ def get_gex_mm_pct(symbol: str, snapshot_date: str) -> list[dict]:
         .execute()
     )
     return res.data or []
+
+
+def get_mm_pct_for_symbol(symbol: str) -> dict | None:
+    """Return volume-weighted average MM% for a symbol from the most recent snapshot.
+
+    Looks back up to 7 days. Returns None if no data is available.
+    Result: {mm_pct_calls, mm_pct_puts, snapshot_date}
+    """
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
+
+    res = (
+        get_db()
+        .table('gex_mm_pct')
+        .select('snapshot_date,mm_pct_calls,mm_pct_puts,total_call_vol,total_put_vol')
+        .eq('symbol', symbol.upper())
+        .gte('snapshot_date', cutoff)
+        .order('snapshot_date', desc=True)
+        .limit(50)   # up to 50 expiry rows covering a few recent dates
+        .execute()
+    )
+    if not res.data:
+        return None
+
+    # Narrow to the most recent date available
+    most_recent = res.data[0]['snapshot_date']
+    rows = [r for r in res.data if r['snapshot_date'] == most_recent]
+
+    total_c = sum(r.get('total_call_vol') or 0 for r in rows)
+    total_p = sum(r.get('total_put_vol')  or 0 for r in rows)
+    if total_c == 0 and total_p == 0:
+        return None
+
+    wt_c = sum((r.get('mm_pct_calls') or 0) * (r.get('total_call_vol') or 0) for r in rows)
+    wt_p = sum((r.get('mm_pct_puts')  or 0) * (r.get('total_put_vol')  or 0) for r in rows)
+
+    return {
+        'mm_pct_calls' : round(wt_c / total_c, 4) if total_c else None,
+        'mm_pct_puts'  : round(wt_p / total_p, 4) if total_p else None,
+        'snapshot_date': most_recent,
+    }

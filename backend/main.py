@@ -5315,6 +5315,76 @@ def _fetch_occ_mm_pct(symbol: str, snapshot_date: str) -> list[dict]:
     return mm_rows
 
 
+# Proxy map — use tracked stock MM% as stand-in for index options
+# SPX ↔ SPY, NDX ↔ QQQ (highly correlated dealer behaviour)
+_MM_PCT_PROXY: dict[str, str] = {'SPX': 'SPY', 'NDX': 'QQQ'}
+
+
+def _get_mm_pct(symbol: str) -> dict | None:
+    """Return volume-weighted MM% for a symbol (with proxy fallback for indices).
+
+    Checks DB first. If no data exists for this symbol AND it is tracked,
+    fetches from OCC inline (one-time cost, result is stored in gex_mm_pct).
+    Returns None if data is unavailable or the OCC fetch fails.
+    """
+    from db import get_mm_pct_for_symbol, get_gex_tracked_symbols, upsert_gex_mm_pct
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    lookup = _MM_PCT_PROXY.get(symbol, symbol)
+
+    # 1. Try DB
+    mm = get_mm_pct_for_symbol(lookup)
+    if mm:
+        return mm
+
+    # 2. If the symbol is tracked, fetch from OCC and cache for future calls
+    tracked = get_gex_tracked_symbols()
+    if lookup not in tracked:
+        return None
+
+    try:
+        today_et = datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+        rows = _fetch_occ_mm_pct(lookup, today_et)
+        if rows:
+            upsert_gex_mm_pct(rows)
+            log.info('OCC MM%% fetched on-demand for %s (%d expiries)', lookup, len(rows))
+            return get_mm_pct_for_symbol(lookup)
+    except Exception as exc:
+        log.warning('On-demand OCC MM%% fetch failed for %s: %s', lookup, exc)
+
+    return None
+
+
+def _inject_synthetic_gex(data: dict, symbol: str) -> None:
+    """Inject dealer GEX fields into a GEX response dict in-place.
+
+    Adds per-strike dealer_call_gex_mm / dealer_put_gex_mm / dealer_net_gex_mm
+    and top-level mm_pct_calls / mm_pct_puts / synthetic_net_gex_mm.
+    No-ops silently if MM% data is unavailable.
+    """
+    mm = _get_mm_pct(symbol)
+    if not mm:
+        return
+
+    mc = mm.get('mm_pct_calls') or 0.0
+    mp = mm.get('mm_pct_puts')  or 0.0
+
+    for layer_key in ('strikes', 'strikes_ex_next', 'strikes_monthly'):
+        for s in (data.get(layer_key) or []):
+            dc = round(s.get('call_gex_mm', 0) * mc, 4)
+            dp = round(s.get('put_gex_mm',  0) * mp, 4)
+            s['dealer_call_gex_mm'] = dc
+            s['dealer_put_gex_mm']  = dp
+            s['dealer_net_gex_mm']  = round(dc - dp, 4)
+
+    avg_mm = (mc + mp) / 2
+    data['mm_pct_calls']         = mm['mm_pct_calls']
+    data['mm_pct_puts']          = mm['mm_pct_puts']
+    data['mm_pct_date']          = mm['snapshot_date']
+    data['synthetic_net_gex_mm'] = round((data.get('net_gex_mm') or 0.0) * avg_mm, 2)
+
+
 @app.get('/api/gex/{ticker}')
 async def get_gex(ticker: str, strike_count: int = Query(60)):
     """Gamma Exposure (GEX) for any symbol.
@@ -5361,7 +5431,7 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                 # or absent (weekend baseline skipped).  Fetch is fast (~50ms).
                 live_vix = await asyncio.to_thread(_get_vix)
                 vix_out  = live_vix or row.get('vix_ref')
-                return {
+                result = {
                     **{k: v for k, v in row.items() if k not in ('strikes_json', 'id')},
                     'strikes'              : strikes_all,
                     'strikes_ex_next'      : strikes_ex_next,
@@ -5378,6 +5448,8 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
                     'underlying_prev_close': prev_close_stored,
                     'source'               : 'baseline' if row.get('is_daily_baseline') else 'intraday',
                 }
+                await asyncio.to_thread(_inject_synthetic_gex, result, display_sym)
+                return result
         except Exception as exc:
             log.warning('GEX DB fetch failed for %s, falling back to live: %s', display_sym, exc)
 
@@ -5393,6 +5465,7 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
         return JSONResponse({'error': str(exc)}, status_code=500)
 
     data['source'] = 'live'
+    await asyncio.to_thread(_inject_synthetic_gex, data, display_sym)
     _gex_transient_cache[display_sym] = {'data': data, 'ts': time.time()}
     return data
 
