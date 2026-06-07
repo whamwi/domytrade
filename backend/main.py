@@ -5215,104 +5215,91 @@ def _refresh_gex_stocks() -> None:
 
 
 def _fetch_occ_mm_pct(symbol: str, snapshot_date: str) -> list[dict]:
-    """Fetch market-maker volume % per expiry from OCC volume-query API.
+    """Fetch market-maker volume % for a symbol from OCC's marketdata API.
 
-    Returns a list of dicts ready for upsert_gex_mm_pct().
-    OCC volume-query endpoint returns account-type breakdown per expiry:
-      AccountType 3 = MarketMaker, 1 = Customer, 2 = Firm
+    Uses https://marketdata.theocc.com/volume-query — a plain CSV endpoint
+    (no Cloudflare protection) that returns per-exchange, per-account-type
+    volume for all expirations combined.
+
+    actype values: C=Customer, F=Firm, M=MarketMaker
+    porc   values: C=Call, P=Put
+
+    Returns a single-row list (one aggregate row per symbol/date) suitable
+    for upsert_gex_mm_pct().  The `expiry` field is set to '9999-01-01' as
+    a sentinel meaning "all expirations combined".
     """
+    import csv
+    import io
     import httpx
     from datetime import date as _date
 
-    report_date = snapshot_date.replace('-', '/')   # YYYY-MM-DD → YYYY/MM/DD
-    # OCC report date format is MM/DD/YYYY
     d = _date.fromisoformat(snapshot_date)
-    report_date_occ = f'{d.month:02d}/{d.day:02d}/{d.year}'
+    report_date_fmt = f'{d.year}{d.month:02d}{d.day:02d}'   # yyyyMMdd
 
-    url = 'https://www.theocc.com/webapps/volumequery'
-    headers = {
-        'User-Agent'  : 'Mozilla/5.0',
-        'Accept'      : 'application/json, text/javascript, */*',
-        'Referer'     : 'https://www.theocc.com/',
+    url = 'https://marketdata.theocc.com/volume-query'
+    params = {
+        'format'          : 'csv',
+        'reportDate'      : report_date_fmt,
+        'volumeQueryType' : 'O',       # Options
+        'symbolType'      : 'U',       # Underlying
+        'symbol'          : symbol,
+        'reportType'      : 'D',       # Daily
+        'accountType'     : 'ALL',
     }
 
-    # First fetch the list of active expiries for this symbol via series-search
-    series_url = 'https://www.theocc.com/webapps/series-search'
     try:
-        r = httpx.get(
-            series_url,
-            params={'symbolType': 'U', 'symbol': symbol, 'Product': 'O'},
-            headers=headers,
-            timeout=15,
-        )
+        r = httpx.get(url, params=params,
+                      headers={'User-Agent': 'Mozilla/5.0'},
+                      timeout=20)
         r.raise_for_status()
-        data = r.json()
+        text = r.text.strip()
     except Exception as exc:
-        log.warning('OCC series-search failed for %s: %s', symbol, exc)
+        log.warning('OCC volume-query failed for %s: %s', symbol, exc)
         return []
 
-    # Extract unique expiry dates from the series search results
-    expiries: set[str] = set()
-    for row in (data.get('data', {}).get('rows', []) or []):
-        exp = row.get('expirationDate', '')  # format varies — YYYYMMDD or YYYY-MM-DD
-        if exp:
-            expiries.add(exp)
-
-    if not expiries:
-        log.warning('OCC series-search returned no expiries for %s', symbol)
+    if not text or text.startswith('Report date') or text.startswith('Symbol'):
+        log.warning('OCC volume-query no data for %s on %s: %s', symbol, snapshot_date, text[:80])
         return []
 
-    # For each expiry, fetch volume breakdown by account type
-    mm_rows: list[dict] = []
-    for exp_raw in sorted(expiries)[:12]:   # cap at 12 nearest expiries
-        # Normalise expiry to YYYYMMDD for API param and YYYY-MM-DD for DB
-        exp_clean = exp_raw.replace('-', '')[:8]   # → YYYYMMDD
-        exp_db    = f'{exp_clean[:4]}-{exp_clean[4:6]}-{exp_clean[6:]}'  # → YYYY-MM-DD
-
+    # Parse CSV: quantity, underlying, symbol, actype, porc, exchange, actdate
+    call_mm = put_mm = call_total = put_total = 0
+    reader = csv.DictReader(io.StringIO(text))
+    for row in reader:
         try:
-            r2 = httpx.get(
-                url,
-                params={
-                    'reportDate' : report_date_occ,
-                    'symbolType' : 'U',
-                    'symbol'     : symbol,
-                    'contractDt' : exp_clean,
-                },
-                headers=headers,
-                timeout=15,
-            )
-            r2.raise_for_status()
-            vdata = r2.json()
-        except Exception as exc:
-            log.debug('OCC volume-query failed for %s exp=%s: %s', symbol, exp_clean, exc)
+            qty    = int(row.get('quantity', 0) or 0)
+            actype = (row.get('actype') or '').strip()
+            porc   = (row.get('porc')   or '').strip()
+        except (ValueError, KeyError):
             continue
+        if porc == 'C':
+            call_total += qty
+            if actype == 'M':
+                call_mm += qty
+        elif porc == 'P':
+            put_total += qty
+            if actype == 'M':
+                put_mm += qty
 
-        # Parse account-type rows → compute MM totals
-        call_mm = put_mm = call_total = put_total = 0
-        for acct in (vdata.get('data', {}).get('rows', []) or []):
-            acct_type  = acct.get('accountType', 0)
-            call_vol   = int(acct.get('callVolume', 0) or 0)
-            put_vol    = int(acct.get('putVolume',  0) or 0)
-            call_total += call_vol
-            put_total  += put_vol
-            if acct_type == 3:   # MarketMaker
-                call_mm += call_vol
-                put_mm  += put_vol
+    if call_total == 0 and put_total == 0:
+        log.warning('OCC volume-query parsed 0 volume for %s on %s', symbol, snapshot_date)
+        return []
 
-        if call_total == 0 and put_total == 0:
-            continue   # no data for this expiry today
+    mm_pct_c = round(call_mm / call_total, 4) if call_total else None
+    mm_pct_p = round(put_mm  / put_total,  4) if put_total  else None
+    log.info('OCC MM%% %s %s: calls %.1f%% (%d/%d)  puts %.1f%% (%d/%d)',
+             symbol, snapshot_date,
+             (mm_pct_c or 0)*100, call_mm, call_total,
+             (mm_pct_p or 0)*100, put_mm,  put_total)
 
-        mm_rows.append({
-            'symbol'        : symbol,
-            'snapshot_date' : snapshot_date,
-            'expiry'        : exp_db,
-            'mm_pct_calls'  : round(call_mm / call_total, 4) if call_total else None,
-            'mm_pct_puts'   : round(put_mm  / put_total,  4) if put_total  else None,
-            'total_call_vol': call_total,
-            'total_put_vol' : put_total,
-        })
-
-    return mm_rows
+    return [{
+        'symbol'        : symbol,
+        'snapshot_date' : snapshot_date,
+        'expiry'        : '9999-01-01',   # sentinel = all expirations combined
+        'mm_pct_calls'  : mm_pct_c,
+        'mm_pct_puts'   : mm_pct_p,
+        'total_call_vol': call_total,
+        'total_put_vol' : put_total,
+    }]
 
 
 # Proxy map — use tracked stock MM% as stand-in for index options
