@@ -4735,33 +4735,49 @@ def _get_vix() -> float | None:
 
 def _gex_strikes_from_maps(
     call_map: dict, put_map: dict,
-    include_expiries: set[str], spot: float
+    include_expiries: set[str], spot: float,
+    zero_dte_date: str | None = None,
 ) -> tuple[dict[float, float], dict[float, float]]:
     """Aggregate call/put GEX by strike for a subset of expiry dates.
 
     Returns (call_gex_by_strike, put_gex_by_strike) — values in $M.
+
+    zero_dte_date: when set (SPX only), options expiring on this date get an
+    adjusted OI = prior_OI + volume/2 to capture same-day 0DTE openings not
+    yet reflected in overnight-settled OI.  Applied conservatively: only adds
+    the intraday volume estimate on top of existing OI; never replaces it.
     """
     call_gex: dict[float, float] = {}
     put_gex:  dict[float, float] = {}
 
+    def _effective_oi(opt: dict, exp_date: str) -> float:
+        oi  = int(opt.get('openInterest') or 0)
+        if zero_dte_date and exp_date == zero_dte_date:
+            vol = int(opt.get('totalVolume') or 0)
+            # volume/2 estimates net new opens (each trade = 1 buyer + 1 seller)
+            oi  = oi + vol // 2
+        return oi
+
     for exp_key, strikes_data in call_map.items():
-        if exp_key.split(':')[0] not in include_expiries:
+        exp_date = exp_key.split(':')[0]
+        if exp_date not in include_expiries:
             continue
         for strike_str, opt_list in strikes_data.items():
             strike = float(strike_str)
             opt    = opt_list[0] if opt_list else {}
-            oi     = opt.get('openInterest') or 0
+            oi     = _effective_oi(opt, exp_date)
             gamma  = opt.get('gamma') or 0
             gex    = oi * gamma * 100 * spot / 1_000_000
             call_gex[strike] = call_gex.get(strike, 0.0) + gex
 
     for exp_key, strikes_data in put_map.items():
-        if exp_key.split(':')[0] not in include_expiries:
+        exp_date = exp_key.split(':')[0]
+        if exp_date not in include_expiries:
             continue
         for strike_str, opt_list in strikes_data.items():
             strike = float(strike_str)
             opt    = opt_list[0] if opt_list else {}
-            oi     = opt.get('openInterest') or 0
+            oi     = _effective_oi(opt, exp_date)
             gamma  = opt.get('gamma') or 0
             gex    = oi * gamma * 100 * spot / 1_000_000
             put_gex[strike] = put_gex.get(strike, 0.0) + gex
@@ -4904,13 +4920,22 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     ex_next_dates = set(all_dates[1:])           # all except the nearest
     all_dates_set = set(all_dates)
 
+    # SPX 0DTE adjustment: blend in volume/2 for same-day expirations so that
+    # intraday 0DTE openings (not yet in overnight OI) are represented in GEX.
+    # Only applied to SPX — index with daily expirations where 0DTE flow is largest.
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    _today_et = _dt.now(_ZI('America/New_York')).date().isoformat()
+    _zero_dte = _today_et if display_sym == 'SPX' else None
+
     # ── Compute each layer ────────────────────────────────────────────────────
-    c_all, p_all     = _gex_strikes_from_maps(call_map, put_map, all_dates_set, spot)
-    c_exnext, p_exnext = _gex_strikes_from_maps(call_map, put_map, ex_next_dates, spot)
+    c_all, p_all         = _gex_strikes_from_maps(call_map, put_map, all_dates_set,  spot, _zero_dte)
+    c_exnext, p_exnext   = _gex_strikes_from_maps(call_map, put_map, ex_next_dates,  spot, _zero_dte)
     c_monthly, p_monthly = _gex_strikes_from_maps(
         call_map, put_map,
         monthly_dates if monthly_dates else ex_next_dates,   # fallback if no monthly found
-        spot
+        spot,
+        # no 0DTE adjustment for monthly layer — monthly expirations are never same-day
     )
 
     layer_all     = _summarize_layer(c_all,     p_all,     spot, include_strike_rows=True)
