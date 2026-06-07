@@ -473,13 +473,13 @@ export default function GexPanel() {
             label="CALL WALL"
             value={lv.call_wall != null ? `$${fmt(lv.call_wall, lv.call_wall >= 1000 ? 0 : 1)}` : '—'}
             sub={!callWallInRange && lv.call_wall != null ? '↑ above chart range' : 'resistance'}
-            color="#f87171"
+            color="#4ade80"
           />
           <Card
             label="PUT WALL"
             value={lv.put_wall != null ? `$${fmt(lv.put_wall, lv.put_wall >= 1000 ? 0 : 1)}` : '—'}
             sub={!putWallInRange && lv.put_wall != null ? '↓ below chart range' : 'support'}
-            color="#4ade80"
+            color="#f87171"
           />
           <Card
             label="ZERO GAMMA"
@@ -854,8 +854,8 @@ export default function GexPanel() {
       {/* ── Legend ───────────────────────────────────────────────────────── */}
       {data && !allZeroOI && (
         <div className="flex items-center gap-4 px-5 py-1.5 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-          <LegendDot color="#4ade80" label="Put GEX → support" />
-          <LegendDot color="#f87171" label="Call GEX → resistance" />
+          <LegendDot color="#4ade80" label="Call GEX → resistance" />
+          <LegendDot color="#f87171" label="Put GEX → support" />
           <LegendLine color="var(--accent-blue)" label="ATM price" />
           <LegendLine color="#fbbf24" dashed label="Zero gamma flip" />
           {lvpRow && <LegendLine color="#a855f7" label="LVP · pin" />}
@@ -1023,8 +1023,8 @@ export default function GexPanel() {
                           ? 'var(--accent-blue)'
                           : isLvp    ? '#a855f7'
                           : isHvp    ? '#f97316'
-                          : row.is_call_wall ? '#f87171'
-                          : row.is_put_wall  ? '#4ade80'
+                          : row.is_call_wall ? '#4ade80'
+                          : row.is_put_wall  ? '#f87171'
                           : 'var(--text-muted)',
                         fontWeight: isWall || row.is_atm || isLvp || isHvp ? 700 : 400,
                       }}
@@ -1032,18 +1032,18 @@ export default function GexPanel() {
                       ${row.strike >= 1000 ? row.strike.toFixed(0) : row.strike.toFixed(1)}
                     </span>
                     {row.is_atm       && <Badge color="var(--accent-blue)">ATM</Badge>}
-                    {row.is_call_wall  && <Badge color="#f87171">CALL WALL</Badge>}
-                    {row.is_put_wall   && <Badge color="#4ade80">PUT WALL</Badge>}
+                    {row.is_call_wall  && <Badge color="#4ade80">CALL WALL</Badge>}
+                    {row.is_put_wall   && <Badge color="#f87171">PUT WALL</Badge>}
                     {isLvp             && <Badge color="#a855f7">LVP</Badge>}
                     {isHvp             && <Badge color="#f97316">HVP</Badge>}
                   </div>
 
-                  {/* Bar chart: put (green, left) | center | call (red, right) */}
+                  {/* Bar chart: put (red, left) | center | call (green, right) */}
                   <div className="flex items-center flex-1" style={{ height: 12 }}>
                     <div className="flex justify-end items-center" style={{ flex: 1 }}>
                       <div style={{
                         width: `${putPct}%`, height: 8,
-                        background: '#4ade80',
+                        background: '#f87171',
                         borderRadius: '3px 0 0 3px',
                         opacity: row.is_put_wall ? 1 : 0.55,
                       }} />
@@ -1052,7 +1052,7 @@ export default function GexPanel() {
                     <div className="flex justify-start items-center" style={{ flex: 1 }}>
                       <div style={{
                         width: `${callPct}%`, height: 8,
-                        background: '#f87171',
+                        background: '#4ade80',
                         borderRadius: '0 3px 3px 0',
                         opacity: row.is_call_wall ? 1 : 0.55,
                       }} />
@@ -1061,8 +1061,8 @@ export default function GexPanel() {
 
                   {/* Values */}
                   <div className="flex gap-0 shrink-0 font-mono text-xs tabular-nums" style={{ width: 165 }}>
-                    <span style={{ width: 55, textAlign: 'right', color: '#4ade80' }}>+{fmt(putVal, 1)}</span>
-                    <span style={{ width: 55, textAlign: 'right', color: '#f87171' }}>+{fmt(callVal, 1)}</span>
+                    <span style={{ width: 55, textAlign: 'right', color: '#f87171' }}>+{fmt(putVal, 1)}</span>
+                    <span style={{ width: 55, textAlign: 'right', color: '#4ade80' }}>+{fmt(callVal, 1)}</span>
                     <span style={{ width: 55, textAlign: 'right', color: _getNet(row) >= 0 ? '#4ade80' : '#f87171' }}>
                       {fmtMM(_getNet(row))}
                     </span>
