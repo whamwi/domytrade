@@ -937,10 +937,10 @@ export default function GexPanel() {
           >
             <div style={{ width: 150 }}>STRIKE</div>
             <div style={{ flex: 1, textAlign: 'center' }}>
-              ◄ PUT GEX (support) ·················· CALL GEX (resistance) ►
+              ◄ CALL GEX (resistance) ·················· PUT GEX (support) ►
             </div>
-            <div style={{ width: 50, textAlign: 'right' }}>PUT $M</div>
             <div style={{ width: 55, textAlign: 'right' }}>CALL $M</div>
+            <div style={{ width: 50, textAlign: 'right' }}>PUT $M</div>
             <div style={{ width: 55, textAlign: 'right' }}>NET $M</div>
           </div>
 
@@ -1008,9 +1008,9 @@ export default function GexPanel() {
                       : isHvp
                       ? 'rgba(249,115,22,0.05)'
                       : row.is_call_wall
-                      ? 'rgba(248,113,113,0.04)'
-                      : row.is_put_wall
                       ? 'rgba(74,222,128,0.04)'
+                      : row.is_put_wall
+                      ? 'rgba(248,113,113,0.04)'
                       : 'transparent',
                   }}
                 >
@@ -1038,31 +1038,31 @@ export default function GexPanel() {
                     {isHvp             && <Badge color="#f97316">HVP</Badge>}
                   </div>
 
-                  {/* Bar chart: put (red, left) | center | call (green, right) */}
+                  {/* Bar chart: call (green, left) | center | put (red, right) */}
                   <div className="flex items-center flex-1" style={{ height: 12 }}>
                     <div className="flex justify-end items-center" style={{ flex: 1 }}>
                       <div style={{
-                        width: `${putPct}%`, height: 8,
-                        background: '#f87171',
+                        width: `${callPct}%`, height: 8,
+                        background: '#4ade80',
                         borderRadius: '3px 0 0 3px',
-                        opacity: row.is_put_wall ? 1 : 0.55,
+                        opacity: row.is_call_wall ? 1 : 0.55,
                       }} />
                     </div>
                     <div style={{ width: 1, height: 14, background: 'var(--border)', flexShrink: 0 }} />
                     <div className="flex justify-start items-center" style={{ flex: 1 }}>
                       <div style={{
-                        width: `${callPct}%`, height: 8,
-                        background: '#4ade80',
+                        width: `${putPct}%`, height: 8,
+                        background: '#f87171',
                         borderRadius: '0 3px 3px 0',
-                        opacity: row.is_call_wall ? 1 : 0.55,
+                        opacity: row.is_put_wall ? 1 : 0.55,
                       }} />
                     </div>
                   </div>
 
-                  {/* Values */}
+                  {/* Values: CALL $M | PUT $M | NET $M — matches column header order */}
                   <div className="flex gap-0 shrink-0 font-mono text-xs tabular-nums" style={{ width: 165 }}>
-                    <span style={{ width: 55, textAlign: 'right', color: '#f87171' }}>+{fmt(putVal, 1)}</span>
                     <span style={{ width: 55, textAlign: 'right', color: '#4ade80' }}>+{fmt(callVal, 1)}</span>
+                    <span style={{ width: 50, textAlign: 'right', color: '#f87171' }}>+{fmt(putVal, 1)}</span>
                     <span style={{ width: 55, textAlign: 'right', color: _getNet(row) >= 0 ? '#4ade80' : '#f87171' }}>
                       {fmtMM(_getNet(row))}
                     </span>
