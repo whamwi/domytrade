@@ -26,6 +26,10 @@ interface StrikeRow {
   is_call_wall: boolean
   is_put_wall: boolean
   is_zero_gamma: boolean
+  // Synthetic (dealer-only) GEX — present when OCC MM% data is available
+  dealer_call_gex_mm?: number
+  dealer_put_gex_mm?: number
+  dealer_net_gex_mm?: number
 }
 
 interface GexData {
@@ -70,6 +74,11 @@ interface GexData {
   underlying_vwap?: number | null
   underlying_open?: number | null
   underlying_prev_close?: number | null
+  // Synthetic GEX — dealer-only estimate from OCC MM% data
+  mm_pct_calls?: number | null
+  mm_pct_puts?: number | null
+  mm_pct_date?: string | null
+  synthetic_net_gex_mm?: number | null
   delta_distribution?: {
     calls:         Record<string, number>
     puts:          Record<string, number>
@@ -132,9 +141,11 @@ export default function GexPanel() {
   const [loading, setLoading]           = useState(false)
   const [error,   setError]             = useState<string | null>(null)
   const [lastFetch, setLastFetch]       = useState<Date | null>(null)
-  const [showAll,          setShowAll]          = useState(false)
-  const [showDeltaHelp,    setShowDeltaHelp]    = useState(false)
-  const [elapsed,          setElapsed]          = useState(0)      // ms while loading
+  const [showAll,       setShowAll]       = useState(false)
+  const [showGammaHelp, setShowGammaHelp] = useState(false)
+  const [syntheticMode, setSyntheticMode] = useState(false)
+  // const [showDeltaHelp, setShowDeltaHelp] = useState(false)  // delta buckets removed — kept for future use
+  const [elapsed,  setElapsed] = useState(0)      // ms while loading
   const [fetchMs,   setFetchMs]         = useState<number | null>(null)  // final duration
   const refreshRef  = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -197,9 +208,17 @@ export default function GexPanel() {
     if (layer === 'monthly')  return data.strikes_monthly ?? data.strikes ?? []
     return data.strikes ?? []
   })()
-  const maxAbs  = strikes.reduce(
-    (m, r) => Math.max(m, r.call_gex_mm, r.put_gex_mm), 1
+  // True when OCC MM% data is available and at least one strike has dealer fields
+  const hasSynthetic = !!(
+    data?.mm_pct_calls != null &&
+    strikes.some(r => r.dealer_call_gex_mm != null)
   )
+
+  const maxAbs = strikes.reduce((m, r) => {
+    const c = syntheticMode && hasSynthetic ? (r.dealer_call_gex_mm ?? r.call_gex_mm) : r.call_gex_mm
+    const p = syntheticMode && hasSynthetic ? (r.dealer_put_gex_mm  ?? r.put_gex_mm)  : r.put_gex_mm
+    return Math.max(m, c, p)
+  }, 1)
   const atmIdx = strikes.findIndex(r => r.is_atm)
 
   // Detect weekend / pre-open OI blackout: OCC publishes OI after each session close;
@@ -219,6 +238,23 @@ export default function GexPanel() {
         const atmRevIdx = arr.length - 1 - atmIdx
         return Math.abs(i - atmRevIdx) <= 22
       })
+
+  // LVP / HVP — switch to dealer_net_gex_mm in synthetic mode
+  const _getNet = (r: StrikeRow) =>
+    syntheticMode && hasSynthetic ? (r.dealer_net_gex_mm ?? r.net_gex_mm) : r.net_gex_mm
+
+  const lvpRow = !allZeroOI && strikes.length > 0
+    ? (() => {
+        const best = strikes.reduce((b, r) => _getNet(r) > _getNet(b) ? r : b)
+        return _getNet(best) > 0 ? best : null
+      })()
+    : null
+  const hvpRow = !allZeroOI && strikes.length > 0
+    ? (() => {
+        const best = strikes.reduce((b, r) => _getNet(r) < _getNet(b) ? r : b)
+        return _getNet(best) < 0 ? best : null
+      })()
+    : null
 
   // ── Source badge ─────────────────────────────────────────────────────────
   const sourceLabel = (() => {
@@ -420,8 +456,11 @@ export default function GexPanel() {
         >
           <Card label="UNDERLYING" value={`$${fmt(data.underlying)}`} />
           <Card
-            label="NET GEX"
-            value={fmtMM(lv.net)}
+            label={syntheticMode && hasSynthetic ? 'DEALER GEX' : 'NET GEX'}
+            value={syntheticMode && hasSynthetic && data.synthetic_net_gex_mm != null
+              ? fmtMM(data.synthetic_net_gex_mm)
+              : fmtMM(lv.net)}
+            sub={syntheticMode && hasSynthetic ? 'dealer estimate' : 'per 1% price move'}
             color={lv.net >= 0 ? '#4ade80' : '#f87171'}
           />
           <Card
@@ -466,6 +505,33 @@ export default function GexPanel() {
               color="var(--accent-blue)"
             />
           )}
+          {lvpRow && (
+            <Card
+              label="Low Vol. Point"
+              value={`$${fmt(lvpRow.strike, lvpRow.strike >= 1000 ? 0 : 1)}`}
+              sub="dealers dampen"
+              color="#a855f7"
+              title={`Low Volatility Point — strike with the highest net GEX.\n\nAs price rises toward this level, dealers sell stock to delta-hedge (damping the rally). As price falls from it, they buy (cushioning the drop).\n\nTwo outcomes when price tests this level:\n1. Dealer selling volume exceeds buyer demand → price pins or reverses (wall holds).\n2. Buy flow overwhelms dealer hedging → price breaks through.\n\nKey: dealers only trade the Δ-change × OI — a fraction of total volume. Strong enough buying pressure can always push past it.`}
+            />
+          )}
+          {hvpRow && (
+            <Card
+              label="High Vol. Point"
+              value={`$${fmt(hvpRow.strike, hvpRow.strike >= 1000 ? 0 : 1)}`}
+              sub="dealers fuel moves"
+              color="#f97316"
+              title={`High Volatility Point — strike with the most negative net GEX.\n\nDealers are short gamma here: as price falls through this level they sell more stock to re-hedge, amplifying the move. As price rises through it they buy, amplifying the rally.\n\nUnlike the LVP which resists moves, the HVP accelerates them — once price breaks this level, dealer flow adds fuel rather than friction.`}
+            />
+          )}
+          {hasSynthetic && data.mm_pct_calls != null && (
+            <Card
+              label="DEALER MM%"
+              value={`C ${(data.mm_pct_calls * 100).toFixed(0)}%  P ${((data.mm_pct_puts ?? 0) * 100).toFixed(0)}%`}
+              sub={data.mm_pct_date ? `OCC · ${data.mm_pct_date}` : 'OCC volume'}
+              color="#a855f7"
+              title={`Market-maker share of options volume from OCC.\n\nC = % of call volume traded by market makers.\nP = % of put volume traded by market makers.\n\nDealer GEX = Total GEX × MM% — isolates the portion of gamma exposure that belongs to dealers who must delta-hedge.\n\nSource: OCC volume-query API (prior session).`}
+            />
+          )}
         </div>
       )}
 
@@ -478,12 +544,6 @@ export default function GexPanel() {
           {/* Top row: P/C (OI), OI totals, price context */}
           <div className="flex items-center gap-4 mb-2 flex-wrap">
             <span className="text-xs font-semibold" style={{ color: 'var(--text-dim)', letterSpacing: '0.1em' }}>OPTIONS FLOW</span>
-            <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
-              <span style={{ color: '#4ade80', fontWeight: 700 }}>C</span>
-              <span style={{ color: 'var(--text-dim)' }}> / </span>
-              <span style={{ color: '#f87171', fontWeight: 700 }}>P</span>
-              <span style={{ color: 'var(--text-dim)' }}> delta distribution</span>
-            </span>
             {data.delta_distribution && (
               <>
                 {/* OI-based P/C — accumulated positioning (last close snapshot) */}
@@ -491,22 +551,17 @@ export default function GexPanel() {
                   <span className="text-xs" title="P/C by Open Interest — accumulated positioning from the last close. Call-heavy = longs built up during the run-up.">
                     <span style={{ color: 'var(--text-dim)' }}>P/C OI </span>
                     <span className="font-bold tabular-nums" style={{
-                      color: data.delta_distribution.pc_ratio_oi > 1.2 ? '#f87171'
-                           : data.delta_distribution.pc_ratio_oi < 0.8 ? '#4ade80'
-                           : 'var(--text-muted)'
+                      color: data.delta_distribution.pc_ratio_oi > 1 ? '#f87171' : '#4ade80'
                     }}>
                       {data.delta_distribution.pc_ratio_oi.toFixed(2)}
                     </span>
                   </span>
                 )}
-                {/* Vol-based P/C — today's activity */}
                 {data.delta_distribution.pc_ratio_vol != null && (
                   <span className="text-xs" title="P/C by today's volume — what traders actually bought/sold today. Put-heavy on crash days.">
                     <span style={{ color: 'var(--text-dim)' }}>Vol </span>
                     <span className="font-bold tabular-nums" style={{
-                      color: data.delta_distribution.pc_ratio_vol > 1.2 ? '#f87171'
-                           : data.delta_distribution.pc_ratio_vol < 0.8 ? '#4ade80'
-                           : 'var(--text-muted)'
+                      color: data.delta_distribution.pc_ratio_vol > 1 ? '#f87171' : '#4ade80'
                     }}>
                       {data.delta_distribution.pc_ratio_vol.toFixed(2)}
                     </span>
@@ -514,12 +569,12 @@ export default function GexPanel() {
                 )}
                 <span style={{ width: 1, height: 12, background: 'var(--border)', flexShrink: 0 }} />
                 <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                  <span style={{ color: '#4ade80', fontWeight: 600 }}>▲ </span>
+                  <span style={{ color: '#4ade80', fontWeight: 600 }}>Calls </span>
                   <span style={{ color: '#4ade80', fontWeight: 700 }}>{(data.delta_distribution.call_oi / 1000).toFixed(0)}K</span>
                   <span style={{ color: 'var(--text-dim)' }}> OI</span>
                 </span>
                 <span className="tabular-nums" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                  <span style={{ color: '#f87171', fontWeight: 600 }}>▼ </span>
+                  <span style={{ color: '#f87171', fontWeight: 600 }}>Puts </span>
                   <span style={{ color: '#f87171', fontWeight: 700 }}>{(data.delta_distribution.put_oi / 1000).toFixed(0)}K</span>
                   <span style={{ color: 'var(--text-dim)' }}> OI</span>
                 </span>
@@ -546,119 +601,227 @@ export default function GexPanel() {
             )}
             <div style={{ flex: 1 }} />
             <button
-              onClick={() => setShowDeltaHelp(v => !v)}
+              onClick={() => setShowGammaHelp(v => !v)}
               className="text-xs px-2 py-0.5 rounded transition-colors"
               style={{
-                background: showDeltaHelp ? 'rgba(251,191,36,0.12)' : 'transparent',
+                background: showGammaHelp ? 'rgba(251,191,36,0.12)' : 'transparent',
                 color:      '#fbbf24',
-                border:     `1px solid ${showDeltaHelp ? 'rgba(251,191,36,0.6)' : 'rgba(251,191,36,0.35)'}`,
-                fontWeight: 600,
-                whiteSpace: 'nowrap',
+                border:     `1px solid ${showGammaHelp ? 'rgba(251,191,36,0.6)' : 'rgba(251,191,36,0.35)'}`,
+                fontWeight: 600, whiteSpace: 'nowrap', fontSize: 11,
               }}
             >
-              Δ Explained
+              Explained
             </button>
           </div>
 
-          {/* Delta distribution — 5 bucket columns */}
-          {data.delta_distribution && (() => {
-            const BUCKETS = ['0_20', '21_40', '41_60', '61_80', '81_100'] as const
-            const LABELS  = ['0–20Δ', '21–40Δ', '41–60Δ', '61–80Δ', '81–100Δ']
-            const allPcts = BUCKETS.flatMap(b => [
-              data.delta_distribution!.calls[b] ?? 0,
-              data.delta_distribution!.puts[b]  ?? 0,
-            ])
-            const maxPct = Math.max(...allPcts, 1)
+          {/* ── COMMENTED OUT: delta bucket distribution (OI-based ±Δ buckets) ──────
+          {data.delta_distribution && (() => { ... 5-column bucket grid ... })()}
+          {showDeltaHelp && ( ... delta ranges explanation panel ... )}
+          ── Replaced by Γ Concentration below, which directly measures where
+             gamma exposure lives relative to spot — more actionable for GEX. ── */}
+
+          {/* ── Γ Concentration — cumulative gamma within concentric ATM bands ── */}
+          {data.strikes.length > 0 && !allZeroOI && (() => {
+            const spot = data.underlying
+            const BANDS = [
+              { pct: 0.005, label: '±0.5%' },
+              { pct: 0.010, label: '±1%'   },
+              { pct: 0.020, label: '±2%'   },
+              { pct: 0.050, label: '±5%'   },
+              { pct: 0.100, label: '±10%'  },
+            ]
+            const src    = data.strikes
+            const totalC = src.reduce((s, r) => s + r.call_gex_mm, 0)
+            const totalP = src.reduce((s, r) => s + r.put_gex_mm,  0)
+            if (totalC <= 0 && totalP <= 0) return null
+
+            const bands = BANDS.map(({ pct, label }) => {
+              const lo  = spot * (1 - pct)
+              const hi  = spot * (1 + pct)
+              const sub = src.filter(r => r.strike >= lo && r.strike <= hi)
+              const c   = sub.reduce((s, r) => s + r.call_gex_mm, 0)
+              const p   = sub.reduce((s, r) => s + r.put_gex_mm,  0)
+              const pts = spot * pct   // dollar move = spot × pct
+              return {
+                label,
+                pts,
+                cPct: totalC > 0 ? (c / totalC) * 100 : 0,
+                pPct: totalP > 0 ? (p / totalP) * 100 : 0,
+              }
+            })
+
+            // ±1% band is the key pin level
+            const pin      = bands[1]
+            const pinMin   = Math.min(pin.cPct, pin.pPct)
+            const pinColor = pinMin >= 25 ? '#4ade80' : pinMin >= 10 ? '#fbbf24' : '#f87171'
+            const pinLabel = pinMin >= 25 ? 'Strong pin' : pinMin >= 10 ? 'Moderate' : 'Spread'
+
             return (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0 10px', marginTop: 6 }}>
-                {BUCKETS.map((b, i) => {
-                  const cPct = data.delta_distribution!.calls[b] ?? 0
-                  const pPct = data.delta_distribution!.puts[b]  ?? 0
-                  return (
-                    <div key={b} className="flex flex-col gap-1.5">
-                      {/* Bucket label */}
-                      <div style={{ fontSize: 9, color: '#94a3b8', letterSpacing: '0.05em', textAlign: 'center' }}>
-                        {LABELS[i]}
+              <div style={{ marginTop: 8 }}>
+                {/* Sub-header */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600, letterSpacing: '0.10em' }}>
+                    Γ CONCENTRATION
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
+                      color: pinColor, background: `${pinColor}15`, border: `1px solid ${pinColor}30`,
+                    }}
+                    title={`${pin.cPct.toFixed(0)}% of call gamma and ${pin.pPct.toFixed(0)}% of put gamma lives within ±1% of ATM. High % = gamma is pinned near spot → dealers must hedge actively here.`}
+                  >
+                    {pinLabel} at ±1%
+                  </span>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                    cumulative gamma within each band of{' '}
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      ${spot >= 1000 ? spot.toFixed(0) : spot.toFixed(2)}
+                    </span>
+                  </span>
+                </div>
+
+                {/* Column headers — widths mirror the GEX bar chart (strike=150, bars=flex:1, values=165) */}
+                <div className="flex items-center gap-2" style={{ marginBottom: 3 }}>
+                  <div style={{ width: 140 }} />
+                  <div className="flex items-center" style={{ flex: 1 }}>
+                    <div style={{ flex: 1, textAlign: 'right', fontSize: 9, color: '#4ade80', fontWeight: 600, letterSpacing: '0.06em', paddingRight: 10 }}>CALLS ◄</div>
+                    <div style={{ width: 16, flexShrink: 0 }} />
+                    <div style={{ flex: 1, textAlign: 'left', fontSize: 9, color: '#f87171', fontWeight: 600, letterSpacing: '0.06em', paddingLeft: 10 }}>► PUTS</div>
+                  </div>
+                  <div style={{ width: 150, display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 4, paddingLeft: 8 }}>
+                    <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600, letterSpacing: '0.06em', width: 30, textAlign: 'right' }}>C%</span>
+                    <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>·</span>
+                    <span style={{ fontSize: 9, color: '#f87171', fontWeight: 600, letterSpacing: '0.06em', width: 30, textAlign: 'left' }}>P%</span>
+                  </div>
+                </div>
+
+                {/* Band rows — gap-2 + column widths match the GEX bar chart exactly */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {bands.map(({ label, pts, cPct, pPct }, i) => {
+                    const isKey  = i === 1
+                    const ptsStr = `±$${pts >= 100 ? pts.toFixed(0) : pts >= 10 ? pts.toFixed(1) : pts.toFixed(2)}`
+                    return (
+                    <div key={label} className="flex items-center gap-2" style={{ height: 20 }}>
+                      {/* Band label — 140px */}
+                      <div style={{ width: 140, textAlign: 'right', display: 'flex', alignItems: 'baseline', justifyContent: 'flex-end', gap: 4 }}>
+                        <span style={{
+                          fontSize: 12, fontVariantNumeric: 'tabular-nums',
+                          color: isKey ? 'var(--text-primary)' : 'var(--text-muted)',
+                          fontWeight: isKey ? 700 : 500,
+                        }}>
+                          {label}
+                        </span>
+                        <span style={{
+                          fontSize: 10, fontVariantNumeric: 'tabular-nums',
+                          color: isKey ? 'var(--text-muted)' : 'var(--text-dim)',
+                        }}>
+                          ({ptsStr})
+                        </span>
                       </div>
-                      {/* Call bar + % */}
-                      <div className="flex flex-col gap-0.5">
-                        <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-                          <div style={{ width: `${(cPct / maxPct) * 100}%`, height: '100%', background: '#4ade80', opacity: 0.85 }} />
+
+                      {/* Bar container — green left track | dashed centre | red right track */}
+                      <div className="flex items-center" style={{ flex: 1, height: 8 }}>
+                        <div className="flex justify-end items-center" style={{ flex: 1, height: 8, background: 'rgba(74,222,128,0.08)', borderRadius: '3px 0 0 3px' }}>
+                          <div style={{
+                            height: 8, width: `${cPct}%`,
+                            background: '#4ade80', borderRadius: '3px 0 0 3px',
+                            opacity: isKey ? 0.9 : 0.5,
+                          }} />
                         </div>
-                        <div style={{ fontSize: 13, color: '#4ade80', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                        {/* Centre gap — dashed line aligned with GEX chart spine below */}
+                        <div style={{ width: 16, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', height: 18 }}>
+                          <div style={{
+                            width: 1,
+                            height: 18,
+                            background: 'repeating-linear-gradient(to bottom, rgba(148,163,184,0.45) 0px, rgba(148,163,184,0.45) 3px, transparent 3px, transparent 6px)',
+                          }} />
+                        </div>
+                        <div className="flex justify-start items-center" style={{ flex: 1, height: 8, background: 'rgba(248,113,113,0.08)', borderRadius: '0 3px 3px 0' }}>
+                          <div style={{
+                            height: 8, width: `${pPct}%`,
+                            background: '#f87171', borderRadius: '0 3px 3px 0',
+                            opacity: isKey ? 0.9 : 0.5,
+                          }} />
+                        </div>
+                      </div>
+
+                      {/* Values — 150px mirrors the label column, numbers left-aligned next to bars */}
+                      <div style={{ width: 150, display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 4, paddingLeft: 8 }}>
+                        <span style={{
+                          fontSize: 12, color: '#4ade80', fontVariantNumeric: 'tabular-nums',
+                          fontWeight: isKey ? 700 : 500, width: 30, textAlign: 'right',
+                        }}>
                           {cPct.toFixed(0)}%
-                        </div>
-                      </div>
-                      {/* Put bar + % */}
-                      <div className="flex flex-col gap-0.5">
-                        <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-                          <div style={{ width: `${(pPct / maxPct) * 100}%`, height: '100%', background: '#f87171', opacity: 0.85 }} />
-                        </div>
-                        <div style={{ fontSize: 13, color: '#f87171', textAlign: 'center', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>·</span>
+                        <span style={{
+                          fontSize: 12, color: '#f87171', fontVariantNumeric: 'tabular-nums',
+                          fontWeight: isKey ? 700 : 500, width: 30, textAlign: 'left',
+                        }}>
                           {pPct.toFixed(0)}%
-                        </div>
+                        </span>
                       </div>
                     </div>
-                  )
-                })}
+                    )
+                  })}
+                </div>
+
+                {/* ── Explanation panel ── */}
+                {showGammaHelp && (
+                  <div
+                    style={{
+                      marginTop: 10, borderRadius: 4, padding: '10px 12px',
+                      background: 'rgba(251,191,36,0.05)', border: '1px solid rgba(251,191,36,0.2)',
+                    }}
+                  >
+                    <div style={{ fontSize: 10, color: '#fbbf24', fontWeight: 700, letterSpacing: '0.08em', marginBottom: 8 }}>
+                      HOW TO READ Γ CONCENTRATION
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0 12px' }}>
+                      {[
+                        {
+                          band: '±0.5%',
+                          title: 'Immediate pin',
+                          body: 'The tightest squeeze zone. If >40% of gamma lives here, dealers are forced to hedge on every tick — expect very tight, choppy price action around ATM.',
+                        },
+                        {
+                          band: '±1%',
+                          title: 'Intraday range',
+                          body: 'The key pin level. A typical pinned day stays within this band. High % here = magnet effect pulling price back to ATM. Watch for reversals at the edges.',
+                        },
+                        {
+                          band: '±2%',
+                          title: 'Session range',
+                          body: 'Normal intraday drift. If most gamma is contained here, the day is likely range-bound with no sustained trend. Breakout above = gamma regime weakening.',
+                        },
+                        {
+                          band: '±5%',
+                          title: 'Weekly move',
+                          body: 'Covers most earnings-day and macro-event moves. High cumulative % here means gamma is spread across a wide range — less pinning, more directional potential.',
+                        },
+                        {
+                          band: '±10%',
+                          title: 'Tail / event',
+                          body: 'Far-wing positioning. Typically 90 %+ by this band. The remaining percentage beyond ±10% is deep OTM insurance with negligible gamma — dealers barely hedge it.',
+                        },
+                      ].map(({ band, title, body }) => (
+                        <div key={band} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <div style={{ fontSize: 11, color: '#fbbf24', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{band}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>{title}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.55 }}>{body}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(251,191,36,0.12)', fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                      <span style={{ color: '#4ade80', fontWeight: 600 }}>Strong pin</span> = ±1% holds ≥25% of gamma on both sides — expect tight mean-reversion, stock magnetised to ATM.{'  '}
+                      <span style={{ color: '#fbbf24', fontWeight: 600 }}>Moderate</span> = 10–25% — some anchoring near spot, range-bound but breakout possible.{'  '}
+                      <span style={{ color: '#f87171', fontWeight: 600 }}>Spread</span> = &lt;10% — gamma dispersed, dealers hedge lightly near spot, trending/amplified moves more likely.
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })()}
-
-          {/* ── Delta explanation panel ─────────────────────────────────── */}
-          {showDeltaHelp && (
-            <div
-              className="mt-3 rounded"
-              style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', padding: '10px 12px' }}
-            >
-              <div className="text-xs font-semibold mb-2" style={{ color: '#818cf8', letterSpacing: '0.08em' }}>
-                DELTA RANGES — WHAT THEY MEAN
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0 10px' }}>
-                {[
-                  {
-                    range: '0–20Δ',
-                    name: 'Far OTM',
-                    call: 'Cheap speculative bets. Buyers expect a large move up. Low probability, high reward if it moves.',
-                    put:  'Cheap insurance / tail-risk hedges. Far below market — protect against a crash.',
-                  },
-                  {
-                    range: '21–40Δ',
-                    name: 'OTM',
-                    call: 'Directional plays with moderate premium. Retail buying for leveraged upside exposure.',
-                    put:  'Active hedging zone. Funds and traders buying protection against a moderate pullback.',
-                  },
-                  {
-                    range: '41–60Δ',
-                    name: 'ATM zone',
-                    call: 'Highest gamma — most sensitive to price movement. Near 50Δ = reacts 1:1 with stock.',
-                    put:  'ATM puts decay fast but are most reactive. Often used for short-term directional plays.',
-                  },
-                  {
-                    range: '61–80Δ',
-                    name: 'ITM',
-                    call: 'Behaves like leveraged stock. Less time value, more intrinsic. Institutional / professional.',
-                    put:  'Deep hedges or synthetic short positions. High delta = strong downside protection.',
-                  },
-                  {
-                    range: '81–100Δ',
-                    name: 'Deep ITM',
-                    call: 'Stock replacement strategy. Very low time value. Used in covered calls or LEAPS.',
-                    put:  'Near-certain payout. Essentially a short stock with limited downside risk.',
-                  },
-                ].map(({ range, name, call, put }) => (
-                  <div key={range} className="flex flex-col gap-1">
-                    <div style={{ fontSize: 9, color: '#94a3b8', letterSpacing: '0.05em', textAlign: 'center' }}>
-                      {range}
-                    </div>
-                    <div className="text-center text-xs font-semibold" style={{ color: '#818cf8', fontSize: 9 }}>{name}</div>
-                    <div style={{ fontSize: 9, color: '#4ade80', lineHeight: 1.45, opacity: 0.9 }}>{call}</div>
-                    <div style={{ fontSize: 9, color: '#f87171', lineHeight: 1.45, opacity: 0.9, marginTop: 2 }}>{put}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -693,7 +856,24 @@ export default function GexPanel() {
           <LegendDot color="#f87171" label="Call GEX → resistance" />
           <LegendLine color="var(--accent-blue)" label="ATM price" />
           <LegendLine color="#fbbf24" dashed label="Zero gamma flip" />
+          {lvpRow && <LegendLine color="#a855f7" label="LVP · pin" />}
+          {hvpRow && <LegendLine color="#f97316" dashed label="HVP · accel" />}
           <div style={{ flex: 1 }} />
+          {hasSynthetic && (
+            <button
+              onClick={() => setSyntheticMode(v => !v)}
+              className="text-xs px-2 py-0.5 rounded"
+              style={{
+                background: syntheticMode ? 'rgba(168,85,247,0.15)' : 'var(--bg-row)',
+                border: `1px solid ${syntheticMode ? '#a855f7' : 'var(--border)'}`,
+                color: syntheticMode ? '#a855f7' : 'var(--text-dim)',
+                fontWeight: syntheticMode ? 600 : 400,
+              }}
+              title="Toggle between Total GEX (all market participants) and Dealer GEX (market-maker only, from OCC volume data)"
+            >
+              🔬 {syntheticMode ? 'dealer view' : 'synthetic'}
+            </button>
+          )}
           <button
             onClick={() => setShowAll(v => !v)}
             className="text-xs px-2 py-0.5 rounded"
@@ -763,12 +943,41 @@ export default function GexPanel() {
           </div>
 
           {visibleRows.map((row) => {
-            const callPct = Math.min((row.call_gex_mm / maxAbs) * 100, 100)
-            const putPct  = Math.min((row.put_gex_mm  / maxAbs) * 100, 100)
+            const callVal = syntheticMode && hasSynthetic ? (row.dealer_call_gex_mm ?? row.call_gex_mm) : row.call_gex_mm
+            const putVal  = syntheticMode && hasSynthetic ? (row.dealer_put_gex_mm  ?? row.put_gex_mm)  : row.put_gex_mm
+            const callPct = Math.min((callVal / maxAbs) * 100, 100)
+            const putPct  = Math.min((putVal  / maxAbs) * 100, 100)
             const isWall  = row.is_call_wall || row.is_put_wall
+
+            const isLvp = lvpRow != null && row.strike === lvpRow.strike
+            const isHvp = hvpRow != null && row.strike === hvpRow.strike
 
             return (
               <div key={row.strike}>
+                {/* LVP marker — max net GEX → pin zone */}
+                {isLvp && (
+                  <div className="flex items-center gap-2 my-1" style={{ borderTop: '1px solid #a855f7', opacity: 0.8 }}>
+                    <span
+                      className="text-xs px-1"
+                      style={{ color: '#a855f7', background: 'var(--bg-main)', fontSize: 9, letterSpacing: '0.08em' }}
+                    >
+                      ── LVP ${fmt(lvpRow.strike, lvpRow.strike >= 1000 ? 0 : 1)} ──
+                    </span>
+                  </div>
+                )}
+
+                {/* HVP marker — most negative net GEX → acceleration zone */}
+                {isHvp && (
+                  <div className="flex items-center gap-2 my-1" style={{ borderTop: '1px dashed #f97316', opacity: 0.8 }}>
+                    <span
+                      className="text-xs px-1"
+                      style={{ color: '#f97316', background: 'var(--bg-main)', fontSize: 9, letterSpacing: '0.08em' }}
+                    >
+                      ── HVP ${fmt(hvpRow.strike, hvpRow.strike >= 1000 ? 0 : 1)} ──
+                    </span>
+                  </div>
+                )}
+
                 {/* Zero gamma flip line */}
                 {row.is_zero_gamma && (
                   <div className="flex items-center gap-2 my-1" style={{ borderTop: '1px dashed #fbbf24', opacity: 0.75 }}>
@@ -792,6 +1001,10 @@ export default function GexPanel() {
                     minHeight: 20,
                     background: row.is_atm
                       ? 'rgba(59,130,246,0.05)'
+                      : isLvp
+                      ? 'rgba(168,85,247,0.05)'
+                      : isHvp
+                      ? 'rgba(249,115,22,0.05)'
                       : row.is_call_wall
                       ? 'rgba(248,113,113,0.04)'
                       : row.is_put_wall
@@ -806,17 +1019,21 @@ export default function GexPanel() {
                       style={{
                         color: row.is_atm
                           ? 'var(--accent-blue)'
+                          : isLvp    ? '#a855f7'
+                          : isHvp    ? '#f97316'
                           : row.is_call_wall ? '#f87171'
                           : row.is_put_wall  ? '#4ade80'
                           : 'var(--text-muted)',
-                        fontWeight: isWall || row.is_atm ? 700 : 400,
+                        fontWeight: isWall || row.is_atm || isLvp || isHvp ? 700 : 400,
                       }}
                     >
                       ${row.strike >= 1000 ? row.strike.toFixed(0) : row.strike.toFixed(1)}
                     </span>
-                    {row.is_atm      && <Badge color="var(--accent-blue)">ATM</Badge>}
-                    {row.is_call_wall && <Badge color="#f87171">CALL WALL</Badge>}
-                    {row.is_put_wall  && <Badge color="#4ade80">PUT WALL</Badge>}
+                    {row.is_atm       && <Badge color="var(--accent-blue)">ATM</Badge>}
+                    {row.is_call_wall  && <Badge color="#f87171">CALL WALL</Badge>}
+                    {row.is_put_wall   && <Badge color="#4ade80">PUT WALL</Badge>}
+                    {isLvp             && <Badge color="#a855f7">LVP</Badge>}
+                    {isHvp             && <Badge color="#f97316">HVP</Badge>}
                   </div>
 
                   {/* Bar chart: put (green, left) | center | call (red, right) */}
@@ -842,10 +1059,10 @@ export default function GexPanel() {
 
                   {/* Values */}
                   <div className="flex gap-0 shrink-0 font-mono text-xs tabular-nums" style={{ width: 165 }}>
-                    <span style={{ width: 55, textAlign: 'right', color: '#4ade80' }}>+{fmt(row.put_gex_mm, 1)}</span>
-                    <span style={{ width: 55, textAlign: 'right', color: '#f87171' }}>+{fmt(row.call_gex_mm, 1)}</span>
-                    <span style={{ width: 55, textAlign: 'right', color: row.net_gex_mm >= 0 ? '#4ade80' : '#f87171' }}>
-                      {fmtMM(row.net_gex_mm)}
+                    <span style={{ width: 55, textAlign: 'right', color: '#4ade80' }}>+{fmt(putVal, 1)}</span>
+                    <span style={{ width: 55, textAlign: 'right', color: '#f87171' }}>+{fmt(callVal, 1)}</span>
+                    <span style={{ width: 55, textAlign: 'right', color: _getNet(row) >= 0 ? '#4ade80' : '#f87171' }}>
+                      {fmtMM(_getNet(row))}
                     </span>
                   </div>
                 </div>
@@ -863,11 +1080,12 @@ export default function GexPanel() {
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────
-function Card({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+function Card({ label, value, sub, color, title }: { label: string; value: string; sub?: string; color?: string; title?: string }) {
   return (
     <div
       className="flex flex-col px-3 py-2 rounded shrink-0"
-      style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', minWidth: 88 }}
+      style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', minWidth: 88, cursor: title ? 'help' : 'default' }}
+      title={title}
     >
       <span style={{ color: 'var(--text-dim)', fontSize: 9, fontWeight: 600, letterSpacing: '0.12em' }}>{label}</span>
       <span className="font-bold tabular-nums" style={{ color: color ?? 'var(--text-primary)', fontSize: 14, lineHeight: 1.3 }}>{value}</span>
