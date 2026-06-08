@@ -2334,7 +2334,8 @@ async def background_loop():
             # 6:00 AM ET on weekdays — GEX daily baseline snapshot (full official OI, pre-market)
             # Weekday check required: OCC only reports OI after session close — Schwab returns
             # zero OI all weekend, so a weekend baseline snapshot is useless noise.
-            if _et_hhmm == 6 * 60 and last_gex_baseline_run != _today and _weekday < 5:
+            # Use >= so a server restart after 6 AM still fires the baseline that day.
+            if _et_hhmm >= 6 * 60 and last_gex_baseline_run != _today and _weekday < 5:
                 try:
                     await asyncio.to_thread(_refresh_gex_indices, True)
                     log.info('GEX daily baseline snapshots saved for %s', GEX_INDEX_SYMBOLS)
@@ -2358,9 +2359,11 @@ async def background_loop():
                 asyncio.create_task(refresh_stock_profiles())
                 last_profiles_run = _today
 
-            # Every 15 min during RTH (9:30 AM – 4:00 PM ET) — GEX intraday estimate
+            # Every 15 min during RTH (9:30 AM – 4:00 PM ET, weekdays only) — GEX intraday estimate
             # Uses live Schwab chain; volume proxies OI changes — approximate but directional.
-            _is_rth = 9 * 60 + 30 <= _et_hhmm <= 16 * 60
+            # Weekday guard required: Schwab zeroes all OI on weekends; saving those snapshots
+            # pollutes the DB and masks the last valid baseline on Monday morning.
+            _is_rth = _weekday < 5 and 9 * 60 + 30 <= _et_hhmm < 16 * 60
             if _is_rth and (time.time() - last_gex_intraday_ts) >= GEX_INTRADAY_SECS:
                 try:
                     await asyncio.to_thread(_refresh_gex_indices, False)
