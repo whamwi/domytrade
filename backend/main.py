@@ -2171,7 +2171,8 @@ async def background_loop():
     last_vbh_stocks_vbh_run = ''   # 'YYYY-MM-DD' of last Saturday VBH recompute for stocks
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
     last_archive_run        = ''   # 'YYYY-MM-DD' of last entry_log → archive move
-    last_gex_baseline_run   = ''   # 'YYYY-MM-DD' of last 6:00 AM GEX baseline snapshot
+    last_gex_baseline_run   = ''   # 'YYYY-MM-DD' of last successful GEX baseline (real OI)
+    last_gex_baseline_ts    = 0.0  # epoch of last baseline attempt (for 5-min retry rate-limit)
     last_gex_stocks_run     = ''   # 'YYYY-MM-DD' of last 5:30 PM stock GEX snapshot
     last_gex_intraday_ts    = 0.0  # epoch of last 15-min GEX intraday refresh
     GEX_INTRADAY_SECS       = 900  # 15 minutes
@@ -2351,13 +2352,23 @@ async def background_loop():
             # Weekday check required: OCC only reports OI after session close — Schwab returns
             # zero OI all weekend, so a weekend baseline snapshot is useless noise.
             # Use >= so a server restart after 6 AM still fires the baseline that day.
-            if _et_hhmm >= 6 * 60 and last_gex_baseline_run != _today and _weekday < 5:
+            #
+            # Retry logic: OCC typically publishes by 7-8 AM ET; Schwab may not have loaded
+            # overnight OI at exactly 6 AM. _refresh_gex_indices returns False when all GEX
+            # is zero (OI not available yet) — retry every 5 min until real data arrives.
+            _gex_baseline_retry_ok = (time.time() - last_gex_baseline_ts) >= 300
+            if _et_hhmm >= 6 * 60 and last_gex_baseline_run != _today and _weekday < 5 and _gex_baseline_retry_ok:
                 try:
-                    await asyncio.to_thread(_refresh_gex_indices, True)
-                    log.info('GEX daily baseline snapshots saved for %s', GEX_INDEX_SYMBOLS)
-                    last_gex_baseline_run = _today   # only mark done on success
+                    got_oi = await asyncio.to_thread(_refresh_gex_indices, True)
+                    last_gex_baseline_ts = time.time()
+                    if got_oi:
+                        last_gex_baseline_run = _today   # mark done only when real OI arrives
+                        log.info('GEX daily baseline saved for %s (real OI confirmed)', GEX_INDEX_SYMBOLS)
+                    else:
+                        log.info('GEX baseline: OI not ready yet — will retry in 5 min')
                 except Exception as e:
-                    log.warning('GEX baseline error (will retry next tick): %s', e)
+                    last_gex_baseline_ts = time.time()
+                    log.warning('GEX baseline error (will retry in 5 min): %s', e)
 
             # 5:30 PM ET on weekdays — GEX daily baseline for tracked stock symbols
             # Runs AFTER market close so Schwab still has settled OI for the day.
@@ -5129,21 +5140,28 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     }
 
 
-def _refresh_gex_indices(is_baseline: bool = False) -> None:
+def _refresh_gex_indices(is_baseline: bool = False) -> bool:
     """Compute GEX for all tracked index symbols and persist to Supabase.
 
     Called from background_loop:
       - is_baseline=True  at 6am ET  → full OI, authoritative
       - is_baseline=False every 15min during RTH → intraday estimate
+
+    Returns True if at least one symbol had non-zero net GEX (real OI was
+    available).  Returns False when all GEX values are zero (Schwab hasn't
+    loaded overnight OI yet — baseline should retry rather than mark as done).
     """
     import json as _json
     from db import save_gex_snapshot
 
     vix = _get_vix()   # fetch once, share across all three symbols
+    got_real_data = False
 
     for sym in GEX_INDEX_SYMBOLS:
         try:
             data = _compute_gex(sym, strike_count=60, vix=vix)
+            if data.get('net_gex_mm', 0) != 0:
+                got_real_data = True
             row = {
                 'symbol'              : sym,
                 'is_daily_baseline'   : is_baseline,
@@ -5186,6 +5204,8 @@ def _refresh_gex_indices(is_baseline: bool = False) -> None:
                      '(BASELINE)' if is_baseline else '(intraday)')
         except Exception as exc:
             log.warning('GEX refresh failed for %s: %s', sym, exc)
+
+    return got_real_data
 
 
 def _refresh_gex_stocks() -> None:
