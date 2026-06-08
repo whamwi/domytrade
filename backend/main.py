@@ -2176,6 +2176,22 @@ async def background_loop():
     last_gex_intraday_ts    = 0.0  # epoch of last 15-min GEX intraday refresh
     GEX_INTRADAY_SECS       = 900  # 15 minutes
 
+    # ── Startup GEX baseline ───────────────────────────────────────────────────
+    # If the server restarts on a weekday after 6 AM ET, fire the baseline
+    # immediately instead of waiting up to 30s for the first background loop tick.
+    # This prevents missed baselines caused by Railway redeploys during market hours.
+    _startup_et = datetime.now(ET)
+    if _startup_et.weekday() < 5 and _startup_et.hour >= 6:
+        async def _startup_gex_baseline():
+            try:
+                await asyncio.to_thread(_refresh_gex_indices, True)
+                log.info('GEX startup baseline saved for %s', GEX_INDEX_SYMBOLS)
+            except Exception as _e:
+                log.warning('GEX startup baseline error: %s', _e)
+        asyncio.create_task(_startup_gex_baseline())
+        last_gex_baseline_run = _startup_et.date().isoformat()
+        log.info('GEX startup baseline queued (weekday, post-6AM ET)')
+
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 30s cadence
         try:
@@ -2339,9 +2355,9 @@ async def background_loop():
                 try:
                     await asyncio.to_thread(_refresh_gex_indices, True)
                     log.info('GEX daily baseline snapshots saved for %s', GEX_INDEX_SYMBOLS)
+                    last_gex_baseline_run = _today   # only mark done on success
                 except Exception as e:
-                    log.warning('GEX baseline error: %s', e)
-                last_gex_baseline_run = _today
+                    log.warning('GEX baseline error (will retry next tick): %s', e)
 
             # 5:30 PM ET on weekdays — GEX daily baseline for tracked stock symbols
             # Runs AFTER market close so Schwab still has settled OI for the day.
