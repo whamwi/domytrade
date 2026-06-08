@@ -4819,13 +4819,19 @@ def _summarize_layer(
         })
 
     total_net  = round(sum(r['net_gex_mm'] for r in rows), 2)
-    call_wall  = max(rows, key=lambda r: r['call_gex_mm'])['strike']
-    put_wall   = max(rows, key=lambda r: r['put_gex_mm'])['strike']
+
+    # Only set walls when there is real GEX concentration.
+    # When OI is zero (weekends / no data) all GEX values are 0 and max()
+    # would just return the first (lowest) strike — producing nonsense like $2000.
+    _best_call = max(rows, key=lambda r: r['call_gex_mm'])
+    _best_put  = max(rows, key=lambda r: r['put_gex_mm'])
+    call_wall  = _best_call['strike'] if _best_call['call_gex_mm'] > 0 else None
+    put_wall   = _best_put['strike']  if _best_put['put_gex_mm']  > 0 else None
 
     # Mark walls
     for r in rows:
-        r['is_call_wall'] = (r['strike'] == call_wall)
-        r['is_put_wall']  = (r['strike'] == put_wall)
+        r['is_call_wall'] = (call_wall is not None and r['strike'] == call_wall)
+        r['is_put_wall']  = (put_wall  is not None and r['strike'] == put_wall)
 
     # Interpolate zero-gamma flip
     zero_gamma: float | None = None
