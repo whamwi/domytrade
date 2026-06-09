@@ -8013,7 +8013,8 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     }
 
 
-def _zone_to_live_adj(zone: str, ib_score: int) -> int:
+def _zone_to_live_adj(zone: str, ib_score: int,
+                      confirmed_dir: int = 0) -> int:
     """Convert a live-read zone into a signed score adjustment.
 
     The adjustment is always applied in the direction that either
@@ -8027,14 +8028,18 @@ def _zone_to_live_adj(zone: str, ib_score: int) -> int:
         INVALIDATED→ −3  (flip)              INVALIDATED→ +3
 
       Neutral IB (ib_score == 0) — zone carries its own direction:
-        CONFIRMED above ON range → +2
-        CONFIRMED below ON range → −2
+        CONFIRMED above ON range → +2   (confirmed_dir = +1)
+        CONFIRMED below ON range → −2   (confirmed_dir = −1)
         INTACT                  →  0
         WEAKENING               → −1
         CRITICAL                → −2
         INVALIDATED             → −3
+
+    For neutral IB the caller MUST supply confirmed_dir (+1 or -1) when
+    the zone is CONFIRMED so the sign is resolved correctly.  Without it
+    the function would default direction=+1 (ib_score 0 >= 0) and always
+    return +2, incorrectly labelling a bearish breakdown as Bullish.
     """
-    direction = 1 if ib_score >= 0 else -1
     _MAP = {
         'CONFIRMED':   2,
         'INTACT':      0,
@@ -8045,6 +8050,13 @@ def _zone_to_live_adj(zone: str, ib_score: int) -> int:
         'BUILDING':    0,
     }
     raw = _MAP.get(zone, 0)
+
+    # Neutral IB + CONFIRMED: direction comes from price vs overnight range,
+    # not from the IB score sign (which is 0 and would wrongly default to +1).
+    if ib_score == 0 and zone == 'CONFIRMED' and confirmed_dir != 0:
+        return confirmed_dir * raw
+
+    direction = 1 if ib_score >= 0 else -1
     return direction * raw
 
 
@@ -8734,7 +8746,18 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
                     dev_read = (f'\n\n{dev_letter} at {dev_price:.2f}, below ON POC ({on_poc_s}). '
                                 f'Sellers slightly in control — watch for ONL ({on_low_s}) test.')
 
-    live_adj      = _zone_to_live_adj(effective_zone, ib_score_raw)
+    # For neutral IB (ib_score == 0) the CONFIRMED zone can be either bullish
+    # (price broke above ONH) or bearish (price broke below ONL).  Resolve the
+    # direction here where we have price and overnight range in scope, and pass
+    # it to _zone_to_live_adj so it picks the correct sign.
+    confirmed_dir = 0
+    if ib_score_raw == 0 and effective_zone == 'CONFIRMED':
+        if on_high is not None and last_close > on_high:
+            confirmed_dir = 1   # broke above overnight range → bullish
+        elif on_low is not None and last_close < on_low:
+            confirmed_dir = -1  # broke below overnight range → bearish
+
+    live_adj      = _zone_to_live_adj(effective_zone, ib_score_raw, confirmed_dir)
     current_score = ib_score_raw + live_adj
     current_bias, current_label = _score_to_bias(current_score)
 
