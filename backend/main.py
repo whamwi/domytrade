@@ -23,6 +23,7 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
 import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, compute_stats_wide, make_signal
 from squeeze import calc_squeeze_5min, squeeze_confirms_signal
+import market_profile_rules as _mp_rules
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 upsert_vbh_stats, get_vbh_stats, insert_signals,
                 upsert_1min, get_1min_today, get_1min_range,
@@ -9005,6 +9006,9 @@ async def api_market_profile(symbol: str):
     # Dynamic per-period read that updates with each new letter printed
     live_read = _evaluate_live_read(today_prof, ib_signals, overnight, now_et, tick)
 
+    # ── Dalton Rule Engine ────────────────────────────────────────────────────
+    rule_engine = _mp_rules.run_all(today_prof, overnight, prior_prof, tick, now_et)
+
     result = {
         'symbol':           symbol,
         'tick':             tick,
@@ -9020,6 +9024,7 @@ async def api_market_profile(symbol: str):
         'ib_signals':       ib_signals,
         'prior_ib_signals': prior_ib_signals,
         'live_read':        live_read,
+        'rule_engine':      rule_engine,
     }
 
     # Pre-market read — replaces the BUILDING dead-state with useful context
