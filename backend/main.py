@@ -7623,7 +7623,8 @@ def _check_80pct_rule(open_price: float, a_period: dict | None, b_period: dict |
 
 
 def _generate_ib_signals(session_prof: dict, session_overnight: dict,
-                          prior_rth: dict, tick: float) -> dict:
+                          prior_rth: dict, tick: float,
+                          now_et=None) -> dict:
     """Generate actionable signals after IB is complete (B period closed at 10:30 AM ET).
 
     Reads Thursday overnight → Friday IB (or any ON → RTH pair) and applies Dalton's
@@ -7643,6 +7644,16 @@ def _generate_ib_signals(session_prof: dict, session_overnight: dict,
     ib_low   = session_prof.get('ib_low')
     ib_range = session_prof.get('ib_range')
     open_px  = session_prof.get('open_price')   # first RTH bar open
+
+    # B period only closes at 10:30 AM ET. period_ranges gains a 'B' key the
+    # moment the first 5-min bar of B prints (10:05), which makes periods == 2
+    # before B is actually complete.  Guard against premature analysis with an
+    # explicit time check when now_et is provided.
+    if now_et is not None:
+        t_min = now_et.hour * 60 + now_et.minute
+        if t_min < 10 * 60 + 30:   # before 10:30 AM ET
+            return {'ready': False,
+                    'description': 'IB not complete — signals available after 10:30 AM ET.'}
 
     if periods < 2 or not ib_high or not ib_low:
         return {'ready': False,
@@ -8981,8 +8992,10 @@ async def api_market_profile(symbol: str):
     computed_at = now_et.strftime('%-I:%M %p ET')
 
     # ── IB Signals ────────────────────────────────────────────────────────────
-    # Today's signals (active when IB is complete — periods >= 2)
-    ib_signals = _generate_ib_signals(today_prof, overnight, prior_prof, tick)
+    # Today's signals — gated on 10:30 AM ET so partial B-period data does not
+    # trigger a premature IB analysis (period_ranges gains 'B' at 10:05 but B
+    # only closes at 10:30).
+    ib_signals = _generate_ib_signals(today_prof, overnight, prior_prof, tick, now_et)
 
     # Prior session signals (Thu overnight → Fri RTH) — always available if data exists
     # The "prior prior RTH" (Wed) isn't tracked, so we pass an empty dict for extension targets
