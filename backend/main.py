@@ -9920,8 +9920,8 @@ class EquityBot:
         symbol      = self.cfg['symbol']
         qty         = self.cfg['quantity']
         stop_dollar = self.cfg['stop_pts'] / 100.0
-        stop_price  = round(entry_level - stop_dollar if side == 'LONG'
-                            else entry_level + stop_dollar, 2)
+        stop_price  = round(price - stop_dollar if side == 'LONG'
+                            else price + stop_dollar, 2)
         instruction = 'BUY' if side == 'LONG' else 'SELL'
         self._log_event('TRADE',
             f'ENTER {side} {symbol} qty={qty} @ ~{price:.2f}  stop={stop_price:.2f}')
