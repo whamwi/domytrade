@@ -9741,3 +9741,76 @@ async def api_bot_disable():
 async def api_bot_close():
     """Emergency: immediately close the current bot position at market."""
     return await _bot.emergency_close()
+
+
+# ── manual order endpoints ────────────────────────────────────────────────────
+
+_MANUAL_ALLOWED = {'/MES', '/MNQ', '/M2K', '/MYM', '/MGC'}
+
+@app.get('/api/futures/quote')
+async def api_futures_quote(asset: str):
+    if asset not in _MANUAL_ALLOWED:
+        return {'error': 'Asset not allowed'}
+    symbol = front_month_code(asset)
+    try:
+        q = get_quotes([symbol])
+        last = q.get(symbol, {}).get('last', 0)
+        return {'asset': asset, 'symbol': symbol, 'last': last}
+    except Exception as e:
+        return {'error': str(e)}
+
+
+class ManualTradeRequest(BaseModel):
+    asset:    str
+    side:     str
+    quantity: int   = 1
+    stop_pts: float = 10.0
+
+@app.post('/api/trade/manual')
+async def api_manual_trade(req: ManualTradeRequest):
+    if req.asset not in _MANUAL_ALLOWED:
+        return {'error': f'Asset must be one of {sorted(_MANUAL_ALLOWED)}'}
+    if req.side not in ('BUY', 'SELL'):
+        return {'error': 'side must be BUY or SELL'}
+    if req.quantity < 1 or req.quantity > 10:
+        return {'error': 'quantity must be 1–10'}
+    if req.stop_pts < 1 or req.stop_pts > 500:
+        return {'error': 'stop_pts must be 1–500'}
+
+    accounts = get_account_numbers()
+    if not accounts:
+        return {'error': 'No Schwab accounts linked'}
+    acct = accounts[0]['accountNumber']
+
+    symbol = front_month_code(req.asset)
+
+    try:
+        q = get_quotes([symbol])
+        last = q.get(symbol, {}).get('last', 0)
+        if not last:
+            return {'error': f'Could not fetch live price for {symbol}'}
+    except Exception as e:
+        return {'error': f'Quote error: {e}'}
+
+    stop_price = round(last - req.stop_pts if req.side == 'BUY' else last + req.stop_pts, 2)
+
+    result = place_futures_order(
+        account_number=acct,
+        symbol=symbol,
+        instruction=req.side,
+        quantity=req.quantity,
+        stop_price=stop_price,
+    )
+
+    if result is None:
+        return {'error': 'Order placement failed — check Railway logs'}
+
+    return {
+        'ok': True,
+        'symbol': symbol,
+        'side': req.side,
+        'quantity': req.quantity,
+        'stop_price': stop_price,
+        'live_price_at_order': last,
+        'order_id': result.get('order_id'),
+    }
