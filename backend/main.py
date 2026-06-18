@@ -9663,14 +9663,9 @@ class TradingBot:
 
     def _resolve_account(self):
         try:
-            accounts = get_accounts()
-            for acc in accounts:
-                sa = acc.get('securitiesAccount', {})
-                if sa.get('type') not in ('IRA',):
-                    self.account_number = sa.get('accountNumber')
-                    return
-            if accounts:
-                self.account_number = accounts[0].get('securitiesAccount', {}).get('accountNumber')
+            acct_list = _trader_get('/accounts/accountNumbers')
+            if acct_list:
+                self.account_number = acct_list[0].get('hashValue')
         except Exception as exc:
             self._log_event('ERROR', f'Account resolve failed: {exc}')
 
@@ -9777,7 +9772,7 @@ async def api_manual_trade(req: ManualTradeRequest):
     if req.stop_price <= 0:
         return {'error': 'stop_price must be a positive price level'}
 
-    acct_list = _trader_get('/accounts/accountNumbers')
+    acct_list = await asyncio.to_thread(_trader_get, '/accounts/accountNumbers')
     if not acct_list:
         return {'error': 'No Schwab accounts linked'}
     acct = acct_list[0].get('hashValue')
@@ -9786,12 +9781,9 @@ async def api_manual_trade(req: ManualTradeRequest):
 
     symbol = front_month_code(req.asset)
 
-    result = place_futures_order(
-        account_number=acct,
-        symbol=symbol,
-        instruction=req.side,
-        quantity=req.quantity,
-        stop_price=stop_price,
+    result = await asyncio.to_thread(
+        place_futures_order,
+        acct, symbol, req.side, req.quantity, req.stop_price,
     )
 
     if result is None:
