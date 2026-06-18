@@ -23,7 +23,7 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            set_token_refresh_callback, _token_cache as _schwab_token_cache,
                            get_accounts, get_positions, get_orders, get_transactions,
                            place_futures_order, close_futures_position, cancel_order,
-                           front_month_code)
+                           front_month_code, _trader_get)
 import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, compute_stats_wide, make_signal
 from squeeze import calc_squeeze_5min, squeeze_confirms_signal
@@ -9366,6 +9366,16 @@ async def reject_user(user_id: str, secret: str = ''):
 # ─────────────────────────────────────────────────────────────────────────────
 # Schwab Account / Positions / Orders  (read-only)
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get('/api/account/numbers')
+async def api_account_numbers():
+    """All linked Schwab account numbers (for diagnostics)."""
+    try:
+        data = await asyncio.to_thread(_trader_get, '/accounts/accountNumbers')
+        return {'accounts': data}
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={'error': str(exc)})
+
 
 @app.get('/api/account/summary')
 async def api_account_summary():
