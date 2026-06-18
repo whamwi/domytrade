@@ -23,6 +23,7 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            set_token_refresh_callback, _token_cache as _schwab_token_cache,
                            get_accounts, get_positions, get_orders, get_transactions,
                            place_futures_order, close_futures_position, cancel_order,
+                           place_equity_order, close_equity_position,
                            front_month_code, _trader_get)
 import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, compute_stats_wide, make_signal
@@ -2154,8 +2155,9 @@ async def background_loop():
             except Exception as _pe:
                 log.warning('_price_loop error: %s', _pe)
 
-    asyncio.create_task(_price_loop())   # 5s real-time price push via WebSocket
-    asyncio.create_task(_bot_loop())     # 10s trading-bot tick
+    asyncio.create_task(_price_loop())         # 5s real-time price push via WebSocket
+    asyncio.create_task(_bot_loop())           # 5s futures bot tick
+    asyncio.create_task(_equity_bot_loop())    # 5s equity bot tick
 
     # Kick off background tasks that don't block startup
     asyncio.create_task(refresh_etf_holdings())
@@ -9736,6 +9738,295 @@ async def api_bot_disable():
 async def api_bot_close():
     """Emergency: immediately close the current bot position at market."""
     return await _bot.emergency_close()
+
+
+# ── equity bot ───────────────────────────────────────────────────────────────
+
+class EquityBot:
+    """
+    VBH signal-triggered equity bot.
+
+    Arms on NEAR/ENTRY for the configured ticker + model.
+    Fires MARKET + STOP bracket when live price crosses the VBH entry level.
+    stop_pts is in cents (100 = $1.00 stop).
+    """
+    MAX_LOG       = 50
+    DEFAULT_SYM   = 'BA'
+    DEFAULT_MODEL = 'CON'
+    DEFAULT_STOP  = 100    # cents → $1.00
+    DEFAULT_QTY   = 1
+
+    def __init__(self):
+        self.enabled        = False
+        self.account_number = None   # Schwab account hash
+        self.position       = None
+        self.armed          = None
+        self._log: list     = []
+        self.cfg = {
+            'symbol':   self.DEFAULT_SYM,
+            'model':    self.DEFAULT_MODEL,
+            'stop_pts': self.DEFAULT_STOP,
+            'quantity': self.DEFAULT_QTY,
+        }
+
+    def _log_event(self, level: str, msg: str):
+        self._log.append({
+            'ts': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            'level': level, 'msg': msg,
+        })
+        if len(self._log) > self.MAX_LOG:
+            self._log = self._log[-self.MAX_LOG:]
+
+    def status(self) -> dict:
+        sig    = self._find_signal()
+        sym_id = self._symbol_id()
+        live   = state['last_price'].get(sym_id) if sym_id else None
+        return {
+            'enabled':    self.enabled,
+            'cfg':        self.cfg,
+            'armed':      self.armed,
+            'position':   self.position,
+            'live_price': live,
+            'signal':     sig,
+            'log':        self._log[-20:],
+        }
+
+    def _find_signal(self) -> dict | None:
+        symbol = self.cfg['symbol'].upper()
+        model  = self.cfg['model']
+        for sig in state.get('signals', []):
+            ticker = sig.get('symbol', '').split(':')[0].upper()
+            if ticker == symbol and sig.get('model') == model:
+                return sig
+        return None
+
+    def _symbol_id(self) -> int | None:
+        symbol = self.cfg['symbol'].upper()
+        for sym in state.get('symbols', []):
+            if sym.get('ticker', '').upper() == symbol:
+                return sym.get('id')
+        return None
+
+    def _resolve_account(self):
+        try:
+            acct_list = _trader_get('/accounts/accountNumbers')
+            if acct_list:
+                self.account_number = acct_list[0].get('hashValue')
+        except Exception as exc:
+            self._log_event('ERROR', f'Account resolve failed: {exc}')
+
+    def enable(self, symbol: str, model: str, stop_pts: int, quantity: int) -> dict:
+        symbol = symbol.upper().strip()
+        model  = model.upper().strip()
+        if model not in ('CON', 'AGG', 'WIDE'):
+            return {'error': 'Model must be CON, AGG, or WIDE'}
+        if not (1 <= stop_pts <= 10000):
+            return {'error': 'stop_pts must be 1–10000'}
+        if not (1 <= quantity <= 500):
+            return {'error': 'quantity must be 1–500'}
+        self.cfg = {'symbol': symbol, 'model': model,
+                    'stop_pts': stop_pts, 'quantity': quantity}
+        if not self.enabled:
+            self._resolve_account()
+            self.enabled = True
+            self.armed   = None
+            self._log_event('INFO',
+                f'ENABLED — {symbol} {model} | {quantity}sh | {stop_pts}¢ stop')
+        else:
+            self._log_event('INFO',
+                f'Config updated — {symbol} {model} | {quantity}sh | {stop_pts}¢ stop')
+        return self.status()
+
+    def disable(self) -> dict:
+        if self.enabled:
+            self.enabled = False
+            self.armed   = None
+            self._log_event('INFO', 'DISABLED')
+        return self.status()
+
+    async def emergency_close(self) -> dict:
+        if not self.position or not self.account_number:
+            return self.status()
+        pos         = self.position
+        close_instr = 'SELL' if pos['side'] == 'LONG' else 'BUY'
+        self._log_event('TRADE', f'EMERGENCY CLOSE {pos["symbol"]}')
+        try:
+            if pos.get('order_id'):
+                await asyncio.to_thread(cancel_order, self.account_number, str(pos['order_id']))
+            await asyncio.to_thread(
+                close_equity_position,
+                self.account_number, pos['symbol'], close_instr, pos['quantity'],
+            )
+        except Exception as exc:
+            self._log_event('ERROR', f'Emergency close error: {exc}')
+        self.position = None
+        self.armed    = None
+        return self.status()
+
+    async def tick(self):
+        if not self.enabled:
+            return
+
+        sig       = self._find_signal()
+        sig_state = sig.get('signal_state') if sig else None
+        sig_side  = sig.get('side')         if sig else None
+        sig_entry = sig.get('entry')        if sig else None
+
+        if self.position:
+            await self._check_stop_filled()
+
+        if not self.position:
+            if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side:
+                bot_side = 'LONG' if 'LONG' in sig_side else 'SHORT'
+                if not self.armed or self.armed.get('side') != bot_side:
+                    self.armed = {'side': bot_side, 'entry_level': float(sig_entry)}
+                    self._log_event('INFO',
+                        f'ARMED {bot_side} entry={sig_entry:.2f} ({sig_state})')
+                elif abs(self.armed['entry_level'] - float(sig_entry)) > 0.001:
+                    self.armed['entry_level'] = float(sig_entry)
+            else:
+                if self.armed:
+                    self._log_event('INFO', 'Signal neutral — disarmed')
+                self.armed = None
+
+        if self.armed and not self.position:
+            sym_id  = self._symbol_id()
+            live_px = state['last_price'].get(sym_id) if sym_id else None
+            if live_px:
+                side        = self.armed['side']
+                entry_level = self.armed['entry_level']
+                triggered   = (
+                    (side == 'LONG'  and live_px <= entry_level) or
+                    (side == 'SHORT' and live_px >= entry_level)
+                )
+                if triggered:
+                    self._log_event('TRADE',
+                        f'Price trigger — live {live_px:.2f} crossed {entry_level:.2f}')
+                    self.armed = None
+                    await self._enter(side, live_px, entry_level)
+
+        if self.position:
+            pos_side = self.position['side']
+            if sig_state in ('NEAR', 'ENTRY') and sig_side:
+                bot_side = 'LONG' if 'LONG' in sig_side else 'SHORT'
+                if bot_side != pos_side:
+                    self._log_event('INFO', f'Signal flipped — exiting')
+                    await self._exit('signal_flip')
+            elif sig_state not in ('NEAR', 'ENTRY'):
+                self._log_event('INFO', 'Signal gone — exiting')
+                await self._exit('signal_exit')
+
+    async def _enter(self, side: str, price: float, entry_level: float):
+        symbol      = self.cfg['symbol']
+        qty         = self.cfg['quantity']
+        stop_dollar = self.cfg['stop_pts'] / 100.0
+        stop_price  = round(entry_level - stop_dollar if side == 'LONG'
+                            else entry_level + stop_dollar, 2)
+        instruction = 'BUY' if side == 'LONG' else 'SELL'
+        self._log_event('TRADE',
+            f'ENTER {side} {symbol} qty={qty} @ ~{price:.2f}  stop={stop_price:.2f}')
+        try:
+            result   = await asyncio.to_thread(
+                place_equity_order,
+                self.account_number, symbol, instruction, qty, stop_price,
+            )
+            if result and '_http_error' in result:
+                self._log_event('ERROR',
+                    f'Order rejected {result["_http_error"]}: {result.get("_message","")[:120]}')
+                return
+            order_id = (result or {}).get('order_id')
+            self.position = {
+                'symbol':      symbol,
+                'side':        side,
+                'entry_price': price,
+                'stop_price':  stop_price,
+                'quantity':    qty,
+                'order_id':    order_id,
+                'entered_at':  _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            }
+            self._log_event('INFO', f'Order submitted order_id={order_id}')
+        except Exception as exc:
+            self._log_event('ERROR', f'Enter failed: {exc}')
+
+    async def _exit(self, reason: str):
+        if not self.position or not self.account_number:
+            return
+        pos         = self.position
+        close_instr = 'SELL' if pos['side'] == 'LONG' else 'BUY'
+        self._log_event('TRADE', f'EXIT {pos["side"]} {pos["symbol"]} — {reason}')
+        try:
+            if pos.get('order_id'):
+                await asyncio.to_thread(cancel_order, self.account_number, str(pos['order_id']))
+            await asyncio.to_thread(
+                close_equity_position,
+                self.account_number, pos['symbol'], close_instr, pos['quantity'],
+            )
+        except Exception as exc:
+            self._log_event('ERROR', f'Exit failed: {exc}')
+        self.position = None
+        self.armed    = None
+
+    async def _check_stop_filled(self):
+        if not self.position or not self.account_number:
+            return
+        try:
+            orders = await asyncio.to_thread(get_orders, self.account_number, 20, 'FILLED')
+            oid    = str(self.position.get('order_id', ''))
+            for o in (orders or []):
+                for child in o.get('childOrderStrategies', []):
+                    if child.get('status') == 'FILLED' and str(child.get('orderId', '')) == oid:
+                        self._log_event('TRADE', 'Stop filled — back to IDLE')
+                        self.position = None
+                        return
+        except Exception:
+            pass
+
+
+_equity_bot = EquityBot()
+
+
+async def _equity_bot_loop():
+    while True:
+        try:
+            await _equity_bot.tick()
+        except Exception as exc:
+            pass
+        await asyncio.sleep(5)
+
+
+# ── equity bot API endpoints ──────────────────────────────────────────────────
+
+@app.get('/api/equity-bot/symbols')
+async def api_equity_bot_symbols():
+    equities = sorted(
+        s['ticker'] for s in state.get('symbols', [])
+        if not s.get('ticker', '').startswith('/')
+    )
+    return {'symbols': equities}
+
+
+@app.get('/api/equity-bot/status')
+async def api_equity_bot_status():
+    return _equity_bot.status()
+
+
+class EquityBotEnableRequest(BaseModel):
+    symbol:   str
+    model:    str   = 'CON'
+    stop_pts: int   = 100
+    quantity: int   = 1
+
+@app.post('/api/equity-bot/enable')
+async def api_equity_bot_enable(req: EquityBotEnableRequest):
+    return _equity_bot.enable(req.symbol, req.model, req.stop_pts, req.quantity)
+
+@app.post('/api/equity-bot/disable')
+async def api_equity_bot_disable():
+    return _equity_bot.disable()
+
+@app.post('/api/equity-bot/close')
+async def api_equity_bot_close():
+    return await _equity_bot.emergency_close()
 
 
 # ── manual order endpoints ────────────────────────────────────────────────────

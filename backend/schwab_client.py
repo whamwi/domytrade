@@ -655,6 +655,58 @@ def close_futures_position(account_number: str, symbol: str,
     return _trader_post(f'/accounts/{account_number}/orders', order)
 
 
+def place_equity_order(account_number: str, symbol: str, instruction: str,
+                       quantity: int, stop_price: float) -> dict | None:
+    """Place a DAY MARKET entry + STOP child bracket order for an equity.
+
+    instruction : 'BUY' for a long entry, 'SELL' for a short entry
+    stop_price  : absolute price level for the protective stop
+    Returns {'order_id': '<id>'} on success, or error dict on failure.
+    """
+    close_instr = 'SELL' if instruction == 'BUY' else 'BUY'
+    order = {
+        'orderType':          'MARKET',
+        'session':            'NORMAL',
+        'duration':           'DAY',
+        'orderStrategyType':  'TRIGGER',
+        'orderLegCollection': [{
+            'instruction': instruction,
+            'quantity':    quantity,
+            'instrument':  {'symbol': symbol, 'assetType': 'EQUITY'},
+        }],
+        'childOrderStrategies': [{
+            'orderType':          'STOP',
+            'session':            'NORMAL',
+            'duration':           'DAY',
+            'stopPrice':          round(stop_price, 2),
+            'orderStrategyType':  'SINGLE',
+            'orderLegCollection': [{
+                'instruction': close_instr,
+                'quantity':    quantity,
+                'instrument':  {'symbol': symbol, 'assetType': 'EQUITY'},
+            }],
+        }],
+    }
+    return _trader_post(f'/accounts/{account_number}/orders', order)
+
+
+def close_equity_position(account_number: str, symbol: str,
+                          close_instruction: str, quantity: int) -> dict | None:
+    """Place a DAY MARKET order to close an equity position immediately."""
+    order = {
+        'orderType':          'MARKET',
+        'session':            'NORMAL',
+        'duration':           'DAY',
+        'orderStrategyType':  'SINGLE',
+        'orderLegCollection': [{
+            'instruction': close_instruction,
+            'quantity':    quantity,
+            'instrument':  {'symbol': symbol, 'assetType': 'EQUITY'},
+        }],
+    }
+    return _trader_post(f'/accounts/{account_number}/orders', order)
+
+
 def cancel_order(account_number: str, order_id: str) -> bool:
     """Cancel a working or pending order. Returns True on success."""
     return _trader_delete(f'/accounts/{account_number}/orders/{order_id}')
