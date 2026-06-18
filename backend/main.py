@@ -20,7 +20,9 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            get_current_hour_ohlc, get_session_bars,
                            front_month_code, next_contract_month,
                            set_token_refresh_callback, _token_cache as _schwab_token_cache,
-                           get_accounts, get_positions, get_orders, get_transactions)
+                           get_accounts, get_positions, get_orders, get_transactions,
+                           place_futures_order, close_futures_position, cancel_order,
+                           front_month_code)
 import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, compute_stats_wide, make_signal
 from squeeze import calc_squeeze_5min, squeeze_confirms_signal
@@ -2152,6 +2154,7 @@ async def background_loop():
                 log.warning('_price_loop error: %s', _pe)
 
     asyncio.create_task(_price_loop())   # 5s real-time price push via WebSocket
+    asyncio.create_task(_bot_loop())     # 10s trading-bot tick
 
     # Kick off background tasks that don't block startup
     asyncio.create_task(refresh_etf_holdings())
@@ -9401,3 +9404,234 @@ async def api_transactions(account_number: str, days: int = 30):
         return {'transactions': txns}
     except Exception as exc:
         return JSONResponse(status_code=503, content={'error': str(exc)})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trading Bot — automated /MES execution on VBH CON ENTRY signals
+# ─────────────────────────────────────────────────────────────────────────────
+
+import datetime as _dt
+
+class TradingBot:
+    """
+    Monitors state['signals'] for /MES VBH CON ENTRY transitions and
+    auto-executes 1-contract bracket orders (market entry + 10-pt stop).
+
+    State machine:
+      IDLE  →  [ENTRY fires]  →  IN_POSITION
+      IN_POSITION  →  [signal exits / flips / stop hit]  →  IDLE
+
+    The stop order is submitted as a TRIGGER child to Schwab;
+    Schwab handles fill automatically. We poll every 10s to detect
+    when Schwab has closed it so we can clear our local position state.
+    """
+
+    SYMBOL_ROOT  = '/MES'
+    MODEL        = 'CON'
+    STOP_POINTS  = 10.0
+    QUANTITY     = 1
+    MAX_LOG      = 50
+
+    def __init__(self):
+        self.enabled        = False
+        self.account_number = None    # resolved lazily on first enable
+        self.position       = None    # dict or None
+        self._prev_sig      = None    # last signal snapshot
+        self._log: list     = []
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def status(self) -> dict:
+        return {
+            'enabled':        self.enabled,
+            'account_number': self.account_number,
+            'position':       self.position,
+            'signal':         self._mes_signal(),
+            'log':            self._log[-20:],
+        }
+
+    def enable(self) -> dict:
+        if not self.enabled:
+            self._resolve_account()
+            self.enabled = True
+            self._log_event('INFO', 'Bot ENABLED — watching /MES CON for ENTRY')
+        return self.status()
+
+    def disable(self) -> dict:
+        if self.enabled:
+            self.enabled = False
+            self._log_event('INFO', 'Bot DISABLED — open position (if any) left for manual management')
+        return self.status()
+
+    # ── 10-second tick ────────────────────────────────────────────────────────
+
+    async def tick(self):
+        if not self.enabled:
+            return
+
+        sig  = self._mes_signal()
+        prev = self._prev_sig
+
+        cur_state  = sig.get('signal_state') if sig else None
+        prev_state = prev.get('signal_state') if prev else None
+        cur_side   = sig.get('side')          if sig else None
+        cur_price  = sig.get('last')          if sig else None
+
+        # Detect if Schwab already filled our stop
+        if self.position:
+            await self._check_stop_filled()
+
+        if not self.position:
+            # New ENTRY transition — enter
+            if cur_state == 'ENTRY' and prev_state != 'ENTRY' and cur_price:
+                await self._enter(cur_side, cur_price)
+        else:
+            pos_side = self.position['side']
+            if cur_state == 'ENTRY' and cur_side and cur_side != pos_side and cur_price:
+                # Signal flipped direction — exit then reverse
+                self._log_event('INFO', f'Signal flipped to {cur_side} — closing {pos_side} and reversing')
+                await self._exit('signal_flip')
+                await self._enter(cur_side, cur_price)
+            elif cur_state not in ('ENTRY', 'NEAR') and prev_state in ('ENTRY', 'NEAR'):
+                # Signal degraded beyond NEAR — exit
+                self._log_event('INFO', f'Signal dropped to {cur_state} — exiting')
+                await self._exit('signal_exit')
+
+        self._prev_sig = sig
+
+    # ── execution ─────────────────────────────────────────────────────────────
+
+    async def _enter(self, side: str, price: float):
+        symbol      = front_month_code(self.SYMBOL_ROOT)
+        instruction = 'BUY' if side == 'LONG' else 'SELL'
+        stop_price  = round(price - self.STOP_POINTS, 2) if side == 'LONG' \
+                      else round(price + self.STOP_POINTS, 2)
+
+        self._log_event('TRADE', f'ENTRY {side} {symbol} ~{price:.2f}  stop={stop_price:.2f}')
+        try:
+            result   = await asyncio.to_thread(
+                place_futures_order,
+                self.account_number, symbol, instruction, self.QUANTITY, stop_price,
+            )
+            order_id = (result or {}).get('order_id')
+            self.position = {
+                'symbol':         symbol,
+                'side':           side,
+                'entry_price':    price,
+                'stop_price':     stop_price,
+                'quantity':       self.QUANTITY,
+                'order_id':       order_id,
+                'entered_at':     _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            }
+            self._log_event('INFO', f'Order submitted — id={order_id}')
+        except Exception as exc:
+            self._log_event('ERROR', f'Enter failed: {exc}')
+
+    async def _exit(self, reason: str):
+        if not self.position:
+            return
+        pos         = self.position
+        close_instr = 'SELL' if pos['side'] == 'LONG' else 'BUY'
+        self._log_event('TRADE', f'EXIT {pos["side"]} {pos["symbol"]}  reason={reason}')
+        try:
+            if pos.get('order_id'):
+                await asyncio.to_thread(cancel_order, self.account_number, pos['order_id'])
+            await asyncio.to_thread(
+                close_futures_position,
+                self.account_number, pos['symbol'], close_instr, pos['quantity'],
+            )
+            self._log_event('INFO', f'Close order submitted — {close_instr} {pos["quantity"]} {pos["symbol"]}')
+        except Exception as exc:
+            self._log_event('ERROR', f'Exit failed: {exc}')
+        finally:
+            self.position = None
+
+    async def emergency_close(self) -> dict:
+        if self.position:
+            await self._exit('emergency_close')
+        return self.status()
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _mes_signal(self) -> dict | None:
+        for sig in state.get('signals', []):
+            ticker = sig.get('symbol', '').split(':')[0]
+            if ticker == self.SYMBOL_ROOT and sig.get('model') == self.MODEL:
+                return sig
+        return None
+
+    def _resolve_account(self):
+        try:
+            accounts = get_accounts()
+            for acc in accounts:
+                sa = acc.get('securitiesAccount', {})
+                if sa.get('type') not in ('IRA',):
+                    self.account_number = sa.get('accountNumber')
+                    return
+            if accounts:
+                self.account_number = accounts[0].get('securitiesAccount', {}).get('accountNumber')
+        except Exception as exc:
+            self._log_event('ERROR', f'Account resolve failed: {exc}')
+
+    async def _check_stop_filled(self):
+        """Poll Schwab to detect if the bracket stop child was filled."""
+        if not self.position or not self.account_number:
+            return
+        try:
+            orders = await asyncio.to_thread(get_orders, self.account_number, 20, 'FILLED')
+            oid = str(self.position.get('order_id', ''))
+            for o in (orders or []):
+                if str(o.get('orderId', '')) == oid:
+                    for child in o.get('childOrderStrategies', []):
+                        if child.get('status') == 'FILLED':
+                            self._log_event('INFO', 'Stop FILLED by Schwab — position closed')
+                            self.position = None
+                            return
+        except Exception:
+            pass
+
+    def _log_event(self, level: str, msg: str):
+        log.info('[BOT] %s', msg)
+        self._log.append({
+            'ts':    _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            'level': level,
+            'msg':   msg,
+        })
+        if len(self._log) > self.MAX_LOG:
+            self._log = self._log[-self.MAX_LOG:]
+
+
+_bot = TradingBot()
+
+
+async def _bot_loop():
+    """Background coroutine — ticks the trading bot every 10 seconds."""
+    while True:
+        try:
+            await _bot.tick()
+        except Exception as exc:
+            log.error('bot loop error: %s', exc)
+        await asyncio.sleep(10)
+
+
+# ─── Bot API ──────────────────────────────────────────────────────────────────
+
+@app.get('/api/bot/status')
+async def api_bot_status():
+    return _bot.status()
+
+
+@app.post('/api/bot/enable')
+async def api_bot_enable():
+    return _bot.enable()
+
+
+@app.post('/api/bot/disable')
+async def api_bot_disable():
+    return _bot.disable()
+
+
+@app.post('/api/bot/close')
+async def api_bot_close():
+    """Emergency: immediately close the current bot position at market."""
+    return await _bot.emergency_close()

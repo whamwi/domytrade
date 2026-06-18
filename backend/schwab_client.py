@@ -554,3 +554,104 @@ def get_transactions(account_number: str, days: int = 30) -> list[dict]:
     }
     data = _trader_get(f'/accounts/{account_number}/transactions', params=params)
     return data if isinstance(data, list) else []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Order execution helpers (futures)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _trader_post(path: str, payload: dict) -> dict | None:
+    """POST to Schwab Trader API with auto token refresh."""
+    import logging
+    log = logging.getLogger(__name__)
+    url  = f'{TRADER_BASE_URL}{path}'
+    resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
+    if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
+        resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
+    if not resp.ok:
+        log.warning('Trader POST %s → HTTP %s: %s', path, resp.status_code, resp.text[:500])
+        return None
+    # 201 Created — body is empty; order ID is in the Location header
+    if resp.status_code == 201:
+        loc = resp.headers.get('Location', '')
+        return {'order_id': loc.rstrip('/').split('/')[-1] if loc else None}
+    try:
+        return resp.json()
+    except Exception:
+        return {}
+
+
+def _trader_delete(path: str) -> bool:
+    """DELETE from Schwab Trader API. Returns True on 200/204."""
+    import logging
+    log = logging.getLogger(__name__)
+    url  = f'{TRADER_BASE_URL}{path}'
+    resp = requests.delete(url, headers=_headers(), timeout=15)
+    if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
+        resp = requests.delete(url, headers=_headers(), timeout=15)
+    if not resp.ok:
+        log.warning('Trader DELETE %s → HTTP %s: %s', path, resp.status_code, resp.text[:200])
+        return False
+    return True
+
+
+def place_futures_order(account_number: str, symbol: str, instruction: str,
+                        quantity: int, stop_price: float) -> dict | None:
+    """Place a MARKET entry + STOP child bracket order for a futures contract.
+
+    instruction : 'BUY'  for a long entry, 'SELL' for a short entry
+    stop_price  : absolute price level for the protective stop
+    Returns {'order_id': '<id>'} on success, None on failure.
+    """
+    close_instr = 'SELL' if instruction == 'BUY' else 'BUY'
+    order = {
+        'orderType':          'MARKET',
+        'session':            'SEAMLESS',
+        'duration':           'GOOD_TILL_CANCEL',
+        'orderStrategyType':  'TRIGGER',
+        'orderLegCollection': [{
+            'instruction': instruction,
+            'quantity':    quantity,
+            'instrument':  {'symbol': symbol, 'assetType': 'FUTURE'},
+        }],
+        'childOrderStrategies': [{
+            'orderType':          'STOP',
+            'session':            'SEAMLESS',
+            'duration':           'GOOD_TILL_CANCEL',
+            'stopPrice':          round(stop_price, 2),
+            'orderStrategyType':  'SINGLE',
+            'orderLegCollection': [{
+                'instruction': close_instr,
+                'quantity':    quantity,
+                'instrument':  {'symbol': symbol, 'assetType': 'FUTURE'},
+            }],
+        }],
+    }
+    return _trader_post(f'/accounts/{account_number}/orders', order)
+
+
+def close_futures_position(account_number: str, symbol: str,
+                           close_instruction: str, quantity: int) -> dict | None:
+    """Place a DAY MARKET order to close a futures position immediately.
+
+    close_instruction: 'SELL' to close a long, 'BUY' to close a short.
+    """
+    order = {
+        'orderType':          'MARKET',
+        'session':            'SEAMLESS',
+        'duration':           'DAY',
+        'orderStrategyType':  'SINGLE',
+        'orderLegCollection': [{
+            'instruction': close_instruction,
+            'quantity':    quantity,
+            'instrument':  {'symbol': symbol, 'assetType': 'FUTURE'},
+        }],
+    }
+    return _trader_post(f'/accounts/{account_number}/orders', order)
+
+
+def cancel_order(account_number: str, order_id: str) -> bool:
+    """Cancel a working or pending order. Returns True on success."""
+    return _trader_delete(f'/accounts/{account_number}/orders/{order_id}')
