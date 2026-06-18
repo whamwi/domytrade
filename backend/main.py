@@ -9777,12 +9777,12 @@ async def api_manual_trade(req: ManualTradeRequest):
     if req.stop_pts < 1 or req.stop_pts > 500:
         return {'error': 'stop_pts must be 1–500'}
 
-    accounts = get_accounts()
-    if not accounts:
+    acct_list = _trader_get('/accounts/accountNumbers')
+    if not acct_list:
         return {'error': 'No Schwab accounts linked'}
-    acct = accounts[0].get('securitiesAccount', {}).get('accountNumber')
+    acct = acct_list[0].get('hashValue')
     if not acct:
-        return {'error': 'Could not resolve account number'}
+        return {'error': 'Could not resolve account hash'}
 
     symbol = front_month_code(req.asset)
 
