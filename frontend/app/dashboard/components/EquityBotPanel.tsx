@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 
@@ -81,6 +81,27 @@ export default function EquityBotPanel() {
   const [model,    setModel]    = useState('CON')
   const [stopPts,  setStopPts]  = useState(100)
   const [quantity, setQuantity] = useState(1)
+
+  // symbol search combobox
+  const [search,   setSearch]   = useState('')
+  const [open,     setOpen]     = useState(false)
+  const comboRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (comboRef.current && !comboRef.current.contains(e.target as Node)) {
+        setOpen(false)
+        setSearch('')
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const filtered = search
+    ? symbols.filter(s => s.toLowerCase().startsWith(search.toLowerCase()))
+    : symbols
 
   const fetchBot = useCallback(async () => {
     try {
@@ -271,22 +292,54 @@ export default function EquityBotPanel() {
         <div style={{ padding: '10px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, flexWrap: 'wrap' }}>
 
-            {/* Symbol */}
-            <div>
+            {/* Symbol — searchable combobox */}
+            <div ref={comboRef} style={{ position: 'relative' }}>
               <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase',
                 color: 'var(--text-dim)', marginBottom: 5 }}>Symbol</div>
-              <select
-                value={symbol}
-                onChange={e => setSymbol(e.target.value)}
+              <input
+                value={open ? search : symbol}
+                placeholder={open ? 'Type to search…' : symbol}
+                onChange={e => { setSearch(e.target.value) }}
+                onFocus={() => { setOpen(true); setSearch('') }}
                 style={{
                   background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)',
                   borderRadius: 6, color: 'var(--text-primary)', fontSize: 11,
-                  padding: '4px 8px', outline: 'none', minWidth: 90,
+                  padding: '4px 8px', outline: 'none', width: 96, cursor: 'pointer',
+                  fontFamily: 'monospace', fontWeight: 700,
                 }}
-              >
-                {symbols.length === 0 && <option value={symbol}>{symbol}</option>}
-                {symbols.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
+              />
+              {open && (
+                <div style={{
+                  position: 'absolute', top: '100%', left: 0, zIndex: 100,
+                  background: 'var(--bg-panel)', border: '1px solid var(--border)',
+                  borderRadius: 6, marginTop: 3, minWidth: 110,
+                  maxHeight: 220, overflowY: 'auto',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                }}>
+                  {filtered.length === 0 ? (
+                    <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-dim)' }}>No match</div>
+                  ) : filtered.map(s => (
+                    <div
+                      key={s}
+                      onMouseDown={e => {
+                        e.preventDefault()
+                        setSymbol(s)
+                        setOpen(false)
+                        setSearch('')
+                      }}
+                      style={{
+                        padding: '6px 12px', fontSize: 11, fontFamily: 'monospace',
+                        fontWeight: s === symbol ? 700 : 400,
+                        color: s === symbol ? 'var(--accent-blue)' : 'var(--text-primary)',
+                        cursor: 'pointer',
+                        background: s === symbol ? 'rgba(96,165,250,0.08)' : 'transparent',
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+                      onMouseLeave={e => (e.currentTarget.style.background = s === symbol ? 'rgba(96,165,250,0.08)' : 'transparent')}
+                    >{s}</div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Model */}
