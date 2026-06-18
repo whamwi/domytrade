@@ -9761,10 +9761,10 @@ async def api_futures_quote(asset: str):
 
 
 class ManualTradeRequest(BaseModel):
-    asset:    str
-    side:     str
-    quantity: int   = 1
-    stop_pts: float = 10.0
+    asset:      str
+    side:       str
+    quantity:   int   = 1
+    stop_price: float = 0.0   # absolute stop level, computed by frontend
 
 @app.post('/api/trade/manual')
 async def api_manual_trade(req: ManualTradeRequest):
@@ -9774,8 +9774,8 @@ async def api_manual_trade(req: ManualTradeRequest):
         return {'error': 'side must be BUY or SELL'}
     if req.quantity < 1 or req.quantity > 10:
         return {'error': 'quantity must be 1–10'}
-    if req.stop_pts < 1 or req.stop_pts > 500:
-        return {'error': 'stop_pts must be 1–500'}
+    if req.stop_price <= 0:
+        return {'error': 'stop_price must be a positive price level'}
 
     acct_list = _trader_get('/accounts/accountNumbers')
     if not acct_list:
@@ -9785,16 +9785,6 @@ async def api_manual_trade(req: ManualTradeRequest):
         return {'error': 'Could not resolve account hash'}
 
     symbol = front_month_code(req.asset)
-
-    try:
-        q = get_quotes([symbol])
-        last = q.get(symbol, {}).get('last', 0)
-        if not last:
-            return {'error': f'Could not fetch live price for {symbol}'}
-    except Exception as e:
-        return {'error': f'Quote error: {e}'}
-
-    stop_price = round(last - req.stop_pts if req.side == 'BUY' else last + req.stop_pts, 2)
 
     result = place_futures_order(
         account_number=acct,
@@ -9812,7 +9802,6 @@ async def api_manual_trade(req: ManualTradeRequest):
         'symbol': symbol,
         'side': req.side,
         'quantity': req.quantity,
-        'stop_price': stop_price,
-        'live_price_at_order': last,
+        'stop_price': req.stop_price,
         'order_id': result.get('order_id'),
     }
