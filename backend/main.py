@@ -8259,25 +8259,29 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
             return _building
         if on_high and a_close > on_high + tick:
             read = (f'A period closed at {a_close:.2f}, above ONH ({on_high_s}). '
-                    f'Buyers probed above overnight range. Watch B period: acceptance above '
-                    f'ONH converts the probe to confirmed excess.')
+                    f'B period now open. Buyers probed above overnight range — '
+                    f'B close above ONH confirms excess.')
         elif on_low and a_close < on_low - tick:
             read = (f'A period closed at {a_close:.2f}, below ONL ({on_low_s}). '
-                    f'Sellers probed below overnight range. Watch B period for acceptance or rejection.')
+                    f'B period now open. Sellers probed below overnight range — '
+                    f'watch B close for acceptance or rejection.')
         elif on_poc and a_close > on_poc + tick:
             read = (f'A period closed at {a_close:.2f}, above ON POC ({on_poc_s}). '
-                    f'Buyers holding above overnight value. Awaiting B period to complete IB.')
+                    f'B period now open. Buyers holding above overnight value — '
+                    f'watch B close at 10:30 AM ET to complete IB.')
         elif on_poc and a_close < on_poc - tick:
             read = (f'A period closed at {a_close:.2f}, below ON POC ({on_poc_s}). '
-                    f'Sellers below overnight value. Awaiting B period to complete IB.')
+                    f'B period now open. Sellers below overnight value — '
+                    f'watch B close at 10:30 AM ET to complete IB.')
         else:
             read = (f'A period closed at {a_close:.2f}, near ON POC ({on_poc_s}). '
-                    f'No directional edge yet. B period will establish the IB and set bias.')
+                    f'B period now open. No directional edge yet — '
+                    f'B close will establish the IB and set bias.')
         return {
             'active': True, 'status': 'IB_BUILDING',
             'last_period': 'A', 'last_close': a_close,
             'current_read': read,
-            'live_guidance': f'Wait for B period (closes 10:30 AM ET) to complete the IB.',
+            'live_guidance': f'B period now open — IB completes at B close (10:30 AM ET).',
             'watch_level': {'price': on_high, 'label': 'ONH', 'significance': 'B close above = bullish excess'} if on_high else None,
         }
 
