@@ -11,6 +11,7 @@ import requests as _req
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Query, Body
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -9407,37 +9408,44 @@ async def api_transactions(account_number: str, days: int = 30):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Trading Bot — automated /MES execution on VBH CON ENTRY signals
+# Trading Bot — configurable VBH futures auto-execution
 # ─────────────────────────────────────────────────────────────────────────────
 
 import datetime as _dt
 
+# Allowed assets (micro futures only — prevent accidental full-size orders)
+_BOT_ALLOWED_ASSETS = {'/MES', '/MNQ', '/M2K', '/MYM', '/MGC'}
+_BOT_ALLOWED_MODELS = {'CON', 'AGG', 'WIDE'}
+
 class TradingBot:
     """
-    Monitors state['signals'] for /MES VBH CON ENTRY transitions and
-    auto-executes 1-contract bracket orders (market entry + 10-pt stop).
-
-    State machine:
-      IDLE  →  [ENTRY fires]  →  IN_POSITION
-      IN_POSITION  →  [signal exits / flips / stop hit]  →  IDLE
-
-    The stop order is submitted as a TRIGGER child to Schwab;
-    Schwab handles fill automatically. We poll every 10s to detect
-    when Schwab has closed it so we can clear our local position state.
+    Configurable VBH futures bot.
+    Config (asset, model, stop_pts, quantity) is set on enable().
+    Ticks every 10s, enters on ENTRY transition, exits when signal degrades.
+    Stop is a Schwab TRIGGER child order — auto-filled by the broker.
     """
 
-    SYMBOL_ROOT  = '/MES'
-    MODEL        = 'CON'
-    STOP_POINTS  = 10.0
-    QUANTITY     = 1
-    MAX_LOG      = 50
+    MAX_LOG = 50
+
+    # ── defaults ──────────────────────────────────────────────────────────────
+    DEFAULT_ASSET    = '/MES'
+    DEFAULT_MODEL    = 'CON'
+    DEFAULT_STOP_PTS = 10.0
+    DEFAULT_QTY      = 1
 
     def __init__(self):
         self.enabled        = False
-        self.account_number = None    # resolved lazily on first enable
-        self.position       = None    # dict or None
-        self._prev_sig      = None    # last signal snapshot
+        self.account_number = None
+        self.position       = None
+        self._prev_sig      = None
         self._log: list     = []
+        # runtime config (set by enable())
+        self.cfg = {
+            'asset':     self.DEFAULT_ASSET,
+            'model':     self.DEFAULT_MODEL,
+            'stop_pts':  self.DEFAULT_STOP_PTS,
+            'quantity':  self.DEFAULT_QTY,
+        }
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -9445,16 +9453,40 @@ class TradingBot:
         return {
             'enabled':        self.enabled,
             'account_number': self.account_number,
+            'cfg':            self.cfg,
             'position':       self.position,
-            'signal':         self._mes_signal(),
+            'signal':         self._find_signal(),
             'log':            self._log[-20:],
         }
 
-    def enable(self) -> dict:
+    def enable(self, asset: str, model: str,
+               stop_pts: float, quantity: int) -> dict:
+        """Validate config and start the bot."""
+        asset = asset.upper().strip()
+        model = model.upper().strip()
+
+        if asset not in _BOT_ALLOWED_ASSETS:
+            return {'error': f'Asset {asset} not allowed. Choose from: {sorted(_BOT_ALLOWED_ASSETS)}'}
+        if model not in _BOT_ALLOWED_MODELS:
+            return {'error': f'Model {model} not valid. Choose from: {sorted(_BOT_ALLOWED_MODELS)}'}
+        if stop_pts <= 0 or stop_pts > 50:
+            return {'error': 'stop_pts must be between 1 and 50'}
+        if quantity < 1 or quantity > 10:
+            return {'error': 'quantity must be between 1 and 10'}
+
+        self.cfg = {'asset': asset, 'model': model,
+                    'stop_pts': stop_pts, 'quantity': quantity}
+
         if not self.enabled:
             self._resolve_account()
-            self.enabled = True
-            self._log_event('INFO', 'Bot ENABLED — watching /MES CON for ENTRY')
+            self.enabled   = True
+            self._prev_sig = None   # reset so we don't fire on stale state
+            self._log_event('INFO',
+                f'Bot ENABLED — {asset} {model} | {quantity} contract(s) | {stop_pts}pt stop')
+        else:
+            self._log_event('INFO',
+                f'Config updated — {asset} {model} | {quantity} contract(s) | {stop_pts}pt stop')
+
         return self.status()
 
     def disable(self) -> dict:
@@ -9469,7 +9501,7 @@ class TradingBot:
         if not self.enabled:
             return
 
-        sig  = self._mes_signal()
+        sig  = self._find_signal()
         prev = self._prev_sig
 
         cur_state  = sig.get('signal_state') if sig else None
@@ -9477,23 +9509,19 @@ class TradingBot:
         cur_side   = sig.get('side')          if sig else None
         cur_price  = sig.get('last')          if sig else None
 
-        # Detect if Schwab already filled our stop
         if self.position:
             await self._check_stop_filled()
 
         if not self.position:
-            # New ENTRY transition — enter
             if cur_state == 'ENTRY' and prev_state != 'ENTRY' and cur_price:
                 await self._enter(cur_side, cur_price)
         else:
             pos_side = self.position['side']
             if cur_state == 'ENTRY' and cur_side and cur_side != pos_side and cur_price:
-                # Signal flipped direction — exit then reverse
                 self._log_event('INFO', f'Signal flipped to {cur_side} — closing {pos_side} and reversing')
                 await self._exit('signal_flip')
                 await self._enter(cur_side, cur_price)
             elif cur_state not in ('ENTRY', 'NEAR') and prev_state in ('ENTRY', 'NEAR'):
-                # Signal degraded beyond NEAR — exit
                 self._log_event('INFO', f'Signal dropped to {cur_state} — exiting')
                 await self._exit('signal_exit')
 
@@ -9502,26 +9530,29 @@ class TradingBot:
     # ── execution ─────────────────────────────────────────────────────────────
 
     async def _enter(self, side: str, price: float):
-        symbol      = front_month_code(self.SYMBOL_ROOT)
+        asset       = self.cfg['asset']
+        stop_pts    = self.cfg['stop_pts']
+        qty         = self.cfg['quantity']
+        symbol      = front_month_code(asset)
         instruction = 'BUY' if side == 'LONG' else 'SELL'
-        stop_price  = round(price - self.STOP_POINTS, 2) if side == 'LONG' \
-                      else round(price + self.STOP_POINTS, 2)
+        stop_price  = round(price - stop_pts, 2) if side == 'LONG' \
+                      else round(price + stop_pts, 2)
 
-        self._log_event('TRADE', f'ENTRY {side} {symbol} ~{price:.2f}  stop={stop_price:.2f}')
+        self._log_event('TRADE', f'ENTRY {side} {symbol} ~{price:.2f}  stop={stop_price:.2f}  qty={qty}')
         try:
             result   = await asyncio.to_thread(
                 place_futures_order,
-                self.account_number, symbol, instruction, self.QUANTITY, stop_price,
+                self.account_number, symbol, instruction, qty, stop_price,
             )
             order_id = (result or {}).get('order_id')
             self.position = {
-                'symbol':         symbol,
-                'side':           side,
-                'entry_price':    price,
-                'stop_price':     stop_price,
-                'quantity':       self.QUANTITY,
-                'order_id':       order_id,
-                'entered_at':     _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                'symbol':      symbol,
+                'side':        side,
+                'entry_price': price,
+                'stop_price':  stop_price,
+                'quantity':    qty,
+                'order_id':    order_id,
+                'entered_at':  _dt.datetime.now(_dt.timezone.utc).isoformat(),
             }
             self._log_event('INFO', f'Order submitted — id={order_id}')
         except Exception as exc:
@@ -9553,10 +9584,12 @@ class TradingBot:
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _mes_signal(self) -> dict | None:
+    def _find_signal(self) -> dict | None:
+        asset = self.cfg['asset']
+        model = self.cfg['model']
         for sig in state.get('signals', []):
             ticker = sig.get('symbol', '').split(':')[0]
-            if ticker == self.SYMBOL_ROOT and sig.get('model') == self.MODEL:
+            if ticker == asset and sig.get('model') == model:
                 return sig
         return None
 
@@ -9574,7 +9607,6 @@ class TradingBot:
             self._log_event('ERROR', f'Account resolve failed: {exc}')
 
     async def _check_stop_filled(self):
-        """Poll Schwab to detect if the bracket stop child was filled."""
         if not self.position or not self.account_number:
             return
         try:
@@ -9605,7 +9637,6 @@ _bot = TradingBot()
 
 
 async def _bot_loop():
-    """Background coroutine — ticks the trading bot every 10 seconds."""
     while True:
         try:
             await _bot.tick()
@@ -9621,9 +9652,15 @@ async def api_bot_status():
     return _bot.status()
 
 
+class BotEnableRequest(BaseModel):
+    asset:    str   = '/MES'
+    model:    str   = 'CON'
+    stop_pts: float = 10.0
+    quantity: int   = 1
+
 @app.post('/api/bot/enable')
-async def api_bot_enable():
-    return _bot.enable()
+async def api_bot_enable(req: BotEnableRequest):
+    return _bot.enable(req.asset, req.model, req.stop_pts, req.quantity)
 
 
 @app.post('/api/bot/disable')
