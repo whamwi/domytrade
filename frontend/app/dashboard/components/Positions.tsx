@@ -457,7 +457,7 @@ function ManualOrderPanel() {
       const r = await fetch(`${API_URL}/api/trade/manual`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ asset, side, quantity, stop_pts: stopPts }),
+        body:    JSON.stringify({ asset, side, quantity, stop_price: estStop ?? 0 }),
       })
       setResult(await r.json())
     } catch (e: unknown) {
