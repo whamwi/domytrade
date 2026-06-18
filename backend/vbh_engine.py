@@ -523,9 +523,9 @@ def make_signal(
         # phantom ENTRY/NEAR that the price can never reach cleanly.
         #   LONG  valid: target > entry > stop  (target is profit, above entry)
         #   SHORT valid: target < entry < stop  (target is profit, below entry)
-        if side == 'LONG'  and target <= stop:
+        if side == 'LONG'  and (target <= stop or target <= entry):
             signal_state = 'NEUTRAL'
-        elif side == 'SHORT' and target >= stop:
+        elif side == 'SHORT' and (target >= stop or target >= entry):
             signal_state = 'NEUTRAL'
 
         results.append({
