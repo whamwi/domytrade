@@ -9137,7 +9137,7 @@ def _build_premarket_read(
                              f'Target Prior POC ({ppoc_s}) then Prior VAH ({pvah_s}).')
     else:
         expected_open = 'OA — Open Auction'
-        open_guidance = (f'Price inside prior value area ({pval_s}–{pvah_s}) — overnight traders still in control. '
+        open_guidance = (f'Price inside prior value area ({pval_s}–{pvah_s}) — overnight buyers and sellers balanced. '
                          f'Two-sided auction expected. '
                          f'Buy Prior VAL ({pval_s}), sell Prior VAH ({pvah_s}) until a decisive break outside value.')
 
