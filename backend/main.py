@@ -9369,10 +9369,19 @@ async def reject_user(user_id: str, secret: str = ''):
 
 @app.get('/api/account/numbers')
 async def api_account_numbers():
-    """All linked Schwab account numbers (for diagnostics)."""
     try:
         data = await asyncio.to_thread(_trader_get, '/accounts/accountNumbers')
         return {'accounts': data}
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={'error': str(exc)})
+
+
+@app.get('/api/account/raw')
+async def api_account_raw():
+    """Full raw Schwab account response (diagnostics — shows all keys)."""
+    try:
+        data = await asyncio.to_thread(_trader_get, '/accounts', {'fields': 'positions'})
+        return {'raw': data}
     except Exception as exc:
         return JSONResponse(status_code=503, content={'error': str(exc)})
 
