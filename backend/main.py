@@ -1080,9 +1080,13 @@ async def refresh_signals():
         # ── RTH hard gate for stocks ──────────────────────────────────────────────
         # Equities and ETFs have no valid VBH data outside 09:30–16:00 ET.
         # Futures (ticker starts with '/') trade nearly 24/7 — always let through.
+        # Holiday exception: if bars were fetched (key exists) but came back empty,
+        # there was no trading today → allow through so prev-day fallback can fire.
         _is_stock = not tick.startswith('/')
         _is_rth   = 9 * 60 + 30 <= et_minute < 16 * 60
-        if _is_stock and not _is_rth:
+        _today_bars   = state['1min_today'].get(sid)   # None=not yet fetched, []=holiday
+        _is_holiday   = _is_stock and _today_bars is not None and not _today_bars
+        if _is_stock and not _is_rth and not _is_holiday:
             continue
 
         # ── Off-hours gate ────────────────────────────────────────────────────────
@@ -1093,8 +1097,9 @@ async def refresh_signals():
         # as CLOSED while compute_all_stats() is still running on startup.
         _sym_stats      = state['stats_agg'].get(sid, {})
         _cur_hour_stats = _sym_stats.get(now_et.hour, (0, 0, 0, 0))
-        if _cur_hour_stats[2] == 0 and _sym_stats:
-            # Symbol has stats for other hours — current hour is genuinely off-hours
+        if _cur_hour_stats[2] == 0 and _sym_stats and not _is_holiday:
+            # Symbol has stats for other hours — current hour is genuinely off-hours.
+            # Skip unless it's a holiday (prev-day fallback will override the hour).
             continue
 
         # ── Holiday / market-closed fallback ──────────────────────────────────────
