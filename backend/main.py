@@ -9787,7 +9787,9 @@ async def api_manual_trade(req: ManualTradeRequest):
     )
 
     if result is None:
-        return {'error': 'Order placement failed — check Railway logs'}
+        return {'error': 'Order placement failed — no response from Schwab'}
+    if '_http_error' in result:
+        return {'error': f"Schwab {result['_http_error']}: {result.get('_message', '')}"}
 
     return {
         'ok': True,

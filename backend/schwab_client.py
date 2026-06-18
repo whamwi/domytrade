@@ -571,7 +571,7 @@ def _trader_post(path: str, payload: dict) -> dict | None:
         resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
     if not resp.ok:
         log.warning('Trader POST %s → HTTP %s: %s', path, resp.status_code, resp.text[:500])
-        return None
+        return {'_http_error': resp.status_code, '_message': resp.text[:400]}
     # 201 Created — body is empty; order ID is in the Location header
     if resp.status_code == 201:
         loc = resp.headers.get('Location', '')
@@ -629,7 +629,10 @@ def place_futures_order(account_number: str, symbol: str, instruction: str,
             }],
         }],
     }
-    return _trader_post(f'/accounts/{account_number}/orders', order)
+    result = _trader_post(f'/accounts/{account_number}/orders', order)
+    if result and '_http_error' in result:
+        return result   # propagate error details to caller
+    return result
 
 
 def close_futures_position(account_number: str, symbol: str,
