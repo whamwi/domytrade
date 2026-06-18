@@ -146,6 +146,42 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
           </svg>
         </button>
 
+        {/* Positions nav item */}
+        <button
+          title="Positions"
+          className="flex items-center justify-center w-full rounded-lg py-2.5 transition-colors"
+          style={{
+            background: activeTab === 'positions' ? 'var(--accent-blue-dim)' : 'transparent',
+            color: activeTab === 'positions' ? 'var(--accent-blue)' : 'var(--text-muted)',
+          }}
+          onMouseEnter={(e) => {
+            if (activeTab !== 'positions') {
+              e.currentTarget.style.background = 'var(--bg-row)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeTab !== 'positions') {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-muted)'
+            }
+          }}
+          onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.set('tab', 'positions')
+            window.history.pushState({}, '', url)
+            window.dispatchEvent(new Event('popstate'))
+          }}
+        >
+          {/* Portfolio / positions icon */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="7" width="20" height="14" rx="2" />
+            <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
+            <line x1="12" y1="12" x2="12" y2="16" />
+            <line x1="10" y1="14" x2="14" y2="14" />
+          </svg>
+        </button>
+
         {/* Settings nav item */}
         <button
           title="Settings"

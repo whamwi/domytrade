@@ -11,6 +11,7 @@ import BriefingModal from './components/BriefingModal'
 import AlertToast from './components/AlertToast'
 import MarketProfile from './components/MarketProfile'
 import GexPanel from './components/GexPanel'
+import Positions from './components/Positions'
 import GlobalMarketsStrip from './components/GlobalMarketsStrip'
 import { useEconomicAlerts, EconAlert, playAlertSound } from './hooks/useEconomicAlerts'
 import AskAI from './components/AskAI'
@@ -511,6 +512,11 @@ export default function DashboardPage() {
       {/* GEX tab */}
       <div className="flex-1 min-w-0 overflow-hidden" style={{ display: activeTab === 'gex' ? undefined : 'none' }}>
         <GexPanel />
+      </div>
+
+      {/* Positions tab */}
+      <div className="flex-1 min-w-0 overflow-auto" style={{ display: activeTab === 'positions' ? undefined : 'none' }}>
+        <Positions />
       </div>
 
       {/* Main content — dashboard tab */}
