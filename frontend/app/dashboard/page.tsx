@@ -18,6 +18,7 @@ import AskAI from './components/AskAI'
 import EntryLog from './components/EntryLog'
 import WatchlistDropdown from './components/WatchlistDropdown'
 import WatchlistEditor, { Watchlist } from './components/WatchlistEditor'
+import EquityBotPanel from './components/EquityBotPanel'
 
 const API_URL  = process.env.NEXT_PUBLIC_API_URL ?? ''
 // WebSocket URL — same host, ws(s):// scheme
@@ -520,7 +521,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Main content — dashboard tab */}
-      <div className="flex flex-col flex-1 min-w-0" style={{ display: (activeTab === 'agent' || activeTab === 'gex') ? 'none' : undefined }}>
+      <div className="flex flex-col flex-1 min-w-0" style={{ display: (activeTab === 'agent' || activeTab === 'gex' || activeTab === 'positions') ? 'none' : undefined }}>
         {/* Header */}
         <header
           className="flex items-center gap-4 px-5 py-3 shrink-0"
@@ -761,6 +762,9 @@ export default function DashboardPage() {
 
         {/* Industries performance strip (% from RTH open) */}
         <SectorStrip sectors={industries} label="INDUSTRIES" />
+
+        {/* Equity trading bot — arms on VBH signal, fires on price trigger */}
+        <EquityBotPanel />
 
         {/* Table — or warm-up screen while backend is initialising */}
         <div className="flex-1 overflow-auto">
