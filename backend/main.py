@@ -19,7 +19,8 @@ load_dotenv()
 from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            get_current_hour_ohlc, get_session_bars,
                            front_month_code, next_contract_month,
-                           set_token_refresh_callback, _token_cache as _schwab_token_cache)
+                           set_token_refresh_callback, _token_cache as _schwab_token_cache,
+                           get_accounts, get_positions, get_orders, get_transactions)
 import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, compute_stats_wide, make_signal
 from squeeze import calc_squeeze_5min, squeeze_confirms_signal
@@ -9356,3 +9357,47 @@ async def reject_user(user_id: str, secret: str = ''):
     except Exception as exc:
         logging.error('Reject user error: %s', exc)
         return HTMLResponse('<h2>Error — check logs.</h2>', status_code=500)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schwab Account / Positions / Orders  (read-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get('/api/account/summary')
+async def api_account_summary():
+    """All linked Schwab accounts with balances and positions."""
+    try:
+        accounts = await asyncio.to_thread(get_accounts)
+        return {'accounts': accounts}
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={'error': str(exc)})
+
+
+@app.get('/api/account/{account_number}/positions')
+async def api_positions(account_number: str):
+    """Open positions for a specific account."""
+    try:
+        positions = await asyncio.to_thread(get_positions, account_number)
+        return {'positions': positions}
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={'error': str(exc)})
+
+
+@app.get('/api/account/{account_number}/orders')
+async def api_orders(account_number: str, status: str | None = None):
+    """Recent orders for a specific account. Optional ?status=WORKING|FILLED|CANCELED etc."""
+    try:
+        orders = await asyncio.to_thread(get_orders, account_number, 50, status)
+        return {'orders': orders}
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={'error': str(exc)})
+
+
+@app.get('/api/account/{account_number}/transactions')
+async def api_transactions(account_number: str, days: int = 30):
+    """Trade transaction history for a specific account."""
+    try:
+        txns = await asyncio.to_thread(get_transactions, account_number, days)
+        return {'transactions': txns}
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={'error': str(exc)})

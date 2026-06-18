@@ -191,6 +191,7 @@ load_dotenv()
 PRICE_HISTORY_URL = 'https://api.schwabapi.com/marketdata/v1/pricehistory'
 QUOTES_URL        = 'https://api.schwabapi.com/marketdata/v1/quotes'
 TOKEN_URL         = 'https://api.schwabapi.com/v1/oauth/token'
+TRADER_BASE_URL   = 'https://api.schwabapi.com/trader/v1'
 
 API_KEY    = os.environ['SCHWAB_API_KEY']
 API_SECRET = os.environ['SCHWAB_API_SECRET']
@@ -472,3 +473,84 @@ def get_current_hour_ohlc(symbol: str) -> dict | None:
         'close' : candles[-1]['close'],
         'volume': sum(c['volume'] for c in candles),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Account / Order read-only functions  (no order placement yet)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _trader_get(path: str, params: dict | None = None) -> dict | list | None:
+    """GET from Schwab Trader API with auto token refresh."""
+    import logging
+    log = logging.getLogger(__name__)
+    url  = f'{TRADER_BASE_URL}{path}'
+    resp = requests.get(url, headers=_headers(), params=params or {}, timeout=15)
+    if resp.status_code == 401:
+        _token_cache['expires_at'] = 0
+        resp = requests.get(url, headers=_headers(), params=params or {}, timeout=15)
+    if not resp.ok:
+        log.warning('Trader API GET %s → HTTP %s: %s', path, resp.status_code, resp.text[:200])
+        return None
+    return resp.json()
+
+
+def get_accounts() -> list[dict]:
+    """Return all linked Schwab accounts with balances and positions summary.
+
+    Each dict contains: accountNumber, type, roundTrips,
+    currentBalances (liquidationValue, cashBalance, buyingPower etc.),
+    projectedBalances.
+    """
+    data = _trader_get('/accounts', params={'fields': 'positions'})
+    if data is None:
+        return []
+    return data if isinstance(data, list) else [data]
+
+
+def get_positions(account_number: str) -> list[dict]:
+    """Return open positions for a specific account.
+
+    Each position dict contains: symbol, assetType, longQuantity,
+    shortQuantity, averagePrice, marketValue, unrealizedPnL.
+    """
+    data = _trader_get(f'/accounts/{account_number}', params={'fields': 'positions'})
+    if data is None:
+        return []
+    return data.get('securitiesAccount', {}).get('positions', [])
+
+
+def get_orders(account_number: str, max_results: int = 50,
+               status: str | None = None) -> list[dict]:
+    """Return recent orders for an account.
+
+    status: AWAITING_PARENT_ORDER | AWAITING_CONDITION | AWAITING_STOP_CONDITION |
+            AWAITING_MANUAL_REVIEW | ACCEPTED | AWAITING_UR_OUT | PENDING_ACTIVATION |
+            QUEUED | WORKING | REJECTED | PENDING_CANCEL | CANCELED | PENDING_REPLACE |
+            REPLACED | FILLED | EXPIRED | NEW | AWAITING_RELEASE_TIME |
+            PENDING_ACKNOWLEDGEMENT | PENDING_RECALL | UNKNOWN
+    """
+    from datetime import datetime, timezone, timedelta
+    params: dict = {'maxResults': max_results}
+    if status:
+        params['status'] = status
+    # Schwab requires fromEnteredTime / toEnteredTime (ISO8601)
+    now   = datetime.now(timezone.utc)
+    start = now - timedelta(days=60)
+    params['fromEnteredTime'] = start.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    params['toEnteredTime']   = now.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    data  = _trader_get(f'/accounts/{account_number}/orders', params=params)
+    return data if isinstance(data, list) else []
+
+
+def get_transactions(account_number: str, days: int = 30) -> list[dict]:
+    """Return transaction history (fills, dividends, fees) for an account."""
+    from datetime import datetime, timezone, timedelta
+    now   = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    params = {
+        'startDate': start.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+        'endDate':   now.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+        'types':     'TRADE',
+    }
+    data = _trader_get(f'/accounts/{account_number}/transactions', params=params)
+    return data if isinstance(data, list) else []
