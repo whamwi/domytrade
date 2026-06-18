@@ -9408,26 +9408,32 @@ async def api_transactions(account_number: str, days: int = 30):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Trading Bot — configurable VBH futures auto-execution
+# Trading Bot — price-triggered VBH futures auto-execution
 # ─────────────────────────────────────────────────────────────────────────────
 
 import datetime as _dt
 
-# Allowed assets (micro futures only — prevent accidental full-size orders)
 _BOT_ALLOWED_ASSETS = {'/MES', '/MNQ', '/M2K', '/MYM', '/MGC'}
 _BOT_ALLOWED_MODELS = {'CON', 'AGG', 'WIDE'}
 
+
 class TradingBot:
     """
-    Configurable VBH futures bot.
-    Config (asset, model, stop_pts, quantity) is set on enable().
-    Ticks every 10s, enters on ENTRY transition, exits when signal degrades.
-    Stop is a Schwab TRIGGER child order — auto-filled by the broker.
+    Price-triggered VBH futures bot.
+
+    Flow:
+      1. Every 30 s — VBH engine recomputes signals; bot picks up the entry
+         level (cyan line) and side from the signal's 'entry' field.
+      2. When signal is NEAR or ENTRY → bot ARMS: stores the entry price level.
+      3. Every 5 s — bot reads state['last_price'] (live feed) and compares
+         against the armed entry level.
+      4. Price crosses the level → MARKET order fired immediately, no waiting
+         for VBH to re-confirm.
+      5. Signal drops to NEUTRAL → disarm (cancel if no position).
+      6. Stop is a Schwab TRIGGER child order at entry ± stop_pts.
     """
 
     MAX_LOG = 50
-
-    # ── defaults ──────────────────────────────────────────────────────────────
     DEFAULT_ASSET    = '/MES'
     DEFAULT_MODEL    = 'CON'
     DEFAULT_STOP_PTS = 10.0
@@ -9436,109 +9442,144 @@ class TradingBot:
     def __init__(self):
         self.enabled        = False
         self.account_number = None
-        self.position       = None
-        self._prev_sig      = None
+        self.position       = None   # dict when in a trade
+        self.armed          = None   # dict when watching for price trigger
         self._log: list     = []
-        # runtime config (set by enable())
         self.cfg = {
-            'asset':     self.DEFAULT_ASSET,
-            'model':     self.DEFAULT_MODEL,
-            'stop_pts':  self.DEFAULT_STOP_PTS,
-            'quantity':  self.DEFAULT_QTY,
+            'asset':    self.DEFAULT_ASSET,
+            'model':    self.DEFAULT_MODEL,
+            'stop_pts': self.DEFAULT_STOP_PTS,
+            'quantity': self.DEFAULT_QTY,
         }
 
     # ── public API ────────────────────────────────────────────────────────────
 
     def status(self) -> dict:
+        sig = self._find_signal()
+        sym_id = self._symbol_id()
+        live_px = state['last_price'].get(sym_id) if sym_id else None
         return {
             'enabled':        self.enabled,
             'account_number': self.account_number,
             'cfg':            self.cfg,
+            'armed':          self.armed,
             'position':       self.position,
-            'signal':         self._find_signal(),
+            'live_price':     live_px,
+            'signal':         sig,
             'log':            self._log[-20:],
         }
 
-    def enable(self, asset: str, model: str,
-               stop_pts: float, quantity: int) -> dict:
-        """Validate config and start the bot."""
+    def enable(self, asset: str, model: str, stop_pts: float, quantity: int) -> dict:
         asset = asset.upper().strip()
         model = model.upper().strip()
-
         if asset not in _BOT_ALLOWED_ASSETS:
-            return {'error': f'Asset {asset} not allowed. Choose from: {sorted(_BOT_ALLOWED_ASSETS)}'}
+            return {'error': f'Asset {asset} not allowed. Choose: {sorted(_BOT_ALLOWED_ASSETS)}'}
         if model not in _BOT_ALLOWED_MODELS:
-            return {'error': f'Model {model} not valid. Choose from: {sorted(_BOT_ALLOWED_MODELS)}'}
-        if stop_pts <= 0 or stop_pts > 50:
-            return {'error': 'stop_pts must be between 1 and 50'}
-        if quantity < 1 or quantity > 10:
-            return {'error': 'quantity must be between 1 and 10'}
+            return {'error': f'Model {model} not valid. Choose: {sorted(_BOT_ALLOWED_MODELS)}'}
+        if not (0 < stop_pts <= 50):
+            return {'error': 'stop_pts must be 1–50'}
+        if not (1 <= quantity <= 10):
+            return {'error': 'quantity must be 1–10'}
 
         self.cfg = {'asset': asset, 'model': model,
                     'stop_pts': stop_pts, 'quantity': quantity}
-
         if not self.enabled:
             self._resolve_account()
-            self.enabled   = True
-            self._prev_sig = None   # reset so we don't fire on stale state
+            self.enabled = True
+            self.armed   = None
             self._log_event('INFO',
-                f'Bot ENABLED — {asset} {model} | {quantity} contract(s) | {stop_pts}pt stop')
+                f'ENABLED — {asset} {model} | {quantity}ct | {stop_pts}pt stop | watching price')
         else:
             self._log_event('INFO',
-                f'Config updated — {asset} {model} | {quantity} contract(s) | {stop_pts}pt stop')
-
+                f'Config updated — {asset} {model} | {quantity}ct | {stop_pts}pt stop')
         return self.status()
 
     def disable(self) -> dict:
         if self.enabled:
             self.enabled = False
-            self._log_event('INFO', 'Bot DISABLED — open position (if any) left for manual management')
+            self.armed   = None
+            self._log_event('INFO', 'DISABLED — position (if any) left for manual management')
         return self.status()
 
-    # ── 10-second tick ────────────────────────────────────────────────────────
+    # ── 5-second tick ─────────────────────────────────────────────────────────
 
     async def tick(self):
         if not self.enabled:
             return
 
-        sig  = self._find_signal()
-        prev = self._prev_sig
+        sig      = self._find_signal()
+        sig_state = sig.get('signal_state') if sig else None
+        sig_side  = sig.get('side')         if sig else None
+        sig_entry = sig.get('entry')        if sig else None   # cyan line price
 
-        cur_state  = sig.get('signal_state') if sig else None
-        prev_state = prev.get('signal_state') if prev else None
-        cur_side   = sig.get('side')          if sig else None
-        cur_price  = sig.get('last')          if sig else None
-
+        # ── check if Schwab already filled our stop ───────────────────────────
         if self.position:
             await self._check_stop_filled()
 
+        # ── arm / disarm ──────────────────────────────────────────────────────
         if not self.position:
-            if cur_state == 'ENTRY' and prev_state != 'ENTRY' and cur_price:
-                await self._enter(cur_side, cur_price)
-        else:
-            pos_side = self.position['side']
-            if cur_state == 'ENTRY' and cur_side and cur_side != pos_side and cur_price:
-                self._log_event('INFO', f'Signal flipped to {cur_side} — closing {pos_side} and reversing')
-                await self._exit('signal_flip')
-                await self._enter(cur_side, cur_price)
-            elif cur_state not in ('ENTRY', 'NEAR') and prev_state in ('ENTRY', 'NEAR'):
-                self._log_event('INFO', f'Signal dropped to {cur_state} — exiting')
-                await self._exit('signal_exit')
+            if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side:
+                if not self.armed:
+                    self.armed = {
+                        'side':        sig_side,
+                        'entry_level': sig_entry,
+                    }
+                    self._log_event('INFO',
+                        f'ARMED — {sig_side}  entry level {sig_entry:.2f}  '
+                        f'({sig_state})')
+                elif self.armed['side'] != sig_side:
+                    # Signal flipped direction while armed — re-arm
+                    self.armed = {'side': sig_side, 'entry_level': sig_entry}
+                    self._log_event('INFO',
+                        f'Re-armed opposite side — {sig_side} @ {sig_entry:.2f}')
+            else:
+                if self.armed:
+                    self._log_event('INFO', 'Signal neutral — disarmed')
+                self.armed = None
 
-        self._prev_sig = sig
+        # ── price trigger ─────────────────────────────────────────────────────
+        if self.armed and not self.position:
+            sym_id   = self._symbol_id()
+            live_px  = state['last_price'].get(sym_id) if sym_id else None
+
+            if live_px:
+                side        = self.armed['side']
+                entry_level = self.armed['entry_level']
+                triggered   = (
+                    (side == 'LONG'  and live_px <= entry_level) or
+                    (side == 'SHORT' and live_px >= entry_level)
+                )
+                if triggered:
+                    self._log_event('TRADE',
+                        f'Price trigger — live {live_px:.2f} crossed entry level {entry_level:.2f} ({side})')
+                    self.armed = None
+                    await self._enter(side, live_px)
+
+        # ── exit management (in position) ─────────────────────────────────────
+        if self.position:
+            pos_side = self.position['side']
+            if sig_state in ('NEAR', 'ENTRY') and sig_side and sig_side != pos_side:
+                self._log_event('INFO', f'Signal flipped to {sig_side} — closing {pos_side}')
+                await self._exit('signal_flip')
+                # Re-arm immediately on the new side
+                if sig_entry:
+                    self.armed = {'side': sig_side, 'entry_level': sig_entry}
+            elif sig_state not in ('NEAR', 'ENTRY'):
+                self._log_event('INFO', f'Signal gone — exiting')
+                await self._exit('signal_exit')
 
     # ── execution ─────────────────────────────────────────────────────────────
 
     async def _enter(self, side: str, price: float):
-        asset       = self.cfg['asset']
         stop_pts    = self.cfg['stop_pts']
         qty         = self.cfg['quantity']
-        symbol      = front_month_code(asset)
+        symbol      = front_month_code(self.cfg['asset'])
         instruction = 'BUY' if side == 'LONG' else 'SELL'
         stop_price  = round(price - stop_pts, 2) if side == 'LONG' \
                       else round(price + stop_pts, 2)
 
-        self._log_event('TRADE', f'ENTRY {side} {symbol} ~{price:.2f}  stop={stop_price:.2f}  qty={qty}')
+        self._log_event('TRADE',
+            f'ENTER {side} {symbol} @ ~{price:.2f}  stop={stop_price:.2f}  qty={qty}')
         try:
             result   = await asyncio.to_thread(
                 place_futures_order,
@@ -9563,7 +9604,7 @@ class TradingBot:
             return
         pos         = self.position
         close_instr = 'SELL' if pos['side'] == 'LONG' else 'BUY'
-        self._log_event('TRADE', f'EXIT {pos["side"]} {pos["symbol"]}  reason={reason}')
+        self._log_event('TRADE', f'EXIT {pos["side"]} {pos["symbol"]} — {reason}')
         try:
             if pos.get('order_id'):
                 await asyncio.to_thread(cancel_order, self.account_number, pos['order_id'])
@@ -9571,7 +9612,8 @@ class TradingBot:
                 close_futures_position,
                 self.account_number, pos['symbol'], close_instr, pos['quantity'],
             )
-            self._log_event('INFO', f'Close order submitted — {close_instr} {pos["quantity"]} {pos["symbol"]}')
+            self._log_event('INFO',
+                f'Close order submitted — {close_instr} {pos["quantity"]} {pos["symbol"]}')
         except Exception as exc:
             self._log_event('ERROR', f'Exit failed: {exc}')
         finally:
@@ -9591,6 +9633,13 @@ class TradingBot:
             ticker = sig.get('symbol', '').split(':')[0]
             if ticker == asset and sig.get('model') == model:
                 return sig
+        return None
+
+    def _symbol_id(self) -> int | None:
+        asset = self.cfg['asset']
+        for sym in state.get('symbols', []):
+            if sym.get('ticker') == asset:
+                return sym.get('id')
         return None
 
     def _resolve_account(self):
@@ -9637,12 +9686,13 @@ _bot = TradingBot()
 
 
 async def _bot_loop():
+    """Ticks every 5 s — matches the live price feed frequency."""
     while True:
         try:
             await _bot.tick()
         except Exception as exc:
             log.error('bot loop error: %s', exc)
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
 
 
 # ─── Bot API ──────────────────────────────────────────────────────────────────
