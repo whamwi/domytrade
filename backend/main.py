@@ -38,7 +38,8 @@ from db import (get_active_symbols, upsert_ohlc, get_ohlc,
                 get_last_daily_bar_dates, delete_old_daily_candles,
                 get_etf_holdings, set_etf_holdings,
                 aggregate_1min_to_15min,
-                insert_entry_log, get_entry_log, clear_entry_log)
+                insert_entry_log, get_entry_log, clear_entry_log,
+                get_prev_rth_hours)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -1096,6 +1097,29 @@ async def refresh_signals():
             # Symbol has stats for other hours — current hour is genuinely off-hours
             continue
 
+        # ── Holiday / market-closed fallback ──────────────────────────────────────
+        # On non-trading days (federal holidays) Schwab returns no intraday bars,
+        # leaving ohlc flat (h_high == h_low).  Fall back to the previous trading
+        # day's last 2 RTH hours from the DB so VBH levels remain visible.
+        _hour_override = None
+        if _is_stock and not state['1min_today'].get(sid):
+            _prev_bars = get_prev_rth_hours(sid, n_hours=2)
+            if _prev_bars:
+                _fb_high = max(b['high'] for b in _prev_bars)
+                _fb_low  = min(b['low']  for b in _prev_bars)
+                ohlc = {
+                    'open'  : _prev_bars[0]['open'],
+                    'high'  : _fb_high,
+                    'low'   : _fb_low,
+                    'close' : _prev_bars[-1]['close'],
+                    'volume': 0,
+                }
+                _hour_override = _prev_bars[-1]['hour_et']
+                if not last:
+                    last = _prev_bars[-1]['close']
+                    display_price = last
+                    state['last_price'][sid] = last
+
         sigs = make_signal(
             tick, api, ohlc, last,
             state['stats_agg'].get(sid, {}),
@@ -1105,6 +1129,7 @@ async def refresh_signals():
             stats_wide=state['stats_wide'].get(sid, {}),
             cr=state['cr'].get(sid),
             cr_breached=state['cr_breached'].get(sid),
+            hour_override=_hour_override,
         )
         if sigs:
             for s in sigs:

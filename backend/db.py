@@ -50,6 +50,27 @@ def get_ohlc(symbol_id: int, lookback_days: int) -> list[dict]:
     return res.data
 
 
+def get_prev_rth_hours(symbol_id: int, n_hours: int = 2) -> list[dict]:
+    """Return the last N RTH hours (9–15 ET) from the most recent trading day in ohlc_hourly.
+
+    Used as a fallback on holidays/weekends so VBH can display levels based on
+    the previous session's closing hours instead of showing nothing.
+    Returns rows ordered oldest-first; empty list if nothing found.
+    """
+    from datetime import datetime, timezone, timedelta
+    RTH_HOURS = list(range(9, 16))   # 9am–3pm ET (last bar closes at 4pm)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    res = (get_db().table('ohlc_hourly')
+           .select('bar_time,hour_et,open,high,low,close,volume')
+           .eq('symbol_id', symbol_id)
+           .gte('bar_time', cutoff)
+           .in_('hour_et', RTH_HOURS)
+           .order('bar_time', desc=True)
+           .limit(n_hours)
+           .execute())
+    return list(reversed(res.data))   # oldest-first
+
+
 # ── VBH Stats ─────────────────────────────────────────────────────────────────
 
 def upsert_vbh_stats(rows: list[dict]) -> None:
