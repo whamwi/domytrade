@@ -1191,7 +1191,9 @@ function LiveRead({ lr }: { lr: LiveReadData }) {
               background: `${LETTER_COLOR[lr.last_period] ?? cfg.color}18`,
               borderRadius: '4px', padding: '1px 6px',
             }}>{lr.last_period}</span>
-            <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>closed at</span>
+            <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
+              {lr.status === 'IB_BUILDING' && lr.last_period === 'A' ? 'last print' : 'closed at'}
+            </span>
             <span style={{ fontSize: '14px', fontWeight: 700, fontFamily: 'monospace',
               color: 'var(--text-primary)' }}>{lr.last_close.toFixed(2)}</span>
           </div>
@@ -1607,8 +1609,8 @@ export default function MarketProfile() {
                 {/* Live Read — dynamic per-period market read */}
                 {data.live_read && <LiveRead lr={data.live_read} />}
 
-                {/* IB Signals — current session (after B period) */}
-                {data.ib_signals && (
+                {/* IB Signals — current session (after B period); hidden once Live Read is invalidated */}
+                {data.ib_signals && data.live_read?.status !== 'INVALIDATED' && (
                   <IBAnalysis signals={data.ib_signals} title="IB Analysis — Today" />
                 )}
 

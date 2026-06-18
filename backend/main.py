@@ -8253,36 +8253,35 @@ def _evaluate_live_read(session_prof: dict, ib_signals: dict, overnight: dict,
         return _building                # pre-RTH
 
     if last_complete_idx < 0:
-        # A period still building — give pre-IB context
-        a_close = pr.get('A', {}).get('close')
-        if a_close is None:
+        # A period still building (9:30–10:00 ET) — no period has closed yet
+        a_last = pr.get('A', {}).get('close')   # last 1-min bar close, NOT a period close
+        if a_last is None:
             return _building
-        if on_high and a_close > on_high + tick:
-            read = (f'A period closed at {a_close:.2f}, above ONH ({on_high_s}). '
-                    f'B period now open. Buyers probed above overnight range — '
-                    f'B close above ONH confirms excess.')
-        elif on_low and a_close < on_low - tick:
-            read = (f'A period closed at {a_close:.2f}, below ONL ({on_low_s}). '
-                    f'B period now open. Sellers probed below overnight range — '
-                    f'watch B close for acceptance or rejection.')
-        elif on_poc and a_close > on_poc + tick:
-            read = (f'A period closed at {a_close:.2f}, above ON POC ({on_poc_s}). '
-                    f'B period now open. Buyers holding above overnight value — '
-                    f'watch B close at 10:30 AM ET to complete IB.')
-        elif on_poc and a_close < on_poc - tick:
-            read = (f'A period closed at {a_close:.2f}, below ON POC ({on_poc_s}). '
-                    f'B period now open. Sellers below overnight value — '
-                    f'watch B close at 10:30 AM ET to complete IB.')
+        if on_high and a_last > on_high + tick:
+            read = (f'A period building — last print {a_last:.2f}, above ONH ({on_high_s}). '
+                    f'Buyers probing above overnight range. '
+                    f'A closes at 10:00 AM ET.')
+        elif on_low and a_last < on_low - tick:
+            read = (f'A period building — last print {a_last:.2f}, below ONL ({on_low_s}). '
+                    f'Sellers probing below overnight range. '
+                    f'A closes at 10:00 AM ET.')
+        elif on_poc and a_last > on_poc + tick:
+            read = (f'A period building — last print {a_last:.2f}, above ON POC ({on_poc_s}). '
+                    f'Buyers holding above overnight value. '
+                    f'A closes at 10:00 AM ET.')
+        elif on_poc and a_last < on_poc - tick:
+            read = (f'A period building — last print {a_last:.2f}, below ON POC ({on_poc_s}). '
+                    f'Sellers below overnight value. '
+                    f'A closes at 10:00 AM ET.')
         else:
-            read = (f'A period closed at {a_close:.2f}, near ON POC ({on_poc_s}). '
-                    f'B period now open. No directional edge yet — '
-                    f'B close will establish the IB and set bias.')
+            read = (f'A period building — last print {a_last:.2f}, near ON POC ({on_poc_s}). '
+                    f'No directional edge yet. A closes at 10:00 AM ET.')
         return {
             'active': True, 'status': 'IB_BUILDING',
-            'last_period': 'A', 'last_close': a_close,
+            'last_period': 'A', 'last_close': a_last,
             'current_read': read,
-            'live_guidance': f'B period now open — IB completes at B close (10:30 AM ET).',
-            'watch_level': {'price': on_high, 'label': 'ONH', 'significance': 'B close above = bullish excess'} if on_high else None,
+            'live_guidance': 'A period in progress (9:30–10:00 ET) — no periods closed yet.',
+            'watch_level': {'price': on_high, 'label': 'ONH', 'significance': 'A close above = bullish probe'} if on_high else None,
         }
 
     last_letter = chr(ord('A') + min(last_complete_idx, 12))
