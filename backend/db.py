@@ -676,7 +676,8 @@ def get_latest_gex(symbol: str, require_walls: bool = False) -> dict | None:
         .order('captured_at', desc=True)
     )
     if require_walls:
-        q = q.not_.is_('call_wall', 'null')
+        # Skip zero-OI rows (Schwab returns net_gex_mm=0 when data is unavailable)
+        q = q.neq('net_gex_mm', 0)
     res = q.limit(1).execute()
     return res.data[0] if res.data else None
 
