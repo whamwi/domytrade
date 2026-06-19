@@ -343,6 +343,9 @@ export default function MarketRegime() {
                             opacity: tooFar ? 0.45 : 1,
                           }}>
                             {row.magnet.direction} {row.magnet.pct.toFixed(1)}%
+                            <span style={{ fontWeight: 400, opacity: 0.7 }}>
+                              {' '}@ {fmt(row.magnet.target, 0)}
+                            </span>
                           </span>
                         )
                       })() : (
