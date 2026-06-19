@@ -5765,13 +5765,46 @@ async def get_market_regime():
     # Indices first, then tracked stocks (exclude duplicates)
     ordered = list(GEX_INDEX_SYMBOLS) + [s for s in tracked if s not in GEX_INDEX_SYMBOLS]
 
-    # Fetch per-symbol with require_walls=True so we skip zero-OI intraday rows
-    # (Schwab returns blank data after close / when token is stale — fall back to
-    # the last snapshot that had real call_wall data)
+    # Fetch latest GEX per symbol. For index symbols, if the DB row is stale or
+    # has zero net_gex (Schwab returning blank data), compute live from Schwab so
+    # the Market Regime stays in sync with the GEX panel.
+    import time as _time
+    from datetime import datetime, timezone
     all_gex: dict = {}
     for sym in ordered:
         try:
             r = await asyncio.to_thread(get_latest_gex, sym, True)
+            # For indices: check staleness — if last real snapshot is > 25 min old
+            # during RTH, compute live (same path as the GEX panel fallback)
+            if sym in GEX_INDEX_SYMBOLS:
+                stale = True
+                if r and r.get('captured_at'):
+                    try:
+                        age_s = (datetime.now(timezone.utc) -
+                                 datetime.fromisoformat(r['captured_at'].replace('Z', '+00:00'))
+                                ).total_seconds()
+                        stale = age_s > 25 * 60   # older than 25 min
+                    except Exception:
+                        pass
+                if stale:
+                    try:
+                        live = await asyncio.to_thread(_compute_gex, sym, 60)
+                        if live and live.get('net_gex_mm') != 0:
+                            # Wrap into a row-like dict matching what DB returns
+                            r = {
+                                'symbol'        : sym,
+                                'underlying'    : live['underlying'],
+                                'net_gex_mm'    : live['net_gex_mm'],
+                                'gamma_regime'  : live['gamma_regime'],
+                                'call_wall'     : live['call_wall'],
+                                'put_wall'      : live['put_wall'],
+                                'zero_gamma'    : live['zero_gamma'],
+                                'iv_environment': live.get('iv_environment'),
+                                'captured_at'   : datetime.now(timezone.utc).isoformat(),
+                                'strikes_json'  : _json.dumps({'all': live.get('strikes', [])}),
+                            }
+                    except Exception:
+                        pass
             if r:
                 all_gex[sym] = r
         except Exception:
