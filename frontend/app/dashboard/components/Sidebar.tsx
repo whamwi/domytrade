@@ -33,12 +33,7 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
     >
       {/* Logo icon */}
       <div className="mb-4 mt-1">
-        <span
-          className="text-xl font-bold select-none"
-          style={{ color: 'var(--accent-blue)' }}
-        >
-          ◈
-        </span>
+        <span className="text-xl font-bold select-none" style={{ color: 'var(--accent-blue)' }}>◈</span>
       </div>
 
       <div className="flex flex-col gap-1 flex-1 w-full px-2">
@@ -69,7 +64,6 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
             window.dispatchEvent(new Event('popstate'))
           }}
         >
-          {/* Grid / Dashboard icon */}
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="3" width="7" height="7" />
             <rect x="14" y="3" width="7" height="7" />
@@ -143,6 +137,42 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2 12 Q4 4 6 12 Q8 20 10 12 Q12 4 14 12 Q16 20 18 12 Q20 4 22 12" />
             <line x1="2" y1="18" x2="22" y2="18" strokeDasharray="2 2" strokeWidth="1.2" />
+          </svg>
+        </button>
+
+        {/* Market Regime nav item */}
+        <button
+          title="Market Regime"
+          className="flex items-center justify-center w-full rounded-lg py-2.5 transition-colors"
+          style={{
+            background: activeTab === 'regime' ? 'var(--accent-blue-dim)' : 'transparent',
+            color: activeTab === 'regime' ? 'var(--accent-blue)' : 'var(--text-muted)',
+          }}
+          onMouseEnter={(e) => {
+            if (activeTab !== 'regime') {
+              e.currentTarget.style.background = 'var(--bg-row)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeTab !== 'regime') {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-muted)'
+            }
+          }}
+          onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.set('tab', 'regime')
+            window.history.pushState({}, '', url)
+            window.dispatchEvent(new Event('popstate'))
+          }}
+        >
+          {/* Regime / gamma grid icon */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <line x1="3" y1="9" x2="21" y2="9" />
+            <line x1="3" y1="15" x2="21" y2="15" />
+            <line x1="9" y1="3" x2="9" y2="21" />
           </svg>
         </button>
 

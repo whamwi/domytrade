@@ -5565,6 +5565,158 @@ async def get_gex(ticker: str, strike_count: int = Query(60)):
     return data
 
 
+# ── Earnings Calendar (Alpha Vantage) ─────────────────────────────────────────
+# Fetched once per day; cached in memory. One API call covers all symbols.
+
+_earnings_cache: dict = {}   # {'date': str, 'events': dict[str, str]}  ticker → reportDate
+
+
+def _refresh_earnings_calendar() -> dict[str, str]:
+    """Fetch 3-month earnings calendar from Alpha Vantage. Returns {ticker: reportDate}."""
+    import os, csv, io, requests as _req
+    key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    if not key:
+        return {}
+    try:
+        resp = _req.get('https://www.alphavantage.co/query', params={
+            'function': 'EARNINGS_CALENDAR',
+            'horizon' : '3month',
+            'apikey'  : key,
+        }, timeout=20)
+        if not resp.ok:
+            return {}
+        reader = csv.DictReader(io.StringIO(resp.text))
+        return {row['symbol']: row['reportDate'] for row in reader if row.get('symbol') and row.get('reportDate')}
+    except Exception as exc:
+        log.warning('Earnings calendar fetch failed: %s', exc)
+        return {}
+
+
+def _get_earnings_calendar() -> dict[str, str]:
+    """Return cached {ticker: reportDate}, refreshing once per day."""
+    from datetime import date
+    today = date.today().isoformat()
+    if _earnings_cache.get('date') != today:
+        _earnings_cache['events'] = _refresh_earnings_calendar()
+        _earnings_cache['date']   = today
+        log.info('Earnings calendar refreshed: %d upcoming events', len(_earnings_cache['events']))
+    return _earnings_cache.get('events', {})
+
+
+def earnings_proximity(ticker: str, window_days: int = 5) -> dict:
+    """Check if ticker has earnings within window_days trading days.
+
+    Returns: {near: bool, report_date: str|None, days_away: int|None}
+    """
+    from datetime import date, timedelta
+    calendar = _get_earnings_calendar()
+    report   = calendar.get(ticker.upper())
+    if not report:
+        return {'near': False, 'report_date': None, 'days_away': None}
+    try:
+        rd       = date.fromisoformat(report)
+        today    = date.today()
+        cal_days = (rd - today).days
+        # Approximate trading days (rough: 5/7 of calendar days)
+        trading_days = max(0, int(cal_days * 5 / 7))
+        return {
+            'near'       : 0 <= trading_days <= window_days,
+            'report_date': report,
+            'days_away'  : trading_days,
+        }
+    except ValueError:
+        return {'near': False, 'report_date': report, 'days_away': None}
+
+
+@app.get('/api/earnings-calendar')
+async def get_earnings_calendar(days: int = Query(14)):
+    """Return all S&P 500 / NASDAQ 100 symbols reporting earnings within `days` trading days."""
+    from datetime import date
+    calendar = await asyncio.to_thread(_get_earnings_calendar)
+    today    = date.today()
+    results  = []
+    for ticker, report_date in calendar.items():
+        try:
+            rd           = date.fromisoformat(report_date)
+            trading_days = max(0, int(((rd - today).days) * 5 / 7))
+            if 0 <= trading_days <= days:
+                results.append({'symbol': ticker, 'report_date': report_date, 'days_away': trading_days})
+        except ValueError:
+            continue
+    results.sort(key=lambda r: r['report_date'])
+    return {'total': len(results), 'window_days': days, 'events': results}
+
+
+@app.post('/api/kill-filter')
+async def kill_filter(symbols: list[str] = Body(...)):
+    """Carter kill filter: gamma flip check for a list of equity symbols.
+
+    For each symbol, fetches the option chain (or serves from 5-min transient
+    cache), computes net GEX across all expirations, and determines whether
+    spot is above or below the gamma flip level.
+
+    Pass  = POSITIVE gamma regime (spot > flip)  → debit calls work
+    Kill  = NEGATIVE gamma regime (spot < flip)  → dealer amplifier, skip
+
+    Also flags thin GEX footprint (<$1M net) as a soft warning even when
+    regime is POSITIVE — matches Carter's IVZ exclusion logic.
+    """
+    MIN_FOOTPRINT_MM = 1.0   # $1M net GEX minimum
+
+    async def _check(sym: str) -> dict:
+        upper = sym.upper().strip()
+        try:
+            cached = _gex_transient_cache.get(upper)
+            if cached and (time.time() - cached['ts']) < _GEX_TRANSIENT_TTL:
+                data = cached['data']
+            else:
+                data = await asyncio.to_thread(_compute_gex, upper, 9999)
+                _gex_transient_cache[upper] = {'data': data, 'ts': time.time()}
+
+            spot     = data.get('underlying', 0)
+            net_gex  = data.get('net_gex_mm', 0)
+            regime   = data.get('gamma_regime', 'UNKNOWN')
+            flip     = data.get('zero_gamma')
+
+            gap      = round(spot - flip, 2) if (spot and flip) else None
+            gap_pct  = round(gap / spot * 100, 2) if (gap is not None and spot) else None
+            thin     = abs(net_gex) < MIN_FOOTPRINT_MM
+            passed   = regime == 'POSITIVE' and not thin
+
+            gap_str  = f'{gap_pct:+.1f}%' if gap_pct is not None else 'n/a'
+            if regime == 'NEGATIVE':
+                verdict = f'KILL — negative gamma (flip ${flip}, spot ${spot}, gap {gap_str})'
+            elif thin:
+                verdict = f'KILL — thin footprint (net GEX ${net_gex:.2f}M < $1M)'
+            else:
+                verdict = f'PASS — positive gamma (flip ${flip}, spot ${spot}, gap {gap_str})'
+
+            return {
+                'symbol'      : upper,
+                'pass'        : passed,
+                'regime'      : regime,
+                'spot'        : spot,
+                'flip'        : flip,
+                'gap'         : gap,
+                'gap_pct'     : gap_pct,
+                'net_gex_mm'  : round(net_gex, 2),
+                'thin'        : thin,
+                'verdict'     : verdict,
+            }
+        except Exception as exc:
+            return {'symbol': upper, 'pass': False, 'regime': 'ERROR', 'verdict': str(exc)}
+
+    results = await asyncio.gather(*[_check(s) for s in symbols])
+    passed  = [r for r in results if r.get('pass')]
+    killed  = [r for r in results if not r.get('pass')]
+    return {
+        'total'  : len(results),
+        'passed' : len(passed),
+        'killed' : len(killed),
+        'results': list(results),
+    }
+
+
 @app.get('/api/gex/{ticker}/history')
 async def get_gex_history(ticker: str, hours: int = Query(8)):
     """Return intraday GEX history for a tracked index symbol (SPX/NDX/RUT).
@@ -5579,6 +5731,113 @@ async def get_gex_history(ticker: str, hours: int = Query(8)):
         return {'symbol': display_sym, 'hours': hours, 'rows': rows}
     except Exception as exc:
         return JSONResponse({'error': str(exc)}, status_code=500)
+
+
+@app.get('/api/market-regime')
+async def get_market_regime():
+    """GEX-based Market Regime snapshot for all tracked symbols.
+
+    Derives REGIME, FLOW, MAGNET, MAX GEX from the latest gex_snapshots rows.
+    Indices (SPX/NDX/RUT) are served from DB (updated every 15 min during RTH).
+    Tracked stocks are served from DB (updated at 5:30 PM baseline).
+    """
+    import json as _json
+    from db import get_latest_gex_all, get_gex_tracked_symbols
+
+    try:
+        all_gex = await asyncio.to_thread(get_latest_gex_all)
+        tracked = await asyncio.to_thread(get_gex_tracked_symbols)
+    except Exception as exc:
+        return JSONResponse({'error': str(exc)}, status_code=500)
+
+    # Indices first, then tracked stocks (exclude duplicates)
+    ordered = list(GEX_INDEX_SYMBOLS) + [s for s in tracked if s not in GEX_INDEX_SYMBOLS]
+
+    rows = []
+    for sym in ordered:
+        row = all_gex.get(sym)
+        if not row:
+            continue
+
+        # Parse strikes_json for pc_ratio + prev_close
+        pc_ratio   = None
+        prev_close = None
+        try:
+            raw = _json.loads(row.get('strikes_json') or '{}')
+            if isinstance(raw, dict):
+                pc_ratio   = raw.get('pc_ratio')
+                prev_close = raw.get('underlying_prev_close')
+        except Exception:
+            pass
+
+        spot      = row.get('underlying') or 0
+        net_gex   = row.get('net_gex_mm') or 0
+        gr        = row.get('gamma_regime', 'POSITIVE')
+        call_wall = row.get('call_wall')
+        put_wall  = row.get('put_wall')
+        zero_gam  = row.get('zero_gamma')
+
+        # Day % change
+        day_pct = None
+        if spot and prev_close and prev_close > 0:
+            day_pct = round((spot - prev_close) / prev_close * 100, 2)
+
+        # REGIME — indices vs stocks have different GEX magnitude ranges
+        is_index        = sym in GEX_INDEX_SYMBOLS
+        heavy_threshold = 500 if is_index else 50
+        chop_threshold  = 50  if is_index else 5
+
+        if abs(net_gex) <= chop_threshold:
+            regime_label = 'Chop'
+        elif gr == 'NEGATIVE':
+            going_up = day_pct is not None and day_pct > 0
+            suffix   = ' + Heavy Hedges' if net_gex < -heavy_threshold else ''
+            regime_label = ('Trend Up' if going_up else 'Trend Down') + suffix
+        else:
+            regime_label = 'Pinned'
+
+        # FLOW from OI-based put/call ratio
+        if pc_ratio is None:
+            flow = 'n/a'
+        elif pc_ratio >= 1.3:
+            flow = 'BEAR'
+        elif pc_ratio >= 1.1:
+            flow = 'MIXED'
+        elif pc_ratio <= 0.85:
+            flow = 'BULL'
+        else:
+            flow = 'QUIET'
+
+        # MAX GEX — highest gamma concentration strike (= call_wall; call gamma > put gamma at that strike)
+        max_gex_strike = call_wall
+
+        # MAGNET — zero_gamma is the key flip level price gravitates toward in negative regimes
+        magnet = None
+        magnet_target = zero_gam or max_gex_strike
+        if magnet_target and spot:
+            dist_pct  = round((magnet_target - spot) / spot * 100, 2)
+            direction = 'UP' if magnet_target > spot else 'DN'
+            magnet    = {'direction': direction, 'pct': round(abs(dist_pct), 2), 'target': magnet_target}
+
+        rows.append({
+            'symbol'        : sym,
+            'spot'          : spot,
+            'day_pct'       : day_pct,
+            'regime'        : regime_label,
+            'gamma_regime'  : gr,
+            'flow'          : flow,
+            'pc_ratio'      : pc_ratio,
+            'max_gex'       : max_gex_strike,
+            'call_wall'     : call_wall,
+            'put_wall'      : put_wall,
+            'zero_gamma'    : zero_gam,
+            'magnet'        : magnet,
+            'net_gex_mm'    : net_gex,
+            'captured_at'   : row.get('captured_at'),
+            'iv_environment': row.get('iv_environment'),
+        })
+
+    return {'rows': rows, 'count': len(rows)}
 
 
 @app.get('/api/global-markets')
