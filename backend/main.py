@@ -5306,7 +5306,7 @@ def _refresh_gex_stocks() -> None:
     for sym in symbols:
         # ── GEX snapshot (via Schwab, same as index baseline) ──────────────
         try:
-            data = _compute_gex(sym, strike_count=60, vix=vix)
+            data = _compute_gex(sym, strike_count=100, vix=vix)
             row  = {
                 'symbol'              : sym,
                 'is_daily_baseline'   : True,
@@ -5374,7 +5374,7 @@ def _refresh_gex_intraday_stocks() -> None:
 
     for sym in symbols:
         try:
-            data = _compute_gex(sym, strike_count=60, vix=vix)
+            data = _compute_gex(sym, strike_count=100, vix=vix)
             if not data.get('net_gex_mm'):
                 continue
             row = {
@@ -5965,7 +5965,7 @@ async def get_market_regime(force: bool = Query(False)):
             if stale and _can_live:
                 # 3. Live compute — only persist to DB during RTH to protect
                 # last-trading-day snapshots from weekend/holiday Schwab data.
-                live = await asyncio.to_thread(_compute_gex, sym, 60)
+                live = await asyncio.to_thread(_compute_gex, sym, 100)
                 if live and live.get('net_gex_mm') != 0:
                     if _is_rth:
                         db_row = _build_db_row(sym, live)
