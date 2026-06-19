@@ -26,6 +26,8 @@ interface RegimeRow {
   net_gex_mm: number
   captured_at: string | null
   iv_environment: string | null
+  top_vol_call_strike: number | null
+  top_vol_put_strike: number | null
 }
 
 interface RegimeResponse {
@@ -198,7 +200,7 @@ export default function MarketRegime() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['SYMBOL', 'SPOT', 'DAY %', 'REGIME', 'FLOW', 'CALL WALL', 'PUT WALL', 'ZERO-γ', 'MAGNET', 'NET GEX', 'IV ENV', 'UPDATED'].map(h => (
+                {['SYMBOL', 'SPOT', 'DAY %', 'REGIME', 'FLOW', 'CALL WALL', 'PUT WALL', 'TV CALL', 'TV PUT', 'ZERO-γ', 'MAGNET', 'NET GEX', 'IV ENV', 'UPDATED'].map(h => (
                   <th key={h} style={{ ...HDR, textAlign: h === 'SYMBOL' ? 'left' : 'right' }}>{h}</th>
                 ))}
               </tr>
@@ -277,6 +279,40 @@ export default function MarketRegime() {
                     {/* PUT WALL */}
                     <td style={{ ...CELL, textAlign: 'right', color: '#f87171', fontVariantNumeric: 'tabular-nums' }}>
                       {fmt(row.put_wall, 0)}
+                    </td>
+
+                    {/* TV CALL — top-volume call strike (crowd focus) */}
+                    <td style={{ ...CELL, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {row.top_vol_call_strike != null ? (
+                        <span style={{
+                          color: '#4ade80',
+                          fontWeight: 600,
+                          background: 'rgba(74,222,128,0.08)',
+                          padding: '1px 6px',
+                          borderRadius: 3,
+                        }}>
+                          {fmt(row.top_vol_call_strike, 0)}
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)' }}>—</span>
+                      )}
+                    </td>
+
+                    {/* TV PUT — top-volume put strike (crowd focus) */}
+                    <td style={{ ...CELL, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {row.top_vol_put_strike != null ? (
+                        <span style={{
+                          color: '#f87171',
+                          fontWeight: 600,
+                          background: 'rgba(248,113,113,0.08)',
+                          padding: '1px 6px',
+                          borderRadius: 3,
+                        }}>
+                          {fmt(row.top_vol_put_strike, 0)}
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)' }}>—</span>
+                      )}
                     </td>
 
                     {/* ZERO-γ */}
@@ -362,7 +398,7 @@ export default function MarketRegime() {
           </span>
         ))}
         <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
-          MAGNET → price gravitates toward Zero-γ flip level · FLOW from OI put/call ratio
+          MAGNET → price gravitates toward Zero-γ flip level · TV = top-volume strike (where traders are most active today)
         </span>
       </div>
     </div>
