@@ -5628,6 +5628,19 @@ def earnings_proximity(ticker: str, window_days: int = 5) -> dict:
         return {'near': False, 'report_date': report, 'days_away': None}
 
 
+@app.post('/api/gex/refresh-stocks')
+async def manual_refresh_gex_stocks():
+    """Manually trigger the 5:30 PM GEX baseline for all tracked stock symbols.
+    Useful after adding new symbols mid-day or when the scheduled run is missed."""
+    try:
+        await asyncio.to_thread(_refresh_gex_stocks)
+        from db import get_gex_tracked_symbols
+        symbols = await asyncio.to_thread(get_gex_tracked_symbols)
+        return {'status': 'ok', 'symbols_refreshed': symbols}
+    except Exception as exc:
+        return JSONResponse({'error': str(exc)}, status_code=500)
+
+
 @app.get('/api/earnings-calendar')
 async def get_earnings_calendar(days: int = Query(14)):
     """Return all S&P 500 / NASDAQ 100 symbols reporting earnings within `days` trading days."""
