@@ -216,7 +216,7 @@ export default function MarketRegime() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['SYMBOL', 'SPOT', 'DAY %', 'REGIME', 'FLOW', 'CALL WALL', 'PUT WALL', 'TV CALL', 'TV PUT', 'ZERO-γ', 'MAGNET', 'NET GEX', 'IV ENV', 'UPDATED'].map(h => (
+                {['SYMBOL', 'SPOT', 'DAY %', 'REGIME', 'FLOW', 'CALL WALL', 'PUT WALL', 'TV CALL', 'TV PUT', 'MAGNET', 'NET GEX', 'IV ENV', 'UPDATED'].map(h => (
                   <th key={h} style={{ ...HDR, textAlign: h === 'SYMBOL' ? 'left' : 'right' }}>{h}</th>
                 ))}
               </tr>
@@ -331,21 +331,21 @@ export default function MarketRegime() {
                       )}
                     </td>
 
-                    {/* ZERO-γ */}
-                    <td style={{ ...CELL, textAlign: 'right', color: '#fbbf24', fontVariantNumeric: 'tabular-nums' }}>
-                      {fmt(row.zero_gamma, 0)}
-                    </td>
-
-                    {/* MAGNET */}
+                    {/* MAGNET — dim when zero-gamma is too far away to be actionable */}
                     <td style={{ ...CELL, textAlign: 'right' }}>
-                      {row.magnet ? (
-                        <span style={{ ...magnetStyle(row.magnet.direction), fontWeight: 600, fontSize: 11 }}>
-                          {row.magnet.direction} {row.magnet.pct.toFixed(2)}%
-                          <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
-                            {' '}@ {fmt(row.magnet.target, 0)}
+                      {row.magnet ? (() => {
+                        const tooFar = row.magnet.pct > 15
+                        return (
+                          <span style={{
+                            fontWeight: tooFar ? 400 : 600,
+                            fontSize: 11,
+                            color: tooFar ? 'var(--text-muted)' : magnetStyle(row.magnet.direction).color,
+                            opacity: tooFar ? 0.45 : 1,
+                          }}>
+                            {row.magnet.direction} {row.magnet.pct.toFixed(1)}%
                           </span>
-                        </span>
-                      ) : (
+                        )
+                      })() : (
                         <span style={{ color: 'var(--text-muted)' }}>—</span>
                       )}
                     </td>
@@ -417,7 +417,7 @@ export default function MarketRegime() {
           </span>
         ))}
         <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
-          MAGNET → price gravitates toward Zero-γ flip level · TV = top-volume strike (where traders are most active today)
+          MAGNET → distance to Zero-γ flip level (dimmed when >15% — read NET GEX instead) · TV = top-volume strike on nearest expiry
         </span>
       </div>
     </div>
