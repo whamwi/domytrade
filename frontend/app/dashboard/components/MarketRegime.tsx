@@ -106,9 +106,12 @@ export default function MarketRegime() {
   const [error, setError]   = useState<string | null>(null)
   const [lastFetch, setLastFetch] = useState<number>(0)
 
-  const fetch = useCallback(async () => {
+  const fetchData = useCallback(async (force = false) => {
     try {
-      const res = await window.fetch(`${API_URL}/api/market-regime`)
+      const url = force
+        ? `${API_URL}/api/market-regime?force=true`
+        : `${API_URL}/api/market-regime`
+      const res = await window.fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       setData(json)
@@ -122,10 +125,10 @@ export default function MarketRegime() {
   }, [])
 
   useEffect(() => {
-    fetch()
-    const id = setInterval(fetch, 60_000)   // refresh every minute
+    fetchData()
+    const id = setInterval(fetchData, 60_000)   // auto-refresh every minute (no force)
     return () => clearInterval(id)
-  }, [fetch])
+  }, [fetchData])
 
   const CELL: React.CSSProperties = {
     padding: '10px 14px',
@@ -184,7 +187,7 @@ export default function MarketRegime() {
             </span>
           )}
           <button
-            onClick={fetch}
+            onClick={() => fetchData(true)}
             style={{
               background: 'var(--bg-row)',
               border: '1px solid var(--border)',
