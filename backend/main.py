@@ -2434,6 +2434,10 @@ async def background_loop():
                     await asyncio.to_thread(_refresh_gex_indices, False)
                 except Exception as e:
                     log.warning('GEX intraday refresh error: %s', e)
+                try:
+                    await asyncio.to_thread(_refresh_gex_intraday_stocks)
+                except Exception as e:
+                    log.warning('GEX intraday stocks error: %s', e)
                 last_gex_intraday_ts = time.time()
 
             # Purge old intraday GEX rows (keep 5 days) — runs with daily candle purge
@@ -5322,6 +5326,60 @@ def _refresh_gex_stocks() -> None:
             log.warning('OCC MM%% fetch failed for %s: %s', sym, exc)
 
 
+def _refresh_gex_intraday_stocks() -> None:
+    """Compute intraday GEX snapshots for all tracked stock symbols.
+
+    Called every 15 min during RTH alongside the index intraday refresh.
+    Skips OCC MM% fetch (daily-only data handled by _refresh_gex_stocks at 5:30 PM).
+    """
+    import json as _json
+    from db import save_gex_snapshot, get_gex_tracked_symbols
+
+    symbols = get_gex_tracked_symbols()
+    vix     = _get_vix()
+
+    for sym in symbols:
+        try:
+            data = _compute_gex(sym, strike_count=60, vix=vix)
+            if not data.get('net_gex_mm'):
+                continue
+            row = {
+                'symbol'              : sym,
+                'is_daily_baseline'   : False,
+                'is_intraday_estimate': True,
+                'underlying'          : data['underlying'],
+                'vix_ref'             : data['vix_ref'],
+                'iv_environment'      : data['iv_environment'],
+                'net_gex_mm'          : data['net_gex_mm'],
+                'gamma_regime'        : data['gamma_regime'],
+                'call_wall'           : data['call_wall'],
+                'put_wall'            : data['put_wall'],
+                'zero_gamma'          : data['zero_gamma'],
+                'expected_move_pct'   : data['expected_move_pct'],
+                'expected_move_pts'   : data['expected_move_pts'],
+                'net_gex_ex_next_mm'  : data['net_gex_ex_next_mm'],
+                'call_wall_ex_next'   : data['call_wall_ex_next'],
+                'put_wall_ex_next'    : data['put_wall_ex_next'],
+                'zero_gamma_ex_next'  : data['zero_gamma_ex_next'],
+                'net_gex_monthly_mm'  : data['net_gex_monthly_mm'],
+                'call_wall_monthly'   : data['call_wall_monthly'],
+                'put_wall_monthly'    : data['put_wall_monthly'],
+                'zero_gamma_monthly'  : data['zero_gamma_monthly'],
+                'nearest_expiry'      : data['nearest_expiry'],
+                'nearest_dte'         : data['nearest_dte'],
+                'strikes_json'        : _json.dumps({
+                    'all'     : data.get('strikes', []),
+                    'ex_next' : data.get('strikes_ex_next', []),
+                    'monthly' : data.get('strikes_monthly', []),
+                }),
+            }
+            save_gex_snapshot(row)
+            log.info('GEX intraday stock saved: %s  net=%.1fM  regime=%s',
+                     sym, data['net_gex_mm'], data['gamma_regime'])
+        except Exception as exc:
+            log.warning('GEX intraday stock failed for %s: %s', sym, exc)
+
+
 def _fetch_occ_mm_pct(symbol: str, snapshot_date: str) -> list[dict]:
     """Fetch market-maker volume % for a symbol from OCC's marketdata API.
 
@@ -5774,9 +5832,9 @@ async def get_market_regime():
     for sym in ordered:
         try:
             r = await asyncio.to_thread(get_latest_gex, sym, True)
-            # For indices: check staleness — if last real snapshot is > 25 min old
-            # during RTH, compute live (same path as the GEX panel fallback)
-            if sym in GEX_INDEX_SYMBOLS:
+            # Check staleness for all symbols — if last real snapshot is > 25 min old
+            # compute live from Schwab and persist so both panels stay in sync
+            if True:
                 stale = True
                 if r and r.get('captured_at'):
                     try:
