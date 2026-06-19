@@ -5850,12 +5850,13 @@ async def get_gex_history(ticker: str, hours: int = Query(8)):
 
 
 @app.get('/api/market-regime')
-async def get_market_regime():
+async def get_market_regime(force: bool = Query(False)):
     """GEX-based Market Regime snapshot for all tracked symbols.
 
     Derives REGIME, FLOW, MAGNET, MAX GEX from the latest gex_snapshots rows.
     Indices (SPX/NDX/RUT) are served from DB (updated every 15 min during RTH).
     Tracked stocks are served from DB (updated at 5:30 PM baseline).
+    Pass ?force=true to trigger a live Schwab compute regardless of RTH / cache age.
     """
     import json as _json
     from db import get_latest_gex, get_gex_tracked_symbols, save_gex_snapshot
@@ -5917,13 +5918,14 @@ async def get_market_regime():
 
     # RTH check — only attempt live Schwab computes during market hours.
     # Outside RTH, Schwab returns zero OI; we must not overwrite valid DB snapshots.
+    # ?force=true bypasses this for manual refresh (e.g. the Refresh button).
     _now_et   = datetime.now(ET)
     _et_min   = _now_et.hour * 60 + _now_et.minute
     _is_rth   = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
-    # During RTH: treat DB as stale after 5 min so live compute fills the gap
-    # between background-loop refreshes.  Outside RTH: infinity = never trigger
-    # a live compute (serve last-trading-day snapshot as-is).
-    _stale_secs = 5 * 60 if _is_rth else float('inf')
+    _can_live = _is_rth or force   # force lets the Refresh button always pull live
+    # During RTH or force: treat DB as stale after 5 min → live compute.
+    # Outside RTH (auto-refresh): infinity = never trigger live, serve last snapshot.
+    _stale_secs = 5 * 60 if _can_live else float('inf')
 
     async def _resolve_sym(sym: str) -> tuple[str, dict | None]:
         """Return (sym, best_row).
@@ -5960,7 +5962,7 @@ async def get_market_regime():
             # 2. DB snapshot
             r = await asyncio.to_thread(get_latest_gex, sym, True)
             stale = (r is None) or _snapshot_age_s(r) > _stale_secs
-            if stale and _is_rth:
+            if stale and _can_live:
                 # 3. Live compute (RTH only) — save to DB and share via transient cache
                 live = await asyncio.to_thread(_compute_gex, sym, 60)
                 if live and live.get('net_gex_mm') != 0:
