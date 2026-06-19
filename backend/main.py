@@ -5093,6 +5093,32 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     pc_ratio_vol = round(p_vol_total / c_vol_total,  3) if c_vol_total > 0 else None
     pc_ratio     = pc_ratio_oi  # keep for backward compat with DB storage
 
+    # ── Top-volume strike per side — where traders are most active today ──────
+    # Aggregates totalVolume across ALL expiries per strike.  This shows crowd
+    # focus (the "magnet" traders are actually betting on), not OI positioning.
+    top_vol_call_strike: float | None = None
+    top_vol_put_strike:  float | None = None
+    try:
+        _cvol: dict[float, int] = {}
+        for _, _sd in call_map.items():
+            for _sk, _ol in _sd.items():
+                _strike = float(_sk)
+                _cvol[_strike] = _cvol.get(_strike, 0) + sum(int(o.get('totalVolume') or 0) for o in _ol)
+        if _cvol:
+            top_vol_call_strike = float(max(_cvol, key=_cvol.__getitem__))
+    except Exception:
+        pass
+    try:
+        _pvol: dict[float, int] = {}
+        for _, _sd in put_map.items():
+            for _sk, _ol in _sd.items():
+                _strike = float(_sk)
+                _pvol[_strike] = _pvol.get(_strike, 0) + sum(int(o.get('totalVolume') or 0) for o in _ol)
+        if _pvol:
+            top_vol_put_strike = float(max(_pvol, key=_pvol.__getitem__))
+    except Exception:
+        pass
+
     def _pct(dist: dict, total: int) -> dict:
         return {b: round(dist[b] / total * 100, 1) if total > 0 else 0.0 for b in DBUCKETS}
 
@@ -5179,6 +5205,10 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         'strikes_ex_next'    : layer_exnext.get('strikes', []),
         'strikes_monthly'    : layer_monthly.get('strikes', []),
         'strike_count'       : len(layer_all.get('strikes', [])),
+
+        # Top-volume strikes (crowd focus) — cross-expiry volume argmax per side
+        'top_vol_call_strike': top_vol_call_strike,
+        'top_vol_put_strike' : top_vol_put_strike,
     }
 
 
@@ -5871,9 +5901,11 @@ async def get_market_regime():
             'nearest_expiry'      : live.get('nearest_expiry'),
             'nearest_dte'         : live.get('nearest_dte'),
             'strikes_json'        : _json.dumps({
-                'all'     : live.get('strikes', []),
-                'ex_next' : live.get('strikes_ex_next', []),
-                'monthly' : live.get('strikes_monthly', []),
+                'all'                : live.get('strikes', []),
+                'ex_next'            : live.get('strikes_ex_next', []),
+                'monthly'            : live.get('strikes_monthly', []),
+                'top_vol_call_strike': live.get('top_vol_call_strike'),
+                'top_vol_put_strike' : live.get('top_vol_put_strike'),
             }),
         }
 
@@ -5903,7 +5935,11 @@ async def get_market_regime():
                         'zero_gamma'    : d.get('zero_gamma'),
                         'iv_environment': d.get('iv_environment'),
                         'captured_at'   : datetime.fromtimestamp(cached['ts'], tz=timezone.utc).isoformat(),
-                        'strikes_json'  : _json.dumps({'all': d.get('strikes', [])}),
+                        'strikes_json'  : _json.dumps({
+                            'all'                : d.get('strikes', []),
+                            'top_vol_call_strike': d.get('top_vol_call_strike'),
+                            'top_vol_put_strike' : d.get('top_vol_put_strike'),
+                        }),
                     }
 
             # 2. DB snapshot
@@ -5935,13 +5971,17 @@ async def get_market_regime():
         prev_close   = None
         strikes_list = []
         pc_ratio     = None   # kept for backward compat in response payload
+        top_vol_call_strike: float | None = None
+        top_vol_put_strike:  float | None = None
         try:
             sj = row.get('strikes_json')
             # jsonb column returns a string when stored via json.dumps(); parse it
             raw = _json.loads(sj) if isinstance(sj, str) else (sj or {})
             if isinstance(raw, dict):
-                prev_close   = raw.get('underlying_prev_close')
-                strikes_list = raw.get('all', [])
+                prev_close          = raw.get('underlying_prev_close')
+                strikes_list        = raw.get('all', [])
+                top_vol_call_strike = raw.get('top_vol_call_strike')
+                top_vol_put_strike  = raw.get('top_vol_put_strike')
             elif isinstance(raw, list):
                 strikes_list = raw   # legacy single-layer format
         except Exception:
@@ -6003,21 +6043,23 @@ async def get_market_regime():
             magnet    = {'direction': direction, 'pct': round(abs(dist_pct), 2), 'target': magnet_target}
 
         rows.append({
-            'symbol'        : sym,
-            'spot'          : spot,
-            'day_pct'       : day_pct,
-            'regime'        : regime_label,
-            'gamma_regime'  : gr,
-            'flow'          : flow,
-            'pc_ratio'      : pc_ratio,
-            'max_gex'       : max_gex_strike,
-            'call_wall'     : call_wall,
-            'put_wall'      : put_wall,
-            'zero_gamma'    : zero_gam,
-            'magnet'        : magnet,
-            'net_gex_mm'    : net_gex,
-            'captured_at'   : row.get('captured_at'),
-            'iv_environment': row.get('iv_environment'),
+            'symbol'              : sym,
+            'spot'                : spot,
+            'day_pct'             : day_pct,
+            'regime'              : regime_label,
+            'gamma_regime'        : gr,
+            'flow'                : flow,
+            'pc_ratio'            : pc_ratio,
+            'max_gex'             : max_gex_strike,
+            'call_wall'           : call_wall,
+            'put_wall'            : put_wall,
+            'zero_gamma'          : zero_gam,
+            'magnet'              : magnet,
+            'net_gex_mm'          : net_gex,
+            'captured_at'         : row.get('captured_at'),
+            'iv_environment'      : row.get('iv_environment'),
+            'top_vol_call_strike' : top_vol_call_strike,
+            'top_vol_put_strike'  : top_vol_put_strike,
         })
 
     return {'rows': rows, 'count': len(rows)}
