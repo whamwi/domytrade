@@ -417,7 +417,7 @@ export default function MarketRegime() {
           </span>
         ))}
         <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
-          MAGNET → distance to Zero-γ flip level (dimmed when >15% — read NET GEX instead) · TV = top-volume strike on nearest expiry
+          {'MAGNET → distance to Zero-γ flip level (dimmed when >15% — read NET GEX instead) · TV = top-volume strike on nearest expiry'}
         </span>
       </div>
     </div>
