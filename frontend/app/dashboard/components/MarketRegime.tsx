@@ -103,10 +103,12 @@ function formatAge(iso: string | null): { label: string; color: string } {
 export default function MarketRegime() {
   const [data, setData] = useState<RegimeResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError]   = useState<string | null>(null)
   const [lastFetch, setLastFetch] = useState<number>(0)
 
   const fetchData = useCallback(async (force = false) => {
+    if (force) setRefreshing(true)
     try {
       const url = force
         ? `${API_URL}/api/market-regime?force=true`
@@ -121,6 +123,7 @@ export default function MarketRegime() {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }, [])
 
@@ -188,17 +191,20 @@ export default function MarketRegime() {
           )}
           <button
             onClick={() => fetchData(true)}
+            disabled={refreshing}
             style={{
-              background: 'var(--bg-row)',
-              border: '1px solid var(--border)',
-              color: 'var(--text-muted)',
+              background: refreshing ? 'rgba(96,165,250,0.15)' : 'var(--bg-row)',
+              border: `1px solid ${refreshing ? '#60a5fa' : 'var(--border)'}`,
+              color: refreshing ? '#60a5fa' : 'var(--text-muted)',
               borderRadius: 6,
               padding: '4px 10px',
               fontSize: 11,
-              cursor: 'pointer',
+              cursor: refreshing ? 'default' : 'pointer',
+              minWidth: 80,
+              transition: 'all 0.15s',
             }}
           >
-            Refresh
+            {refreshing ? 'Fetching…' : 'Refresh'}
           </button>
         </div>
       </div>
