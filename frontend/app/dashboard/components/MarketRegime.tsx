@@ -74,12 +74,28 @@ function fmtGex(n: number): string {
   return `${sign}${abs.toFixed(0)}M`
 }
 
-function formatAge(iso: string | null): string {
-  if (!iso) return ''
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000
-  if (diff < 60) return `${Math.round(diff)}s ago`
-  if (diff < 3600) return `${Math.round(diff / 60)}m ago`
-  return `${Math.round(diff / 3600)}h ago`
+function formatAge(iso: string | null): { label: string; color: string } {
+  if (!iso) return { label: '—', color: 'var(--text-muted)' }
+  const d    = new Date(iso)
+  const diff = (Date.now() - d.getTime()) / 1000
+  let label: string
+  if (diff < 60)        label = `${Math.round(diff)}s ago`
+  else if (diff < 3600) label = `${Math.round(diff / 60)}m ago`
+  else if (diff < 4 * 3600) label = `${Math.round(diff / 3600)}h ago`
+  else {
+    // Old enough to show actual timestamp — "Thu 4:15 PM"
+    label = d.toLocaleString('en-US', {
+      weekday: 'short', hour: 'numeric', minute: '2-digit',
+      hour12: true, timeZone: 'America/New_York',
+    })
+  }
+  const color =
+    diff < 5   * 60  ? '#4ade80'   // <5m  green
+  : diff < 30  * 60  ? '#a3e635'   // <30m lime
+  : diff < 90  * 60  ? '#fbbf24'   // <90m amber
+  : diff < 6   * 3600 ? '#fb923c'  // <6h  orange
+  : '#f87171'                       // ≥6h  red — last-trading-day data
+  return { label, color }
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -164,7 +180,7 @@ export default function MarketRegime() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {lastFetch > 0 && (
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              Updated {formatAge(new Date(lastFetch).toISOString())}
+              Fetched {formatAge(new Date(lastFetch).toISOString()).label}
             </span>
           )}
           <button
@@ -358,8 +374,11 @@ export default function MarketRegime() {
                     </td>
 
                     {/* UPDATED */}
-                    <td style={{ ...CELL, textAlign: 'right', color: 'var(--text-muted)', fontSize: 11 }}>
-                      {formatAge(row.captured_at)}
+                    <td style={{ ...CELL, textAlign: 'right', fontSize: 11 }}>
+                      {(() => {
+                        const { label, color } = formatAge(row.captured_at)
+                        return <span style={{ color }}>{label}</span>
+                      })()}
                     </td>
                   </tr>
                 )
