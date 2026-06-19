@@ -5967,17 +5967,13 @@ async def get_market_regime(force: bool = Query(False)):
                 # last-trading-day snapshots from weekend/holiday Schwab data.
                 live = await asyncio.to_thread(_compute_gex, sym, 100)
                 if live and live.get('net_gex_mm') != 0:
-                    if _is_rth:
-                        db_row = _build_db_row(sym, live)
-                        await asyncio.to_thread(save_gex_snapshot, db_row)
-                        _gex_transient_cache[sym] = {'data': live, 'ts': _time.time()}
-                        r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
-                    else:
-                        # Outside RTH (force=True): return live data for display
-                        # but do NOT overwrite the DB — keep valid trading-day snapshot.
-                        r = {**_build_db_row(sym, live), 'captured_at': datetime.now(timezone.utc).isoformat()}
-        except Exception:
-            pass
+                    db_row = _build_db_row(sym, live)
+                    await asyncio.to_thread(save_gex_snapshot, db_row)
+                    _gex_transient_cache[sym] = {'data': live, 'ts': _time.time()}
+                    r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger(__name__).warning('market-regime resolve %s: %s', sym, _e)
         return sym, r
 
     # Resolve all symbols in parallel — one Schwab call per stale symbol, all concurrent
