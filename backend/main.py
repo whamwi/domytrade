@@ -5915,14 +5915,25 @@ async def get_market_regime():
 
     import time as _time
 
+    # RTH check — only attempt live Schwab computes during market hours.
+    # Outside RTH, Schwab returns zero OI; we must not overwrite valid DB snapshots.
+    _now_et   = datetime.now(ET)
+    _et_min   = _now_et.hour * 60 + _now_et.minute
+    _is_rth   = _now_et.weekday() < 5 and (9 * 60 + 30) <= _et_min < 16 * 60
+    # During RTH: treat DB as stale after 5 min so live compute fills the gap
+    # between background-loop refreshes.  Outside RTH: infinity = never trigger
+    # a live compute (serve last-trading-day snapshot as-is).
+    _stale_secs = 5 * 60 if _is_rth else float('inf')
+
     async def _resolve_sym(sym: str) -> tuple[str, dict | None]:
         """Return (sym, best_row).
 
         Priority order:
         1. Transient cache (same live data the GEX panel uses) — always fresh
-        2. DB snapshot if recent enough (<25 min)
-        3. Live Schwab compute (for truly stale symbols) — saves result to DB
+        2. DB snapshot — if age < _stale_secs return as-is
+        3. Live Schwab compute (RTH only, when DB is stale) — saves result to DB
         """
+        r = None
         try:
             # 1. Check transient cache first — non-index symbols live here
             cached = _gex_transient_cache.get(sym)
@@ -5948,9 +5959,9 @@ async def get_market_regime():
 
             # 2. DB snapshot
             r = await asyncio.to_thread(get_latest_gex, sym, True)
-            stale = (r is None) or _snapshot_age_s(r) > 25 * 60
-            if stale:
-                # 3. Live compute — save to DB so GEX panel and DB stay in sync
+            stale = (r is None) or _snapshot_age_s(r) > _stale_secs
+            if stale and _is_rth:
+                # 3. Live compute (RTH only) — save to DB and share via transient cache
                 live = await asyncio.to_thread(_compute_gex, sym, 60)
                 if live and live.get('net_gex_mm') != 0:
                     db_row = _build_db_row(sym, live)
