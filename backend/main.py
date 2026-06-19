@@ -1137,6 +1137,17 @@ async def refresh_signals():
             hour_override=_hour_override,
         )
         if sigs:
+            # Prev-day fallback is active (no live bars today — weekend, holiday,
+            # or intraday data gap).  Levels are still computed for reference but we
+            # must NOT fire ENTRY/NEAR alerts: the OHLC is from a prior session and
+            # the stop/target distances are computed relative to that session's range,
+            # not current price action.  Downgrade to NEUTRAL so levels are visible
+            # without generating phantom signals.
+            if _hour_override is not None:
+                for _s in sigs:
+                    if _s.get('signal_state') in ('ENTRY', 'NEAR'):
+                        _s['signal_state'] = 'NEUTRAL'
+                        _s['entry_alert']  = False
             for s in sigs:
                 s['symbol_id']   = sid
                 s['signal_hour'] = signal_hour.isoformat()
