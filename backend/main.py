@@ -5877,16 +5877,45 @@ async def get_market_regime():
             }),
         }
 
+    import time as _time
+
     async def _resolve_sym(sym: str) -> tuple[str, dict | None]:
-        """Return (sym, best_row) — live compute if DB snapshot is stale (>25 min)."""
+        """Return (sym, best_row).
+
+        Priority order:
+        1. Transient cache (same live data the GEX panel uses) — always fresh
+        2. DB snapshot if recent enough (<25 min)
+        3. Live Schwab compute (for truly stale symbols) — saves result to DB
+        """
         try:
+            # 1. Check transient cache first — non-index symbols live here
+            cached = _gex_transient_cache.get(sym)
+            if cached and (_time.time() - cached['ts']) < _GEX_TRANSIENT_TTL:
+                d = cached['data']
+                if d.get('net_gex_mm') != 0:
+                    return sym, {
+                        'symbol'        : sym,
+                        'underlying'    : d.get('underlying'),
+                        'net_gex_mm'    : d.get('net_gex_mm'),
+                        'gamma_regime'  : d.get('gamma_regime'),
+                        'call_wall'     : d.get('call_wall'),
+                        'put_wall'      : d.get('put_wall'),
+                        'zero_gamma'    : d.get('zero_gamma'),
+                        'iv_environment': d.get('iv_environment'),
+                        'captured_at'   : datetime.fromtimestamp(cached['ts'], tz=timezone.utc).isoformat(),
+                        'strikes_json'  : _json.dumps({'all': d.get('strikes', [])}),
+                    }
+
+            # 2. DB snapshot
             r = await asyncio.to_thread(get_latest_gex, sym, True)
             stale = (r is None) or _snapshot_age_s(r) > 25 * 60
             if stale:
+                # 3. Live compute — save to DB so GEX panel and DB stay in sync
                 live = await asyncio.to_thread(_compute_gex, sym, 60)
                 if live and live.get('net_gex_mm') != 0:
                     db_row = _build_db_row(sym, live)
                     await asyncio.to_thread(save_gex_snapshot, db_row)
+                    _gex_transient_cache[sym] = {'data': live, 'ts': _time.time()}
                     r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
         except Exception:
             pass
