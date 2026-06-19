@@ -5786,6 +5786,7 @@ async def get_market_regime():
         # Parse strikes_json for prev_close + strike rows for FLOW
         prev_close   = None
         strikes_list = []
+        pc_ratio     = None   # kept for backward compat in response payload
         try:
             sj = row.get('strikes_json')
             # jsonb column returns a string when stored via json.dumps(); parse it
