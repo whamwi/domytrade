@@ -5742,16 +5742,26 @@ async def get_market_regime():
     Tracked stocks are served from DB (updated at 5:30 PM baseline).
     """
     import json as _json
-    from db import get_latest_gex_all, get_gex_tracked_symbols
+    from db import get_latest_gex, get_gex_tracked_symbols
 
     try:
-        all_gex = await asyncio.to_thread(get_latest_gex_all)
         tracked = await asyncio.to_thread(get_gex_tracked_symbols)
     except Exception as exc:
         return JSONResponse({'error': str(exc)}, status_code=500)
 
     # Indices first, then tracked stocks (exclude duplicates)
     ordered = list(GEX_INDEX_SYMBOLS) + [s for s in tracked if s not in GEX_INDEX_SYMBOLS]
+
+    # Fetch per-symbol — get_latest_gex_all() has a 50-row global limit that buries
+    # stock snapshots when indices have hundreds of intraday rows
+    all_gex: dict = {}
+    for sym in ordered:
+        try:
+            r = await asyncio.to_thread(get_latest_gex, sym)
+            if r:
+                all_gex[sym] = r
+        except Exception:
+            pass
 
     rows = []
     for sym in ordered:
