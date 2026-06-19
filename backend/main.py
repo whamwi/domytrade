@@ -5783,14 +5783,18 @@ async def get_market_regime():
         if not row:
             continue
 
-        # Parse strikes_json for pc_ratio + prev_close
-        pc_ratio   = None
-        prev_close = None
+        # Parse strikes_json for prev_close + strike rows for FLOW
+        prev_close   = None
+        strikes_list = []
         try:
-            raw = _json.loads(row.get('strikes_json') or '{}')
+            sj = row.get('strikes_json')
+            # jsonb column returns a string when stored via json.dumps(); parse it
+            raw = _json.loads(sj) if isinstance(sj, str) else (sj or {})
             if isinstance(raw, dict):
-                pc_ratio   = raw.get('pc_ratio')
-                prev_close = raw.get('underlying_prev_close')
+                prev_close   = raw.get('underlying_prev_close')
+                strikes_list = raw.get('all', [])
+            elif isinstance(raw, list):
+                strikes_list = raw   # legacy single-layer format
         except Exception:
             pass
 
@@ -5820,17 +5824,23 @@ async def get_market_regime():
         else:
             regime_label = 'Pinned'
 
-        # FLOW from OI-based put/call ratio
-        if pc_ratio is None:
-            flow = 'n/a'
-        elif pc_ratio >= 1.3:
-            flow = 'BEAR'
-        elif pc_ratio >= 1.1:
-            flow = 'MIXED'
-        elif pc_ratio <= 0.85:
-            flow = 'BULL'
-        else:
-            flow = 'QUIET'
+        # FLOW — GEX-weighted put/call ratio from the strike rows.
+        # Uses total call GEX vs total put GEX rather than raw OI count;
+        # more reliable (OI-based pc_ratio is unavailable after Schwab clears OI at close).
+        flow = 'n/a'
+        if strikes_list:
+            total_call = sum(abs(s.get('call_gex_mm') or 0) for s in strikes_list)
+            total_put  = sum(abs(s.get('put_gex_mm')  or 0) for s in strikes_list)
+            if total_call > 0:
+                gex_ratio = total_put / total_call
+                if gex_ratio >= 1.3:
+                    flow = 'BEAR'
+                elif gex_ratio >= 1.1:
+                    flow = 'MIXED'
+                elif gex_ratio <= 0.85:
+                    flow = 'BULL'
+                else:
+                    flow = 'QUIET'
 
         # MAX GEX — highest gamma concentration strike (= call_wall; call gamma > put gamma at that strike)
         max_gex_strike = call_wall
