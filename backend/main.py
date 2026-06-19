@@ -5755,7 +5755,7 @@ async def get_market_regime():
     Tracked stocks are served from DB (updated at 5:30 PM baseline).
     """
     import json as _json
-    from db import get_latest_gex, get_gex_tracked_symbols
+    from db import get_latest_gex, get_gex_tracked_symbols, save_gex_snapshot
 
     try:
         tracked = await asyncio.to_thread(get_gex_tracked_symbols)
@@ -5790,19 +5790,38 @@ async def get_market_regime():
                     try:
                         live = await asyncio.to_thread(_compute_gex, sym, 60)
                         if live and live.get('net_gex_mm') != 0:
-                            # Wrap into a row-like dict matching what DB returns
-                            r = {
-                                'symbol'        : sym,
-                                'underlying'    : live['underlying'],
-                                'net_gex_mm'    : live['net_gex_mm'],
-                                'gamma_regime'  : live['gamma_regime'],
-                                'call_wall'     : live['call_wall'],
-                                'put_wall'      : live['put_wall'],
-                                'zero_gamma'    : live['zero_gamma'],
-                                'iv_environment': live.get('iv_environment'),
-                                'captured_at'   : datetime.now(timezone.utc).isoformat(),
-                                'strikes_json'  : _json.dumps({'all': live.get('strikes', [])}),
+                            db_row = {
+                                'symbol'              : sym,
+                                'is_daily_baseline'   : False,
+                                'is_intraday_estimate': True,
+                                'underlying'          : live['underlying'],
+                                'net_gex_mm'          : live['net_gex_mm'],
+                                'gamma_regime'        : live['gamma_regime'],
+                                'call_wall'           : live['call_wall'],
+                                'put_wall'            : live['put_wall'],
+                                'zero_gamma'          : live['zero_gamma'],
+                                'vix_ref'             : live.get('vix_ref'),
+                                'iv_environment'      : live.get('iv_environment'),
+                                'expected_move_pct'   : live.get('expected_move_pct'),
+                                'expected_move_pts'   : live.get('expected_move_pts'),
+                                'net_gex_ex_next_mm'  : live.get('net_gex_ex_next_mm'),
+                                'call_wall_ex_next'   : live.get('call_wall_ex_next'),
+                                'put_wall_ex_next'    : live.get('put_wall_ex_next'),
+                                'zero_gamma_ex_next'  : live.get('zero_gamma_ex_next'),
+                                'net_gex_monthly_mm'  : live.get('net_gex_monthly_mm'),
+                                'call_wall_monthly'   : live.get('call_wall_monthly'),
+                                'put_wall_monthly'    : live.get('put_wall_monthly'),
+                                'zero_gamma_monthly'  : live.get('zero_gamma_monthly'),
+                                'nearest_expiry'      : live.get('nearest_expiry'),
+                                'nearest_dte'         : live.get('nearest_dte'),
+                                'strikes_json'        : _json.dumps({
+                                    'all'     : live.get('strikes', []),
+                                    'ex_next' : live.get('strikes_ex_next', []),
+                                    'monthly' : live.get('strikes_monthly', []),
+                                }),
                             }
+                            await asyncio.to_thread(save_gex_snapshot, db_row)
+                            r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
                     except Exception:
                         pass
             if r:
