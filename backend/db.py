@@ -661,17 +661,23 @@ def save_gex_snapshot(row: dict) -> None:
     get_db().table('gex_snapshots').insert(row).execute()
 
 
-def get_latest_gex(symbol: str) -> dict | None:
-    """Return the most recent GEX snapshot for a symbol, or None."""
-    res = (
+def get_latest_gex(symbol: str, require_walls: bool = False) -> dict | None:
+    """Return the most recent GEX snapshot for a symbol, or None.
+
+    require_walls=True skips zero-OI rows (e.g. Schwab returning blank data
+    after close when the token is stale) and returns the last row with a real
+    call_wall value instead.
+    """
+    q = (
         get_db()
         .table('gex_snapshots')
         .select('*')
         .eq('symbol', symbol.upper())
         .order('captured_at', desc=True)
-        .limit(1)
-        .execute()
     )
+    if require_walls:
+        q = q.not_.is_('call_wall', 'null')
+    res = q.limit(1).execute()
     return res.data[0] if res.data else None
 
 

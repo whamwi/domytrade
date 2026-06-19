@@ -5752,12 +5752,13 @@ async def get_market_regime():
     # Indices first, then tracked stocks (exclude duplicates)
     ordered = list(GEX_INDEX_SYMBOLS) + [s for s in tracked if s not in GEX_INDEX_SYMBOLS]
 
-    # Fetch per-symbol — get_latest_gex_all() has a 50-row global limit that buries
-    # stock snapshots when indices have hundreds of intraday rows
+    # Fetch per-symbol with require_walls=True so we skip zero-OI intraday rows
+    # (Schwab returns blank data after close / when token is stale — fall back to
+    # the last snapshot that had real call_wall data)
     all_gex: dict = {}
     for sym in ordered:
         try:
-            r = await asyncio.to_thread(get_latest_gex, sym)
+            r = await asyncio.to_thread(get_latest_gex, sym, True)
             if r:
                 all_gex[sym] = r
         except Exception:
