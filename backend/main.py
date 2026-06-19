@@ -5093,14 +5093,16 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     pc_ratio_vol = round(p_vol_total / c_vol_total,  3) if c_vol_total > 0 else None
     pc_ratio     = pc_ratio_oi  # keep for backward compat with DB storage
 
-    # ── Top-volume strike per side — where traders are most active today ──────
-    # Aggregates totalVolume across ALL expiries per strike.  This shows crowd
-    # focus (the "magnet" traders are actually betting on), not OI positioning.
+    # ── Top-volume strike per side — nearest expiry only ─────────────────────
+    # Only the nearest expiry: a Jan-2027 LEAPS strike with high OI volume
+    # is irrelevant to today's regime; we want where traders are active *now*.
     top_vol_call_strike: float | None = None
     top_vol_put_strike:  float | None = None
     try:
         _cvol: dict[float, int] = {}
-        for _, _sd in call_map.items():
+        for _exp_key, _sd in call_map.items():
+            if _exp_key.split(':')[0] != nearest_date:
+                continue
             for _sk, _ol in _sd.items():
                 _strike = float(_sk)
                 _cvol[_strike] = _cvol.get(_strike, 0) + sum(int(o.get('totalVolume') or 0) for o in _ol)
@@ -5110,7 +5112,9 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         pass
     try:
         _pvol: dict[float, int] = {}
-        for _, _sd in put_map.items():
+        for _exp_key, _sd in put_map.items():
+            if _exp_key.split(':')[0] != nearest_date:
+                continue
             for _sk, _ol in _sd.items():
                 _strike = float(_sk)
                 _pvol[_strike] = _pvol.get(_strike, 0) + sum(int(o.get('totalVolume') or 0) for o in _ol)
