@@ -10421,6 +10421,26 @@ class EquityBot:
         if not self.enabled:
             return
 
+        # ── Stale-signal guard ────────────────────────────────────────────────
+        # Refuse to arm or stay armed if the signal engine hasn't refreshed
+        # recently.  Stale signals can carry wrong levels from a prior session
+        # (e.g. after a Schwab auth failure wipes the 1-min bar cache).
+        # Normal refresh cycle is ~30 s; allow up to 2 min (4 missed cycles).
+        _last_refresh = state.get('last_signal_update')
+        if _last_refresh:
+            try:
+                _age_s = (_dt.datetime.now(_dt.timezone.utc) -
+                          _dt.datetime.fromisoformat(_last_refresh).astimezone(_dt.timezone.utc)
+                         ).total_seconds()
+                if _age_s > 120:
+                    if self.armed:
+                        self._log_event('WARN',
+                            f'Signal data stale ({int(_age_s)}s) — disarmed, will not execute')
+                        self.armed = None
+                    return   # skip this tick entirely until signals are fresh
+            except Exception:
+                pass
+
         sig       = self._find_signal()
         sig_state = sig.get('signal_state') if sig else None
         sig_side  = sig.get('side')         if sig else None
