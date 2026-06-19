@@ -5687,9 +5687,20 @@ def earnings_proximity(ticker: str, window_days: int = 5) -> dict:
 
 
 @app.post('/api/gex/refresh-stocks')
-async def manual_refresh_gex_stocks():
+async def manual_refresh_gex_stocks(force: bool = False):
     """Manually trigger the 5:30 PM GEX baseline for all tracked stock symbols.
-    Useful after adding new symbols mid-day or when the scheduled run is missed."""
+    Useful after adding new symbols mid-day or when the scheduled run is missed.
+    Blocked on weekends and market holidays (Schwab returns zero OI) unless force=true.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now_et  = datetime.now(ZoneInfo('America/New_York'))
+    weekday = now_et.weekday()   # 0=Mon … 6=Sun
+    if not force and weekday >= 5:
+        return JSONResponse(
+            {'status': 'skipped', 'reason': 'Weekend — Schwab has no OI data. Use ?force=true to override.'},
+            status_code=200,
+        )
     try:
         await asyncio.to_thread(_refresh_gex_stocks)
         from db import get_gex_tracked_symbols
