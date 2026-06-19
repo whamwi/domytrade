@@ -5823,69 +5823,67 @@ async def get_market_regime():
     # Indices first, then tracked stocks (exclude duplicates)
     ordered = list(GEX_INDEX_SYMBOLS) + [s for s in tracked if s not in GEX_INDEX_SYMBOLS]
 
-    # Fetch latest GEX per symbol. For index symbols, if the DB row is stale or
-    # has zero net_gex (Schwab returning blank data), compute live from Schwab so
-    # the Market Regime stays in sync with the GEX panel.
-    import time as _time
     from datetime import datetime, timezone
-    all_gex: dict = {}
-    for sym in ordered:
+
+    def _snapshot_age_s(row: dict) -> float:
+        """Seconds since the snapshot was captured. Returns inf if unknown."""
+        try:
+            return (datetime.now(timezone.utc) -
+                    datetime.fromisoformat(row['captured_at'].replace('Z', '+00:00'))
+                   ).total_seconds()
+        except Exception:
+            return float('inf')
+
+    def _build_db_row(sym: str, live: dict) -> dict:
+        return {
+            'symbol'              : sym,
+            'is_daily_baseline'   : False,
+            'is_intraday_estimate': True,
+            'underlying'          : live['underlying'],
+            'net_gex_mm'          : live['net_gex_mm'],
+            'gamma_regime'        : live['gamma_regime'],
+            'call_wall'           : live['call_wall'],
+            'put_wall'            : live['put_wall'],
+            'zero_gamma'          : live['zero_gamma'],
+            'vix_ref'             : live.get('vix_ref'),
+            'iv_environment'      : live.get('iv_environment'),
+            'expected_move_pct'   : live.get('expected_move_pct'),
+            'expected_move_pts'   : live.get('expected_move_pts'),
+            'net_gex_ex_next_mm'  : live.get('net_gex_ex_next_mm'),
+            'call_wall_ex_next'   : live.get('call_wall_ex_next'),
+            'put_wall_ex_next'    : live.get('put_wall_ex_next'),
+            'zero_gamma_ex_next'  : live.get('zero_gamma_ex_next'),
+            'net_gex_monthly_mm'  : live.get('net_gex_monthly_mm'),
+            'call_wall_monthly'   : live.get('call_wall_monthly'),
+            'put_wall_monthly'    : live.get('put_wall_monthly'),
+            'zero_gamma_monthly'  : live.get('zero_gamma_monthly'),
+            'nearest_expiry'      : live.get('nearest_expiry'),
+            'nearest_dte'         : live.get('nearest_dte'),
+            'strikes_json'        : _json.dumps({
+                'all'     : live.get('strikes', []),
+                'ex_next' : live.get('strikes_ex_next', []),
+                'monthly' : live.get('strikes_monthly', []),
+            }),
+        }
+
+    async def _resolve_sym(sym: str) -> tuple[str, dict | None]:
+        """Return (sym, best_row) — live compute if DB snapshot is stale (>25 min)."""
         try:
             r = await asyncio.to_thread(get_latest_gex, sym, True)
-            # Check staleness for all symbols — if last real snapshot is > 25 min old
-            # compute live from Schwab and persist so both panels stay in sync
-            if True:
-                stale = True
-                if r and r.get('captured_at'):
-                    try:
-                        age_s = (datetime.now(timezone.utc) -
-                                 datetime.fromisoformat(r['captured_at'].replace('Z', '+00:00'))
-                                ).total_seconds()
-                        stale = age_s > 25 * 60   # older than 25 min
-                    except Exception:
-                        pass
-                if stale:
-                    try:
-                        live = await asyncio.to_thread(_compute_gex, sym, 60)
-                        if live and live.get('net_gex_mm') != 0:
-                            db_row = {
-                                'symbol'              : sym,
-                                'is_daily_baseline'   : False,
-                                'is_intraday_estimate': True,
-                                'underlying'          : live['underlying'],
-                                'net_gex_mm'          : live['net_gex_mm'],
-                                'gamma_regime'        : live['gamma_regime'],
-                                'call_wall'           : live['call_wall'],
-                                'put_wall'            : live['put_wall'],
-                                'zero_gamma'          : live['zero_gamma'],
-                                'vix_ref'             : live.get('vix_ref'),
-                                'iv_environment'      : live.get('iv_environment'),
-                                'expected_move_pct'   : live.get('expected_move_pct'),
-                                'expected_move_pts'   : live.get('expected_move_pts'),
-                                'net_gex_ex_next_mm'  : live.get('net_gex_ex_next_mm'),
-                                'call_wall_ex_next'   : live.get('call_wall_ex_next'),
-                                'put_wall_ex_next'    : live.get('put_wall_ex_next'),
-                                'zero_gamma_ex_next'  : live.get('zero_gamma_ex_next'),
-                                'net_gex_monthly_mm'  : live.get('net_gex_monthly_mm'),
-                                'call_wall_monthly'   : live.get('call_wall_monthly'),
-                                'put_wall_monthly'    : live.get('put_wall_monthly'),
-                                'zero_gamma_monthly'  : live.get('zero_gamma_monthly'),
-                                'nearest_expiry'      : live.get('nearest_expiry'),
-                                'nearest_dte'         : live.get('nearest_dte'),
-                                'strikes_json'        : _json.dumps({
-                                    'all'     : live.get('strikes', []),
-                                    'ex_next' : live.get('strikes_ex_next', []),
-                                    'monthly' : live.get('strikes_monthly', []),
-                                }),
-                            }
-                            await asyncio.to_thread(save_gex_snapshot, db_row)
-                            r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
-                    except Exception:
-                        pass
-            if r:
-                all_gex[sym] = r
+            stale = (r is None) or _snapshot_age_s(r) > 25 * 60
+            if stale:
+                live = await asyncio.to_thread(_compute_gex, sym, 60)
+                if live and live.get('net_gex_mm') != 0:
+                    db_row = _build_db_row(sym, live)
+                    await asyncio.to_thread(save_gex_snapshot, db_row)
+                    r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
         except Exception:
             pass
+        return sym, r
+
+    # Resolve all symbols in parallel — one Schwab call per stale symbol, all concurrent
+    results = await asyncio.gather(*[_resolve_sym(s) for s in ordered])
+    all_gex: dict = {sym: row for sym, row in results if row}
 
     rows = []
     for sym in ordered:
