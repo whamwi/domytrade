@@ -5963,13 +5963,19 @@ async def get_market_regime(force: bool = Query(False)):
             r = await asyncio.to_thread(get_latest_gex, sym, True)
             stale = (r is None) or _snapshot_age_s(r) > _stale_secs
             if stale and _can_live:
-                # 3. Live compute (RTH only) — save to DB and share via transient cache
+                # 3. Live compute — only persist to DB during RTH to protect
+                # last-trading-day snapshots from weekend/holiday Schwab data.
                 live = await asyncio.to_thread(_compute_gex, sym, 60)
                 if live and live.get('net_gex_mm') != 0:
-                    db_row = _build_db_row(sym, live)
-                    await asyncio.to_thread(save_gex_snapshot, db_row)
-                    _gex_transient_cache[sym] = {'data': live, 'ts': _time.time()}
-                    r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
+                    if _is_rth:
+                        db_row = _build_db_row(sym, live)
+                        await asyncio.to_thread(save_gex_snapshot, db_row)
+                        _gex_transient_cache[sym] = {'data': live, 'ts': _time.time()}
+                        r = {**db_row, 'captured_at': datetime.now(timezone.utc).isoformat()}
+                    else:
+                        # Outside RTH (force=True): return live data for display
+                        # but do NOT overwrite the DB — keep valid trading-day snapshot.
+                        r = {**_build_db_row(sym, live), 'captured_at': datetime.now(timezone.utc).isoformat()}
         except Exception:
             pass
         return sym, r
