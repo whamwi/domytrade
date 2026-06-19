@@ -5961,7 +5961,7 @@ async def get_market_regime(force: bool = Query(False)):
 
             # 2. DB snapshot
             r = await asyncio.to_thread(get_latest_gex, sym, True)
-            stale = (r is None) or _snapshot_age_s(r) > _stale_secs
+            stale = force or (r is None) or _snapshot_age_s(r) > _stale_secs
             if stale and _can_live:
                 # 3. Live compute — only persist to DB during RTH to protect
                 # last-trading-day snapshots from weekend/holiday Schwab data.
