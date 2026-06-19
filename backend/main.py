@@ -1485,7 +1485,7 @@ async def refresh_all_1min():
     _sem = asyncio.Semaphore(10)
 
     # Stage 1 — bounded-concurrency fetches for all symbols
-    async def _fetch(sym: dict) -> tuple[int, list]:
+    async def _fetch(sym: dict) -> tuple[int, list | None]:
         tick = sym['ticker']
         sid  = sym['id']
         async with _sem:
@@ -1495,7 +1495,9 @@ async def refresh_all_1min():
                 return sid, (candles or [])
             except Exception as e:
                 log.warning('1min fetch %s: %s', tick, e)
-                return sid, []
+                # Return None (not []) so the cache update below can tell the difference
+                # between "API/auth error — preserve existing bars" vs "market closed — [] is correct".
+                return sid, None
 
     results = await asyncio.gather(*[_fetch(s) for s in all_syms])
 
@@ -1514,7 +1516,15 @@ async def refresh_all_1min():
 
     upsert_tasks = []
     for sid, candles in results:
-        state['1min_today'][sid] = candles   # always update memory cache (even if empty)
+        if candles is None:
+            # API / auth error — keep whatever bars were already cached rather than
+            # overwriting valid intraday data with an empty list.  The existing data
+            # keeps signals on correct levels; a later successful fetch will update it.
+            pass
+        else:
+            # candles = [] means market closed / no bars yet (holiday).
+            # candles = [...] is the normal live-session case.
+            state['1min_today'][sid] = candles
         if candles:
             upsert_tasks.append(_upsert(sid, candles))
 

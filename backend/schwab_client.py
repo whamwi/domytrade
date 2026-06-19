@@ -391,8 +391,9 @@ def get_session_bars(symbol: str) -> list[dict]:
     if resp.status_code == 401:
         _token_cache['expires_at'] = 0
         resp = requests.get(PRICE_HISTORY_URL, headers=_headers(), params=params, timeout=15)
-    if not resp.ok:
-        return []
+    # Raise on HTTP error so callers can distinguish auth/network failure from
+    # a legitimate empty response (market closed / no bars yet today).
+    resp.raise_for_status()
     return resp.json().get('candles', [])
 
 
