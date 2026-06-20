@@ -3598,15 +3598,18 @@ async def reload_db_stats():
     without waiting for the 24h compute_all_stats() cycle.
     """
     vbh_engine.load_stats_from_db()
-    futures = [s for s in state['symbols'] if s['ticker'].startswith('/')]
-    for sym in futures:
+    all_syms = state['symbols']
+    for sym in all_syms:
         sid = sym['id']
         api = sym['schwab_symbol']
         # Empty candles → falls through to _stats_db immediately
         state['stats_agg'][sid]  = vbh_engine.compute_stats([], api)
         state['stats_con'][sid]  = vbh_engine.compute_stats_con([], api)
         state['stats_wide'][sid] = vbh_engine.compute_stats_wide([], api)
-    return {'reloaded': len(futures), 'db_symbols': len(vbh_engine._stats_db)}
+    futures_n = sum(1 for s in all_syms if s['ticker'].startswith('/'))
+    stocks_n  = len(all_syms) - futures_n
+    return {'reloaded_futures': futures_n, 'reloaded_stocks': stocks_n,
+            'db_symbols': len(vbh_engine._stats_db)}
 
 
 # ── AI Futures Agent ───────────────────────────────────────────────────────────
