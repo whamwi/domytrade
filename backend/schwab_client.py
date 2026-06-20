@@ -657,36 +657,67 @@ def close_futures_position(account_number: str, symbol: str,
 
 
 def place_equity_order(account_number: str, symbol: str, instruction: str,
-                       quantity: int, stop_price: float) -> dict | None:
-    """Place a DAY MARKET entry + STOP child bracket order for an equity.
+                       quantity: int, stop_price: float,
+                       t1_price: float | None = None) -> dict | None:
+    """Place a DAY MARKET entry with bracket.
+
+    Without t1_price : MARKET → STOP  (single stop child)
+    With    t1_price : MARKET → OCO[STOP + LIMIT@T1]  (first-triggers OCO)
 
     instruction : 'BUY' for a long entry, 'SELL' for a short entry
-    stop_price  : absolute price level for the protective stop
+    stop_price  : absolute stop-loss level
+    t1_price    : absolute T1 profit-target level (optional)
     Returns {'order_id': '<id>'} on success, or error dict on failure.
     """
     close_instr = 'SELL' if instruction == 'BUY' else 'BUY'
-    order = {
-        'orderType':          'MARKET',
+
+    stop_leg = {
+        'orderType':          'STOP',
         'session':            'NORMAL',
         'duration':           'DAY',
-        'orderStrategyType':  'TRIGGER',
+        'stopPrice':          round(stop_price, 2),
+        'orderStrategyType':  'SINGLE',
         'orderLegCollection': [{
+            'instruction': close_instr,
+            'quantity':    quantity,
+            'instrument':  {'symbol': symbol, 'assetType': 'EQUITY'},
+        }],
+    }
+
+    if t1_price is not None:
+        # First-Triggers OCO: stop loss + T1 limit target
+        child = {
+            'orderStrategyType':    'OCO',
+            'childOrderStrategies': [
+                stop_leg,
+                {
+                    'orderType':          'LIMIT',
+                    'session':            'NORMAL',
+                    'duration':           'DAY',
+                    'price':              round(t1_price, 2),
+                    'orderStrategyType':  'SINGLE',
+                    'orderLegCollection': [{
+                        'instruction': close_instr,
+                        'quantity':    quantity,
+                        'instrument':  {'symbol': symbol, 'assetType': 'EQUITY'},
+                    }],
+                },
+            ],
+        }
+    else:
+        child = stop_leg
+
+    order = {
+        'orderType':            'MARKET',
+        'session':              'NORMAL',
+        'duration':             'DAY',
+        'orderStrategyType':    'TRIGGER',
+        'orderLegCollection':   [{
             'instruction': instruction,
             'quantity':    quantity,
             'instrument':  {'symbol': symbol, 'assetType': 'EQUITY'},
         }],
-        'childOrderStrategies': [{
-            'orderType':          'STOP',
-            'session':            'NORMAL',
-            'duration':           'DAY',
-            'stopPrice':          round(stop_price, 2),
-            'orderStrategyType':  'SINGLE',
-            'orderLegCollection': [{
-                'instruction': close_instr,
-                'quantity':    quantity,
-                'instrument':  {'symbol': symbol, 'assetType': 'EQUITY'},
-            }],
-        }],
+        'childOrderStrategies': [child],
     }
     return _trader_post(f'/accounts/{account_number}/orders', order)
 

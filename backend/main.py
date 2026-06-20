@@ -10512,9 +10512,15 @@ class EquityBot:
             if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side and not sig_ref:
                 bot_side = 'LONG' if 'LONG' in sig_side else 'SHORT'
                 if not self.armed or self.armed.get('side') != bot_side:
-                    self.armed = {'side': bot_side, 'entry_level': float(sig_entry)}
+                    self.armed = {
+                        'side':        bot_side,
+                        'entry_level': float(sig_entry),
+                        'stop':        sig.get('stop'),
+                        't1':          sig.get('t1'),
+                    }
                     self._log_event('INFO',
-                        f'ARMED {bot_side} entry={sig_entry:.2f} ({sig_state})')
+                        f'ARMED {bot_side} entry={sig_entry:.2f} '
+                        f'stop={sig.get("stop")} t1={sig.get("t1")} ({sig_state})')
                     _entry_level_reset = True
                 elif abs(self.armed['entry_level'] - float(sig_entry)) > 0.001:
                     # Entry level shifted because h_high/h_low updated intraday.
@@ -10544,8 +10550,9 @@ class EquityBot:
                 if triggered:
                     self._log_event('TRADE',
                         f'Price trigger — live {live_px:.2f} crossed {entry_level:.2f}')
+                    armed_snap = self.armed   # snapshot before clearing
                     self.armed = None
-                    await self._enter(side, live_px, entry_level)
+                    await self._enter(side, live_px, entry_level, armed_snap)
 
         if self.position:
             pos_side = self.position['side']
@@ -10558,19 +10565,31 @@ class EquityBot:
                 self._log_event('INFO', 'Signal gone — exiting')
                 await self._exit('signal_exit')
 
-    async def _enter(self, side: str, price: float, entry_level: float):
+    async def _enter(self, side: str, price: float, entry_level: float,
+                     armed_snap: dict | None = None):
         symbol      = self.cfg['symbol']
         qty         = self.cfg['quantity']
-        stop_dollar = self.cfg['stop_pts'] / 100.0
-        stop_price  = round(price - stop_dollar if side == 'LONG'
-                            else price + stop_dollar, 2)
         instruction = 'BUY' if side == 'LONG' else 'SELL'
+
+        # Prefer signal-derived stop; fall back to config stop_pts dollar amount
+        sig_stop = (armed_snap or {}).get('stop')
+        sig_t1   = (armed_snap or {}).get('t1')
+        if sig_stop is not None:
+            stop_price = round(float(sig_stop), 2)
+        else:
+            stop_dollar = self.cfg['stop_pts'] / 100.0
+            stop_price  = round(price - stop_dollar if side == 'LONG'
+                                else price + stop_dollar, 2)
+        t1_price = round(float(sig_t1), 2) if sig_t1 is not None else None
+
         self._log_event('TRADE',
-            f'ENTER {side} {symbol} qty={qty} @ ~{price:.2f}  stop={stop_price:.2f}')
+            f'ENTER {side} {symbol} qty={qty} @ ~{price:.2f} '
+            f' stop={stop_price:.2f}'
+            f'{f"  t1={t1_price:.2f}" if t1_price else ""}')
         try:
             result   = await asyncio.to_thread(
                 place_equity_order,
-                self.account_number, symbol, instruction, qty, stop_price,
+                self.account_number, symbol, instruction, qty, stop_price, t1_price,
             )
             if result and '_http_error' in result:
                 self._log_event('ERROR',
