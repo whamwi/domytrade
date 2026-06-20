@@ -474,12 +474,13 @@ def insert_entry_log(rows: list[dict]) -> None:
 
 
 def get_entry_log(limit: int = 200, model: str = 'all', side: str = 'all') -> list[dict]:
-    """Return the most recent entry_log rows, newest first.
+    """Return the most recent entry_log rows (live + archive), newest first.
 
     model: 'all' | 'AGG' | 'CON' | 'WIDE' | 'CR'
     side:  'all' | 'LONG' | 'SHORT'
+    Queries the entry_log_full view which UNIONs entry_log + entry_log_archive.
     """
-    q = get_db().table('entry_log').select('*').order('fired_at', desc=True)
+    q = get_db().table('entry_log_full').select('*').order('fired_at', desc=True)
     if model != 'all':
         q = q.eq('model', model.upper())
     if side != 'all':
