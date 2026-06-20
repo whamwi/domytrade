@@ -1138,16 +1138,14 @@ async def refresh_signals():
         )
         if sigs:
             # Prev-day fallback is active (no live bars today — weekend, holiday,
-            # or intraday data gap).  Levels are still computed for reference but we
-            # must NOT fire ENTRY/NEAR alerts: the OHLC is from a prior session and
-            # the stop/target distances are computed relative to that session's range,
-            # not current price action.  Downgrade to NEUTRAL so levels are visible
-            # without generating phantom signals.
+            # or intraday data gap).  Mark signals as reference-only so:
+            #  • The levels remain visible for planning (signal_state unchanged)
+            #  • entry_alert is suppressed (no beep, no bot arming)
+            #  • Frontend can render a "PREV" badge instead of the live ENTRY/NEAR dot
             if _hour_override is not None:
                 for _s in sigs:
-                    if _s.get('signal_state') in ('ENTRY', 'NEAR'):
-                        _s['signal_state'] = 'NEUTRAL'
-                        _s['entry_alert']  = False
+                    _s['is_reference'] = True
+                    _s['entry_alert']  = False
             for s in sigs:
                 s['symbol_id']   = sid
                 s['signal_hour'] = signal_hour.isoformat()
@@ -10086,6 +10084,7 @@ class TradingBot:
         sig_state = sig.get('signal_state') if sig else None
         sig_side  = sig.get('side')         if sig else None
         sig_entry = sig.get('entry')        if sig else None   # cyan line price
+        sig_ref   = sig.get('is_reference', False) if sig else False
 
         # ── check if Schwab already filled our stop ───────────────────────────
         if self.position:
@@ -10094,7 +10093,7 @@ class TradingBot:
         # ── arm / disarm ──────────────────────────────────────────────────────
         _entry_level_reset = False
         if not self.position:
-            if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side:
+            if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side and not sig_ref:
                 if not self.armed:
                     self.armed = {
                         'side':        sig_side,
@@ -10456,13 +10455,14 @@ class EquityBot:
         sig_state = sig.get('signal_state') if sig else None
         sig_side  = sig.get('side')         if sig else None
         sig_entry = sig.get('entry')        if sig else None
+        sig_ref   = sig.get('is_reference', False) if sig else False
 
         if self.position:
             await self._check_stop_filled()
 
         _entry_level_reset = False   # True when armed state is new or entry level shifted
         if not self.position:
-            if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side:
+            if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side and not sig_ref:
                 bot_side = 'LONG' if 'LONG' in sig_side else 'SHORT'
                 if not self.armed or self.armed.get('side') != bot_side:
                     self.armed = {'side': bot_side, 'entry_level': float(sig_entry)}

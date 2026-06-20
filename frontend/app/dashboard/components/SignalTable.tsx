@@ -40,6 +40,7 @@ export interface Signal {
   near_gray?: boolean          // legacy — kept for compatibility
   signal_state?: 'NEAR' | 'ENTRY' | 'TRENDING'
   entry_alert?: boolean        // true only on NEAR→ENTRY transition
+  is_reference?: boolean       // true when levels are from prev session (weekend/holiday)
   daily_bias?: 'LONG' | 'SHORT' | null
   last: number
   prev_close: number
@@ -811,7 +812,17 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
 
       {/* ALERT — TRENDING / NEAR / ENTRY state */}
       <td className="px-3 py-2.5">
-        {sig.signal_state === 'TRENDING' ? (
+        {sig.is_reference ? (
+          // Prev-session reference levels (weekend / holiday) — show PREV badge,
+          // no pulsing animation, bot will not arm on these signals
+          <span
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wider"
+            style={{ background: 'rgba(100,116,139,0.12)', color: '#94a3b8', letterSpacing: '0.05em' }}
+            title="Reference levels from previous session — market closed"
+          >
+            PREV
+          </span>
+        ) : sig.signal_state === 'TRENDING' ? (
           <span
             className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold tracking-wider"
             style={{
