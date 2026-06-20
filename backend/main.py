@@ -1114,7 +1114,13 @@ async def refresh_signals():
         _is_stock = not tick.startswith('/')
         _is_rth   = 9 * 60 + 30 <= et_minute < 16 * 60
         _today_bars   = state['1min_today'].get(sid)   # None=not yet fetched, []=holiday
-        _is_holiday   = _is_stock and _today_bars is not None and not _today_bars
+        _is_weekend   = now_et.weekday() >= 5          # Sat=5, Sun=6
+        # Weekend: market is definitely closed — no need to wait for Schwab fetch confirmation.
+        # Weekday: rely on Schwab returning [] (confirmed empty) to distinguish holiday from
+        # a live day where refresh_all_1min() hasn't completed yet for this symbol.
+        _is_holiday   = _is_stock and (
+            _is_weekend or (_today_bars is not None and not _today_bars)
+        )
         if _is_stock and not _is_rth and not _is_holiday:
             continue
 
