@@ -567,6 +567,19 @@ async def compute_all_stats():
             if rows:
                 upsert_ohlc(rows)
 
+            state['prev_close'][sid]   = _prev_rth_close(con_candles)
+            state['market_bias'][sid]  = _rth_bias(con_candles)
+            if con_candles:
+                state['last_price'][sid] = round(con_candles[-1]['close'], 4)
+
+            # VBH stats are futures-only — stocks have no confirmed VBH formula yet
+            if not tick.startswith('/'):
+                state['stats_agg'][sid]  = {}
+                state['stats_con'][sid]  = {}
+                state['stats_wide'][sid] = {}
+                await asyncio.sleep(0.4)
+                continue
+
             # Compute stats directly from fresh candles (no DB round-trip needed)
             # AGG = last 30 days subset of the 90d fetch
             cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=AGG_DAYS)).timestamp() * 1000)
@@ -575,14 +588,6 @@ async def compute_all_stats():
             state['stats_agg'][sid]    = compute_stats(agg_candles, api)
             state['stats_con'][sid]    = compute_stats_con(con_candles, api)
             state['stats_wide'][sid]   = compute_stats_wide(con_candles, api)
-            state['prev_close'][sid]   = _prev_rth_close(con_candles)
-            state['market_bias'][sid]  = _rth_bias(con_candles)
-            # Seed last_price with the absolute last candle close (any session).
-            # For futures this captures the true last trade before the weekend
-            # shutdown, not just the RTH close. refresh_signals() will overwrite
-            # with the live quote once CME reopens.
-            if con_candles:
-                state['last_price'][sid] = round(con_candles[-1]['close'], 4)
 
             # Persist stats to DB
             stat_rows = []
@@ -3599,15 +3604,23 @@ async def reload_db_stats():
     """
     vbh_engine.load_stats_from_db()
     all_syms = state['symbols']
+    futures_n = 0
+    stocks_n  = 0
     for sym in all_syms:
         sid = sym['id']
         api = sym['schwab_symbol']
-        # Empty candles → falls through to _stats_db immediately
+        if not sym['ticker'].startswith('/'):
+            # Stocks have no VBH constants — zero out any stale in-memory stats
+            state['stats_agg'][sid]  = {}
+            state['stats_con'][sid]  = {}
+            state['stats_wide'][sid] = {}
+            stocks_n += 1
+            continue
+        # Futures: empty candles → falls through to _stats_db immediately
         state['stats_agg'][sid]  = vbh_engine.compute_stats([], api)
         state['stats_con'][sid]  = vbh_engine.compute_stats_con([], api)
         state['stats_wide'][sid] = vbh_engine.compute_stats_wide([], api)
-    futures_n = sum(1 for s in all_syms if s['ticker'].startswith('/'))
-    stocks_n  = len(all_syms) - futures_n
+        futures_n += 1
     return {'reloaded_futures': futures_n, 'reloaded_stocks': stocks_n,
             'db_symbols': len(vbh_engine._stats_db)}
 
