@@ -1005,9 +1005,15 @@ async def refresh_signals():
         # For stocks at h9: the accumulator was seeded at 9:00am and has been running
         # through pre-market.  Ignore it and use RTH ohlc + live price only, so that
         # pre-market prices don't inflate h_high beyond the actual RTH range.
-        if not tick.startswith('/') and cur_hour == 9 and ohlc:
-            acc_high = max(ohlc['high'], display_price)
-            acc_low  = min(ohlc['low'],  display_price)
+        if not tick.startswith('/') and cur_hour == 9:
+            if ohlc:
+                acc_high = max(ohlc['high'], display_price)
+                acc_low  = min(ohlc['low'],  display_price)
+            else:
+                # First ~60s of RTH: 9:30am bar hasn't closed yet.
+                # Use live price only — avoids pre-market accumulator contamination.
+                acc_high = display_price
+                acc_low  = display_price
         else:
             acc_high = state['hourly_high'].get(sid, display_price)
             acc_low  = state['hourly_low'].get(sid,  display_price)
