@@ -10092,6 +10092,7 @@ class TradingBot:
             await self._check_stop_filled()
 
         # ── arm / disarm ──────────────────────────────────────────────────────
+        _entry_level_reset = False
         if not self.position:
             if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side:
                 if not self.armed:
@@ -10102,18 +10103,28 @@ class TradingBot:
                     self._log_event('INFO',
                         f'ARMED — {sig_side}  entry level {sig_entry:.2f}  '
                         f'({sig_state})')
+                    _entry_level_reset = True
                 elif self.armed['side'] != sig_side:
                     # Signal flipped direction while armed — re-arm
                     self.armed = {'side': sig_side, 'entry_level': sig_entry}
                     self._log_event('INFO',
                         f'Re-armed opposite side — {sig_side} @ {sig_entry:.2f}')
+                    _entry_level_reset = True
+                elif abs(self.armed['entry_level'] - float(sig_entry)) > 0.001:
+                    # Entry level shifted (h_high/h_low updated intraday) — hold 1 cycle
+                    # before checking trigger so we don't fire when the level moved to us.
+                    old = self.armed['entry_level']
+                    self.armed['entry_level'] = float(sig_entry)
+                    self._log_event('INFO',
+                        f'Entry level shifted {old:.2f} → {sig_entry:.2f} — holding 1 cycle')
+                    _entry_level_reset = True
             else:
                 if self.armed:
                     self._log_event('INFO', 'Signal neutral — disarmed')
                 self.armed = None
 
         # ── price trigger ─────────────────────────────────────────────────────
-        if self.armed and not self.position:
+        if self.armed and not self.position and not _entry_level_reset:
             sym_id   = self._symbol_id()
             live_px  = state['last_price'].get(sym_id) if sym_id else None
 
@@ -10449,6 +10460,7 @@ class EquityBot:
         if self.position:
             await self._check_stop_filled()
 
+        _entry_level_reset = False   # True when armed state is new or entry level shifted
         if not self.position:
             if sig_state in ('NEAR', 'ENTRY') and sig_entry and sig_side:
                 bot_side = 'LONG' if 'LONG' in sig_side else 'SHORT'
@@ -10456,14 +10468,23 @@ class EquityBot:
                     self.armed = {'side': bot_side, 'entry_level': float(sig_entry)}
                     self._log_event('INFO',
                         f'ARMED {bot_side} entry={sig_entry:.2f} ({sig_state})')
+                    _entry_level_reset = True
                 elif abs(self.armed['entry_level'] - float(sig_entry)) > 0.001:
+                    # Entry level shifted because h_high/h_low updated intraday.
+                    # If the new level is already beyond live price (entry moved to us,
+                    # not price moved to entry), firing immediately would be wrong.
+                    # Log the shift and skip the trigger check this tick.
+                    old = self.armed['entry_level']
                     self.armed['entry_level'] = float(sig_entry)
+                    self._log_event('INFO',
+                        f'Entry level shifted {old:.2f} → {sig_entry:.2f} — holding 1 cycle')
+                    _entry_level_reset = True
             else:
                 if self.armed:
                     self._log_event('INFO', 'Signal neutral — disarmed')
                 self.armed = None
 
-        if self.armed and not self.position:
+        if self.armed and not self.position and not _entry_level_reset:
             sym_id  = self._symbol_id()
             live_px = state['last_price'].get(sym_id) if sym_id else None
             if live_px:
