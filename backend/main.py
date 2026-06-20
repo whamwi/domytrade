@@ -3588,6 +3588,27 @@ async def force_refresh():
     return {'message': 'Stats recomputation started'}
 
 
+@app.post('/api/reload-db-stats')
+async def reload_db_stats():
+    """Hot-reload VBH constants from DB without recomputing from Schwab.
+
+    Reloads vbh_engine._stats_db from the vbh_stats table, then updates
+    state['stats_*'] for all futures immediately. Use this after importing
+    weekly ThinkScript constants so live signals reflect the new values
+    without waiting for the 24h compute_all_stats() cycle.
+    """
+    vbh_engine.load_stats_from_db()
+    futures = [s for s in state['symbols'] if s['ticker'].startswith('/')]
+    for sym in futures:
+        sid = sym['id']
+        api = sym['schwab_symbol']
+        # Empty candles → falls through to _stats_db immediately
+        state['stats_agg'][sid]  = vbh_engine.compute_stats([], api)
+        state['stats_con'][sid]  = vbh_engine.compute_stats_con([], api)
+        state['stats_wide'][sid] = vbh_engine.compute_stats_wide([], api)
+    return {'reloaded': len(futures), 'db_symbols': len(vbh_engine._stats_db)}
+
+
 # ── AI Futures Agent ───────────────────────────────────────────────────────────
 
 AGENT_FUTURES = ['/ES', '/NQ', '/YM', '/RTY', '/GC']
