@@ -10641,17 +10641,30 @@ class EquityBot:
         self.armed    = None
 
     async def _check_stop_filled(self):
+        """Detect when the bracket (stop or T1) has been filled by checking
+        Schwab positions. If the symbol is no longer held, the bracket exited."""
         if not self.position or not self.account_number:
             return
         try:
-            orders = await asyncio.to_thread(get_orders, self.account_number, 20, 'FILLED')
-            oid    = str(self.position.get('order_id', ''))
-            for o in (orders or []):
-                for child in o.get('childOrderStrategies', []):
-                    if child.get('status') == 'FILLED' and str(child.get('orderId', '')) == oid:
-                        self._log_event('TRADE', 'Stop filled — back to IDLE')
-                        self.position = None
-                        return
+            positions = await asyncio.to_thread(get_positions, self.account_number)
+            symbol    = self.position['symbol']
+            side      = self.position['side']
+            qty       = self.position['quantity']
+            for pos in (positions or []):
+                inst = pos.get('instrument', {})
+                if inst.get('symbol') != symbol:
+                    continue
+                held = pos.get('longQuantity', 0) if side == 'LONG' else pos.get('shortQuantity', 0)
+                if held >= qty:
+                    return  # position still fully open
+                # Partial or full fill of the bracket
+                self._log_event('TRADE',
+                    f'Bracket filled — held={held} vs entered={qty} — back to IDLE')
+                self.position = None
+                return
+            # Symbol not in positions at all — bracket fully exited
+            self._log_event('TRADE', 'Bracket exit confirmed (symbol gone from positions) — IDLE')
+            self.position = None
         except Exception:
             pass
 

@@ -567,6 +567,8 @@ def _trader_post(path: str, payload: dict) -> dict | None:
     import logging
     log = logging.getLogger(__name__)
     url  = f'{TRADER_BASE_URL}{path}'
+    import json as _json
+    log.debug('Trader POST %s payload: %s', path, _json.dumps(payload))
     resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
     if resp.status_code == 401:
         _token_cache['expires_at'] = 0
