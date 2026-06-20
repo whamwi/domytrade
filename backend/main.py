@@ -957,7 +957,17 @@ async def refresh_signals():
             # Schwab candles use b['datetime'] (Unix ms) — NOT b['bar_time'].
             # Comparing in ms avoids ISO-parse overhead and the KeyError that
             # previously caused ohlc to silently fall back to the accumulator only.
-            hour_floor_ms = int(hour_floor.astimezone(timezone.utc).timestamp() * 1000)
+            # For stocks, h9 floor is 9:30am (RTH open), not 9:00am.
+            # get_session_bars uses needExtendedHoursData=true, so 1min_today
+            # includes 9:00-9:30am pre-market bars for stocks.  Without this
+            # adjustment, pre-market highs inflate h_high and trigger false
+            # LONG ENTRY signals (entry > current price) at the RTH open.
+            # Futures are unaffected — they genuinely trade 9:00-9:30am.
+            if not tick.startswith('/') and cur_hour == 9:
+                rth_open = hour_floor.replace(minute=30)
+                hour_floor_ms = int(rth_open.astimezone(timezone.utc).timestamp() * 1000)
+            else:
+                hour_floor_ms = int(hour_floor.astimezone(timezone.utc).timestamp() * 1000)
             hour_bars     = [b for b in min_bars if b.get('datetime', 0) >= hour_floor_ms]
             if hour_bars:
                 ohlc = {
@@ -992,8 +1002,15 @@ async def refresh_signals():
 
         # Merge accumulator (tracks live ticks between 1-min bar closes) with ohlc.
         # acc_high / acc_low extend the DB bars to cover the developing bar's extremes.
-        acc_high = state['hourly_high'].get(sid, display_price)
-        acc_low  = state['hourly_low'].get(sid,  display_price)
+        # For stocks at h9: the accumulator was seeded at 9:00am and has been running
+        # through pre-market.  Ignore it and use RTH ohlc + live price only, so that
+        # pre-market prices don't inflate h_high beyond the actual RTH range.
+        if not tick.startswith('/') and cur_hour == 9 and ohlc:
+            acc_high = max(ohlc['high'], display_price)
+            acc_low  = min(ohlc['low'],  display_price)
+        else:
+            acc_high = state['hourly_high'].get(sid, display_price)
+            acc_low  = state['hourly_low'].get(sid,  display_price)
 
         if not ohlc:
             # Cold start — anchor to accumulated H/L (or live price if no accumulator yet)
