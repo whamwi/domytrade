@@ -412,15 +412,15 @@ def make_signal(
         long_stop  = round((hourlyRLL - stop_translated) / ts) * ts
         short_stop = round((hourlyRHH + stop_translated) / ts) * ts
 
-        # ── T1 (1:1 risk-reward from entry, per ThinkScript label formula) ──
-        # long_t1  = 2 * entry - stop   →  mirrors the risk on the upside
-        # short_t1 = entry - (stop - entry)
-        long_risk  = hourlyRLH - long_stop
-        short_risk = short_stop - hourlyRHL
-        long_t1    = round((hourlyRLH + long_risk)  / ts) * ts
-        short_t1   = round((hourlyRHL - short_risk) / ts) * ts
-        longT      = round((hourlyRLH + 2 * long_risk)  / ts) * ts   # T2 = entry + 2R (runner exit)
-        shortT     = round((hourlyRHL - 2 * short_risk) / ts) * ts   # T2 = entry − 2R (runner exit)
+        # ── T1 / T2  (risk = entry − stop, same sign for both sides) ────────
+        # LONG:  risk > 0  →  T1 = entry + risk,   T2 = entry + 2×risk
+        # SHORT: risk < 0  →  T1 = entry + risk,   T2 = entry + 2×risk  (goes down)
+        long_risk  = hourlyRLH - long_stop    # positive
+        short_risk = hourlyRHL - short_stop   # negative
+        long_t1    = round((hourlyRLH + long_risk)    / ts) * ts
+        short_t1   = round((hourlyRHL + short_risk)   / ts) * ts
+        longT      = round((hourlyRLH + 2 * long_risk)  / ts) * ts
+        shortT     = round((hourlyRHL + 2 * short_risk) / ts) * ts
 
         # ── HBMR signal state ────────────────────────────────────────────
         # Phase 1 = CR bias active (no time limit — holds until IB breached opposite side)
