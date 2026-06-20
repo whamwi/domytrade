@@ -11,8 +11,8 @@ Box formulas (straight from ThinkScript):
   hourlyRHH  = h_low  + L3   → Green cloud top
   hourlyRLA  = h_high - L2   → Red cloud top
   hourlyRLL  = h_high - L3   → Red cloud bottom
-  longT      = h_low  + L4   → Gray — LONG  T2 target
-  shortT     = h_high - L4   → Gray — SHORT T2 target
+  longT      = entry + 2 × risk   → LONG  T2 "runner exit" (2R)
+  shortT     = entry − 2 × risk   → SHORT T2 "runner exit" (2R)
 
 Stops (ThinkScript):
   long_stop  = h_high - L3 - stop_translated   (just below red cloud)
@@ -401,8 +401,8 @@ def make_signal(
         hourlyRHH = h_low  + l3   # Green cloud top
         hourlyRLA = h_high - l2   # Red cloud top
         hourlyRLL = h_high - l3   # Red cloud bottom
-        longT     = h_low  + l4   # Gray — LONG  T2 target
-        shortT    = h_high - l4   # Gray — SHORT T2 target
+        longT     = None   # set below after long_risk / short_risk are known
+        shortT    = None
 
         # ── Stops: just beyond the L3 cloud boundary (ThinkScript spec) ────
         # long_stop  = h_high - L3 - buffer  →  just below the red cloud bottom
@@ -419,6 +419,8 @@ def make_signal(
         short_risk = short_stop - hourlyRHL
         long_t1    = round((hourlyRLH + long_risk)  / ts) * ts
         short_t1   = round((hourlyRHL - short_risk) / ts) * ts
+        longT      = round((hourlyRLH + 2 * long_risk)  / ts) * ts   # T2 = entry + 2R (runner exit)
+        shortT     = round((hourlyRHL - 2 * short_risk) / ts) * ts   # T2 = entry − 2R (runner exit)
 
         # ── HBMR signal state ────────────────────────────────────────────
         # Phase 1 = CR bias active (no time limit — holds until IB breached opposite side)
