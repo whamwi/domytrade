@@ -380,6 +380,13 @@ def make_signal(
     h_low   = current_hour_ohlc.get('low',   last_price)
     current_range = h_high - h_low
 
+    # Flat OHLC (h_high == h_low) means no range has formed yet — startup cold-start,
+    # first ~60s of a new hour before any bar closes, or holiday last-resort anchor.
+    # Phase 2 defaults to LONG when range == 0 (price exactly at midpoint),
+    # making ALL tickers appear as LONG simultaneously.  Return None instead.
+    if current_range == 0:
+        return None
+
     wide = stats_wide.get(h, (0, 0, 0, 0)) if stats_wide else (0, 0, 0, 0)
 
     results = []
