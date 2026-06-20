@@ -572,11 +572,12 @@ async def compute_all_stats():
             if con_candles:
                 state['last_price'][sid] = round(con_candles[-1]['close'], 4)
 
-            # VBH stats are futures-only — stocks have no confirmed VBH formula yet
+            # Stocks: skip dynamic Schwab-candle computation; load from DB instead
+            # (ThinkScript-imported rows have lookback_days=-1; uncovered stocks → {})
             if not tick.startswith('/'):
-                state['stats_agg'][sid]  = {}
-                state['stats_con'][sid]  = {}
-                state['stats_wide'][sid] = {}
+                state['stats_agg'][sid]  = compute_stats([], api)
+                state['stats_con'][sid]  = compute_stats_con([], api)
+                state['stats_wide'][sid] = compute_stats_wide([], api)
                 await asyncio.sleep(0.4)
                 continue
 
@@ -3609,18 +3610,17 @@ async def reload_db_stats():
     for sym in all_syms:
         sid = sym['id']
         api = sym['schwab_symbol']
-        if not sym['ticker'].startswith('/'):
-            # Stocks have no VBH constants — zero out any stale in-memory stats
-            state['stats_agg'][sid]  = {}
-            state['stats_con'][sid]  = {}
-            state['stats_wide'][sid] = {}
-            stocks_n += 1
-            continue
-        # Futures: empty candles → falls through to _stats_db immediately
+        # Empty candles → engine checks _stats_db first.
+        # Futures: always have ThinkScript rows (lookback_days=-1).
+        # Stocks: ThinkScript rows for 124 VBH bundle symbols → signals active;
+        #         uncovered stocks → {} (no signals).
         state['stats_agg'][sid]  = vbh_engine.compute_stats([], api)
         state['stats_con'][sid]  = vbh_engine.compute_stats_con([], api)
         state['stats_wide'][sid] = vbh_engine.compute_stats_wide([], api)
-        futures_n += 1
+        if sym['ticker'].startswith('/'):
+            futures_n += 1
+        else:
+            stocks_n += 1
     return {'reloaded_futures': futures_n, 'reloaded_stocks': stocks_n,
             'db_symbols': len(vbh_engine._stats_db)}
 
