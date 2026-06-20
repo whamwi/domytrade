@@ -1106,55 +1106,32 @@ async def refresh_signals():
                 state['daily_bias'][sid] = 'SHORT'
         bias_val = state['daily_bias'].get(sid)
 
-        # ── RTH hard gate for stocks ──────────────────────────────────────────────
-        # Equities and ETFs have no valid VBH data outside 09:30–16:00 ET.
-        # Futures (ticker starts with '/') trade nearly 24/7 — always let through.
-        # Holiday exception: if bars were fetched (key exists) but came back empty,
-        # there was no trading today → allow through so prev-day fallback can fire.
-        _is_stock = not tick.startswith('/')
-        _is_rth   = 9 * 60 + 30 <= et_minute < 16 * 60
-        _today_bars   = state['1min_today'].get(sid)   # None=not yet fetched, []=holiday
-        _is_weekend   = now_et.weekday() >= 5          # Sat=5, Sun=6
-        # Weekend: market is definitely closed — no need to wait for Schwab fetch confirmation.
-        # Weekday: rely on Schwab returning [] (confirmed empty) to distinguish holiday from
-        # a live day where refresh_all_1min() hasn't completed yet for this symbol.
-        _is_holiday   = _is_stock and (
-            _is_weekend or (_today_bars is not None and not _today_bars)
-        )
-        if _is_stock and not _is_rth and not _is_holiday:
-            continue
+        # ── RTH check ─────────────────────────────────────────────────────────────
+        _is_stock         = not tick.startswith('/')
+        _is_rth           = now_et.weekday() < 5 and 9 * 60 + 30 <= et_minute < 16 * 60
+        # Off-hours stocks: any stock outside 09:30–16:00 ET Mon–Fri.
+        # Covers: weekday pre/post-market, weekends, and federal holidays.
+        _is_off_hours_stock = _is_stock and not _is_rth
 
-        # ── Off-hours gate ────────────────────────────────────────────────────────
+        # ── Off-hours gate (futures only after this point) ────────────────────────
         # Only gate symbols that HAVE stats for some hours but NOT the current one.
-        # That pattern means it is genuinely off-hours for that asset.
-        # Symbols with NO stats at all (never computed yet) are let through so
-        # make_signal's own l3==0 guard handles them — prevents them from showing
-        # as CLOSED while compute_all_stats() is still running on startup.
+        # Bypass for off-hours stocks — they use PREV hour_override below, so the
+        # current-hour L3==0 check is irrelevant (hour_override selects h15 stats).
         _sym_stats      = state['stats_agg'].get(sid, {})
         _cur_hour_stats = _sym_stats.get(now_et.hour, (0, 0, 0, 0))
-        if _cur_hour_stats[2] == 0 and _sym_stats and not _is_holiday:
-            # Symbol has stats for other hours — current hour is genuinely off-hours.
-            # Skip unless it's a holiday (prev-day fallback will override the hour).
+        if _cur_hour_stats[2] == 0 and _sym_stats and not _is_off_hours_stock:
             continue
 
-        # ── Holiday / market-closed fallback ──────────────────────────────────────
-        # On non-trading days (federal holidays) Schwab returns no intraday bars,
-        # leaving ohlc flat (h_high == h_low).  Fall back to the previous trading
-        # day's last 2 RTH hours from the DB so VBH levels remain visible.
+        # ── Off-hours stock PREV fallback ──────────────────────────────────────────
+        # Stocks outside RTH have no live 1-min bars for the current hour, so the
+        # OHLC accumulator is flat (h_high == h_low == display_price).  Use the
+        # previous session's last 2 RTH hours from ohlc_hourly instead so the VBH
+        # box remains visible for pre/post-market planning.
+        # Signals are capped to NEUTRAL + is_reference=True below.
         _hour_override = None
-        # PREV fallback: only when market is CONFIRMED closed (_is_holiday = True, i.e.
-        # Schwab returned [] for today).  Do NOT trigger when cache is None — that means
-        # the 1min fetch hasn't completed yet for this symbol (first startup cycle with
-        # 147 symbols times out before every stock is fetched).  In that case the live-
-        # price accumulator already has a correct current-session OHLC; using PREV data
-        # would replace live levels with Thursday's stale levels for all stocks.
-        if _is_holiday:
+        if _is_off_hours_stock:
             _prev_bars = get_prev_rth_hours(sid, n_hours=2)
             if _prev_bars:
-                # Use the previous session's actual range so entry levels are
-                # anchored to the last traded range, not a flat price anchor.
-                # Flat anchor (display_price for both high and low) forces Phase 2
-                # to default ALL tickers to LONG — misleading on weekends/holidays.
                 _fb_high = max(b['high'] for b in _prev_bars)
                 _fb_low  = min(b['low']  for b in _prev_bars)
                 ohlc = {
@@ -1169,12 +1146,8 @@ async def refresh_signals():
                     last = _prev_bars[-1]['close']
                     display_price = last
                     state['last_price'][sid] = last
-            elif display_price:
-                # No DB bars at all — last resort flat anchor.
-                # make_signal returns None when current_range == 0, so this
-                # only matters when display_price differs from h_high/h_low somehow.
-                _p = display_price
-                ohlc = {'open': _p, 'high': _p, 'low': _p, 'close': _p, 'volume': 0}
+            else:
+                continue  # no DB history yet for this symbol → CLOSED
 
         sigs = make_signal(
             tick, api, ohlc, last,
