@@ -1144,7 +1144,17 @@ async def refresh_signals():
         # would replace live levels with Thursday's stale levels for all stocks.
         if _is_holiday:
             _prev_bars = get_prev_rth_hours(sid, n_hours=2)
-            if _prev_bars:
+            if display_price:
+                # Weekend / holiday: anchor levels to current price so the
+                # reference box is centered on where the stock is NOW, not on
+                # a prior session's intraday high/low.  A previous bar's extreme
+                # (e.g. Thursday's intraday spike) produces an entry level above
+                # or below current price, making the signal look already-triggered
+                # even though no trade opportunity exists.  Use prev close as a
+                # fallback if no live quote is available.
+                _p = display_price
+                ohlc = {'open': _p, 'high': _p, 'low': _p, 'close': _p, 'volume': 0}
+            elif _prev_bars:
                 _fb_high = max(b['high'] for b in _prev_bars)
                 _fb_low  = min(b['low']  for b in _prev_bars)
                 ohlc = {
@@ -1154,22 +1164,12 @@ async def refresh_signals():
                     'close' : _prev_bars[-1]['close'],
                     'volume': 0,
                 }
+            if _prev_bars:
                 _hour_override = _prev_bars[-1]['hour_et']
                 if not last:
                     last = _prev_bars[-1]['close']
                     display_price = last
                     state['last_price'][sid] = last
-            elif display_price:
-                # No DB bars available (ohlc_hourly not populated for this stock).
-                # The hourly accumulator may hold a stale intraday extreme from a
-                # prior session (e.g. Friday's h15 spike carried into Saturday
-                # because the hour hasn't changed).  Anchor to the current last
-                # price instead so levels stay centered on where the stock is now.
-                ohlc = {
-                    'open' : display_price, 'high': display_price,
-                    'low'  : display_price, 'close': display_price,
-                    'volume': 0,
-                }
 
         sigs = make_signal(
             tick, api, ohlc, last,
