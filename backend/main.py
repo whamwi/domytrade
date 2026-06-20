@@ -1107,7 +1107,13 @@ async def refresh_signals():
         # leaving ohlc flat (h_high == h_low).  Fall back to the previous trading
         # day's last 2 RTH hours from the DB so VBH levels remain visible.
         _hour_override = None
-        if _is_stock and not state['1min_today'].get(sid):
+        # PREV fallback: only when market is CONFIRMED closed (_is_holiday = True, i.e.
+        # Schwab returned [] for today).  Do NOT trigger when cache is None — that means
+        # the 1min fetch hasn't completed yet for this symbol (first startup cycle with
+        # 147 symbols times out before every stock is fetched).  In that case the live-
+        # price accumulator already has a correct current-session OHLC; using PREV data
+        # would replace live levels with Thursday's stale levels for all stocks.
+        if _is_holiday:
             _prev_bars = get_prev_rth_hours(sid, n_hours=2)
             if _prev_bars:
                 _fb_high = max(b['high'] for b in _prev_bars)
@@ -1490,17 +1496,27 @@ async def refresh_all_1min():
             try:
                 api_sym = _active_contract(tick) if tick.startswith('/') else sym['schwab_symbol']
                 candles = await asyncio.to_thread(get_session_bars, api_sym)
-                return sid, (candles or [])
+                candles = candles or []
+                # Update in-memory cache IMMEDIATELY — do not wait for asyncio.gather to
+                # return.  With 147 symbols and Semaphore(10), the full gather takes
+                # ~75s but the wait_for timeout is 45s.  If we defer the cache write to
+                # the post-gather loop it NEVER runs (gather is cancelled), leaving every
+                # stock as None and triggering the PREV fallback during live RTH.
+                # Writing here means each symbol's cache is current as soon as its fetch
+                # completes, regardless of whether the overall gather finishes.
+                state['1min_today'][sid] = candles
+                return sid, candles
             except Exception as e:
                 log.warning('1min fetch %s: %s', tick, e)
                 # Return None (not []) so the cache update below can tell the difference
                 # between "API/auth error — preserve existing bars" vs "market closed — [] is correct".
+                # Do NOT touch state['1min_today'][sid] here — keep the previous bars.
                 return sid, None
 
     results = await asyncio.gather(*[_fetch(s) for s in all_syms])
 
-    # Stage 2 — populate in-memory cache so refresh_signals() reads from memory
-    # (avoids 153 sequential DB round-trips per cycle) and write to DB concurrently.
+    # Stage 2 — write to DB concurrently.  In-memory cache was already updated
+    # inside _fetch above; this stage is DB persistence only.
     stored = 0
 
     async def _upsert(sid: int, candles: list) -> bool:
@@ -1515,14 +1531,8 @@ async def refresh_all_1min():
     upsert_tasks = []
     for sid, candles in results:
         if candles is None:
-            # API / auth error — keep whatever bars were already cached rather than
-            # overwriting valid intraday data with an empty list.  The existing data
-            # keeps signals on correct levels; a later successful fetch will update it.
+            # API / auth error — cache already preserved inside _fetch (no write happened).
             pass
-        else:
-            # candles = [] means market closed / no bars yet (holiday).
-            # candles = [...] is the normal live-session case.
-            state['1min_today'][sid] = candles
         if candles:
             upsert_tasks.append(_upsert(sid, candles))
 
