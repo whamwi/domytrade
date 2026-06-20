@@ -404,13 +404,17 @@ def make_signal(
         longT     = None   # set below after long_risk / short_risk are known
         shortT    = None
 
-        # ── Stops: just beyond the L3 cloud boundary (ThinkScript spec) ────
-        # long_stop  = h_high - L3 - buffer  →  just below the red cloud bottom
-        # short_stop = h_low  + L3 + buffer  →  just above the green cloud top
+        # ── Stops ────────────────────────────────────────────────────────────
+        # Futures: stop exactly at the L3 cloud boundary (manual trading — no buffer).
+        # Stocks:  stop slightly outside L3 (bot bracket order needs breathing room).
         ts, tv = _tick(api_symbol)
-        stop_translated = (dollar_risk / tv) * ts   # small buffer, e.g. 10 pts for /YM
-        long_stop  = round((hourlyRLL - stop_translated) / ts) * ts
-        short_stop = round((hourlyRHH + stop_translated) / ts) * ts
+        if symbol_display.startswith('/'):
+            long_stop  = round(hourlyRLL / ts) * ts
+            short_stop = round(hourlyRHH / ts) * ts
+        else:
+            stop_translated = (dollar_risk / tv) * ts
+            long_stop  = round((hourlyRLL - stop_translated) / ts) * ts
+            short_stop = round((hourlyRHH + stop_translated) / ts) * ts
 
         # ── T1 / T2  (risk = entry − stop, same sign for both sides) ────────
         # Stocks:  T1 = entry ± 1R,   T2 = entry ± 2R
