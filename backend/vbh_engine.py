@@ -516,16 +516,24 @@ def make_signal(
         typical = l3
         swing_pct = round(current_range / typical * 100, 1) if typical else 0
 
-        # ── Guard against stale/inverted levels ───────────────────────────────
-        # If current_hour_ohlc h_high/h_low carry forward from a prior session,
-        # the computed T2 target can land on the wrong side of the stop, making
-        # the signal geometrically impossible.  Neutralise rather than emit a
-        # phantom ENTRY/NEAR that the price can never reach cleanly.
-        #   LONG  valid: target > entry > stop  (target is profit, above entry)
-        #   SHORT valid: target < entry < stop  (target is profit, below entry)
-        if side == 'LONG'  and (target <= stop or target <= entry):
+        # ── Guard against stale/inverted or near-zero-profit levels ─────────
+        # Two failure modes:
+        #   1. Fully inverted: target ≤ entry (range ≥ l1+l4). Geometrically
+        #      impossible — signal can never reach a profit.
+        #   2. Near-zero profit: target barely above entry. Happens when the
+        #      hourly range nearly equals l1+l4 (e.g., PREV 2-hour range close
+        #      to the single-hour statistical l1+l4, or unusual intraday move).
+        #      Threshold: profit zone < 10% of L1 — at that point the T2 target
+        #      sits essentially on top of the entry and the signal is not viable.
+        if side == 'LONG' and (
+            target <= stop or target <= entry
+            or (target - entry) < l1 * 0.10
+        ):
             signal_state = 'NEUTRAL'
-        elif side == 'SHORT' and (target >= stop or target >= entry):
+        elif side == 'SHORT' and (
+            target >= stop or target >= entry
+            or (entry - target) < l1 * 0.10
+        ):
             signal_state = 'NEUTRAL'
 
         results.append({
