@@ -389,6 +389,10 @@ def make_signal(
     for label, (l1, l2, l3, l4) in models:
         if l3 == 0:
             continue
+        # VBH stocks only provide L1/L2/L3; derive L4 from the L1–L2 span
+        # (same 0.385·σ relationship measured from 2022 futures data).
+        if l4 == 0 and l1 > 0 and l2 > l1:
+            l4 = max(l1 - 0.385 * (l2 - l1), l1 * 0.10)
 
         # ── Box levels (exact ThinkScript variable names) ──────────────────
         hourlyRHL = h_low  + l1   # Lower cyan  — SHORT entry trigger
