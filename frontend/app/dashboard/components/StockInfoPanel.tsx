@@ -219,10 +219,11 @@ function TechnicalsChart({
   for (const sig of activeSigs) {
     const mc = modelColor(sig.model)
     // entry, stop, t1, target are real absolute price levels from the backend
+    const t2Valid = sig.target > 0 && (sig.side === 'LONG' ? sig.target > sig.t1 : sig.target < sig.t1)
     if (sig.entry  > 0) lvls.push({ price: sig.entry,  label: 'Entry', color: mc,        dash: '',    sw: 2.0, model: sig.model, role: 'entry'  })
     if (sig.stop   > 0) lvls.push({ price: sig.stop,   label: 'Stop',  color: '#f87171', dash: '5 3', sw: 1.4, model: sig.model, role: 'stop'   })
     if (sig.t1     > 0) lvls.push({ price: sig.t1,     label: 'T1',    color: '#86efac', dash: '4 3', sw: 1.0, model: sig.model, role: 't1'     })
-    if (sig.target > 0) lvls.push({ price: sig.target, label: 'T2',    color: '#4ade80', dash: '5 3', sw: 1.4, model: sig.model, role: 'target' })
+    if (t2Valid)        lvls.push({ price: sig.target,  label: 'T2',    color: '#4ade80', dash: '5 3', sw: 1.4, model: sig.model, role: 'target' })
     // Note: l1/l2/l3/l4 are raw statistical distances (pts), NOT absolute prices — do not plot
   }
 
@@ -821,14 +822,22 @@ export default function StockInfoPanel({
                       const fmtPx = (p: number) => `$${p >= 100 ? p.toFixed(2) : p.toFixed(3)}`
                       const risk  = Math.abs(activeSig.entry - activeSig.stop)
                       const rwT1  = activeSig.t1 > 0 && risk > 0 ? Math.abs(activeSig.t1  - activeSig.entry) / risk : null
-                      const rwT2  = activeSig.target > 0 && risk > 0 ? Math.abs(activeSig.target - activeSig.entry) / risk : null
+                      // Only show T2 when it extends beyond T1 (i.e. T2 is a further target)
+                      const t2BeyondT1 = activeSig.side === 'LONG'
+                        ? activeSig.target > activeSig.t1
+                        : activeSig.target < activeSig.t1
+                      const rwT2  = t2BeyondT1 && activeSig.target > 0 && risk > 0 ? Math.abs(activeSig.target - activeSig.entry) / risk : null
                       const rows = [
                         { label: 'Entry',      val: fmtPx(activeSig.entry),  color: modelColor(activeSig.model) },
                         { label: 'Stop',       val: fmtPx(activeSig.stop),   color: '#f87171' },
                         { label: 'T1 (1:1)',   val: activeSig.t1 > 0 ? fmtPx(activeSig.t1) : '—', color: '#86efac' },
-                        { label: 'T2 target',  val: activeSig.target > 0 ? fmtPx(activeSig.target) : '—', color: '#4ade80' },
+                        ...(t2BeyondT1 ? [
+                          { label: 'T2 target', val: activeSig.target > 0 ? fmtPx(activeSig.target) : '—', color: '#4ade80' },
+                        ] : []),
                         { label: 'R/R to T1',  val: rwT1 != null ? `1 : ${rwT1.toFixed(1)}` : '—', color: undefined },
-                        { label: 'R/R to T2',  val: rwT2 != null ? `1 : ${rwT2.toFixed(1)}` : '—', color: undefined },
+                        ...(rwT2 != null ? [
+                          { label: 'R/R to T2', val: `1 : ${rwT2.toFixed(1)}`, color: undefined },
+                        ] : []),
                         { label: 'Daily Swing', val: `${activeSig.swing_pct >= 0 ? '+' : ''}${activeSig.swing_pct.toFixed(1)}% of ${activeSig.typical_range.toFixed(2)} pts`, color: undefined },
                       ]
                       return (

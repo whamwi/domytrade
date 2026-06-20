@@ -532,11 +532,13 @@ def make_signal(
         if side == 'LONG' and (
             target <= stop or target <= entry
             or (target - entry) < l1 * 0.10
+            or last_price <= stop          # stop already breached — signal dead
         ):
             signal_state = 'NEUTRAL'
         elif side == 'SHORT' and (
             target >= stop or target >= entry
             or (entry - target) < l1 * 0.10
+            or last_price >= stop          # stop already breached — signal dead
         ):
             signal_state = 'NEUTRAL'
 
