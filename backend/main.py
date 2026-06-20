@@ -1159,6 +1159,17 @@ async def refresh_signals():
                     last = _prev_bars[-1]['close']
                     display_price = last
                     state['last_price'][sid] = last
+            elif display_price:
+                # No DB bars available (ohlc_hourly not populated for this stock).
+                # The hourly accumulator may hold a stale intraday extreme from a
+                # prior session (e.g. Friday's h15 spike carried into Saturday
+                # because the hour hasn't changed).  Anchor to the current last
+                # price instead so levels stay centered on where the stock is now.
+                ohlc = {
+                    'open' : display_price, 'high': display_price,
+                    'low'  : display_price, 'close': display_price,
+                    'volume': 0,
+                }
 
         sigs = make_signal(
             tick, api, ohlc, last,
