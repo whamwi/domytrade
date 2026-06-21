@@ -60,7 +60,7 @@ type UniverseFilter = 'ALL' | 'EQUITIES' | 'SECTORS'
 // Squeeze dot colors — match TOS SqueezePRO palette
 // PRE (slow) = orange  ORIG (normal) = red  EXTRA (fast) = near-black  FIRED = green
 const SQ_COLOR: Record<string, string> = {
-  EXTRA_IN: '#1a1a1a', EXTRA_OUT: '#1a1a1a',
+  EXTRA_IN: '#ffffff', EXTRA_OUT: '#ffffff',
   ORIG_IN:  '#dc2626', ORIG_OUT:  '#dc2626',
   PRE_IN:   '#f97316', PRE_OUT:   '#f97316',
   FIRED:    '#16a34a',
@@ -86,7 +86,7 @@ function Legend() {
   const items: { color: string; label: string }[] = [
     { color: '#f97316', label: 'Slow squeeze' },
     { color: '#dc2626', label: 'Normal' },
-    { color: '#1a1a1a', label: 'Fast' },
+    { color: '#ffffff', label: 'Fast' },
     { color: '#16a34a', label: 'Fired' },
   ]
   return (
@@ -101,7 +101,7 @@ function Legend() {
         <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
           <span style={{
             width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0,
-            border: color === '#1a1a1a' ? '1px solid #555' : 'none',
+            border: color === '#ffffff' ? '1px solid #555' : 'none',
           }} />
           {label}
         </span>
@@ -165,7 +165,7 @@ function SqCell({ state, moState, bars, fired }: {
         <span style={{
           width: 11, height: 11, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
           background: dotColor,
-          border: dotColor === '#1a1a1a' ? '1px solid #555' : 'none',
+          border: dotColor === '#ffffff' ? '1px solid #555' : 'none',
           boxShadow: isFired ? `0 0 5px ${dotColor}88` : 'none',
         }} />
         {moColor && (
