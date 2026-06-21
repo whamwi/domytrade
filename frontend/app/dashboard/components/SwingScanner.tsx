@@ -159,7 +159,7 @@ function SqCell({ state, moState, bars, fired }: {
   const isFired  = state === 'FIRED'
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
       {/* Dot + arrow row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
         <span style={{
