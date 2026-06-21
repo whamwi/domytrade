@@ -57,31 +57,67 @@ type UniverseFilter = 'ALL' | 'EQUITIES' | 'SECTORS'
 
 // ── Style maps ────────────────────────────────────────────────────────────────
 
-const SQ_DOT: Record<string, string> = {
-  EXTRA_IN:  '#7f1d1d', EXTRA_OUT: '#7f1d1d',
-  ORIG_IN:   '#dc2626', ORIG_OUT:  '#dc2626',
-  PRE_IN:    '#c026d3', PRE_OUT:   '#c026d3',
-  FIRED:     '#16a34a',
+// Squeeze dot colors — match TOS SqueezePRO palette
+// PRE (slow) = orange  ORIG (normal) = red  EXTRA (fast) = near-black  FIRED = green
+const SQ_COLOR: Record<string, string> = {
+  EXTRA_IN: '#1a1a1a', EXTRA_OUT: '#1a1a1a',
+  ORIG_IN:  '#dc2626', ORIG_OUT:  '#dc2626',
+  PRE_IN:   '#f97316', PRE_OUT:   '#f97316',
+  FIRED:    '#16a34a',
 }
 
-const SQ_LABEL: Record<string, string> = {
-  EXTRA_IN:  'XTRA', EXTRA_OUT: 'XTRA',
-  ORIG_IN:   'HIGH', ORIG_OUT:  'HIGH',
-  PRE_IN:    'LOW',  PRE_OUT:   'LOW',
-  FIRED:     'OFF',
+// Momentum arrow color
+const MO_COLOR: Record<string, string> = {
+  POS_UP: '#22d3ee', POS_DN: '#3b82f6',
+  NEG_DN: '#dc2626', NEG_UP: '#fbbf24',
 }
 
 const VA_STYLE: Record<string, { bg: string; color: string }> = {
-  ACCUM:     { bg: 'rgba(74,222,128,0.15)',   color: '#4ade80' },
-  DIST:      { bg: 'rgba(248,113,113,0.15)',  color: '#f87171' },
-  'CHURN↑':  { bg: 'rgba(251,191,36,0.15)',   color: '#fbbf24' },
-  'CHURN↓':  { bg: 'rgba(249,115,22,0.15)',   color: '#f97316' },
-  NEUTRAL:   { bg: 'rgba(148,163,184,0.08)',  color: '#94a3b8' },
+  ACCUM:    { bg: 'rgba(74,222,128,0.15)',  color: '#4ade80' },
+  DIST:     { bg: 'rgba(248,113,113,0.15)', color: '#f87171' },
+  'CHURN↑': { bg: 'rgba(251,191,36,0.15)',  color: '#fbbf24' },
+  'CHURN↓': { bg: 'rgba(249,115,22,0.15)',  color: '#f97316' },
+  NEUTRAL:  { bg: 'rgba(148,163,184,0.08)', color: '#94a3b8' },
 }
 
-const MO_DOT: Record<string, string> = {
-  POS_UP: '#22d3ee', POS_DN: '#3b82f6',
-  NEG_DN: '#dc2626', NEG_UP: '#fbbf24',
+// ── Legend ────────────────────────────────────────────────────────────────────
+
+function Legend() {
+  const items: { color: string; label: string }[] = [
+    { color: '#f97316', label: 'Slow squeeze' },
+    { color: '#dc2626', label: 'Normal' },
+    { color: '#1a1a1a', label: 'Fast' },
+    { color: '#16a34a', label: 'Fired' },
+  ]
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
+      padding: '6px 16px', background: 'var(--bg-panel)',
+      borderBottom: '1px solid var(--border)', flexShrink: 0,
+      fontSize: 10, color: 'var(--text-dim)',
+    }}>
+      <span style={{ fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-dim)', marginRight: 4 }}>LEGEND</span>
+      {items.map(({ color, label }) => (
+        <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{
+            width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0,
+            border: color === '#1a1a1a' ? '1px solid #555' : 'none',
+          }} />
+          {label}
+        </span>
+      ))}
+      <span style={{ color: 'var(--text-dim)', opacity: 0.6 }}>·</span>
+      <span><span style={{ fontWeight: 700, color: 'var(--text-muted)' }}>12</span> = bars in squeeze</span>
+      <span style={{ color: 'var(--text-dim)', opacity: 0.6 }}>·</span>
+      <span>
+        <span style={{ color: '#22d3ee', fontWeight: 700 }}>▲</span>
+        <span style={{ color: '#fbbf24', fontWeight: 700 }}> ▼</span>
+        {' '}= momentum direction
+      </span>
+      <span style={{ color: 'var(--text-dim)', opacity: 0.6 }}>·</span>
+      <span>D / W / M = Daily · Weekly · Monthly</span>
+    </div>
+  )
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -91,13 +127,10 @@ function ScoreDots({ score, direction }: { score: number; direction: 'LONG' | 'S
   return (
     <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
       {[1, 2, 3, 4, 5].map(i => (
-        <span
-          key={i}
-          style={{
-            width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
-            background: i <= score ? fill : 'rgba(255,255,255,0.12)',
-          }}
-        />
+        <span key={i} style={{
+          width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
+          background: i <= score ? fill : 'rgba(255,255,255,0.12)',
+        }} />
       ))}
     </div>
   )
@@ -111,35 +144,41 @@ function Check({ ok }: { ok: boolean }) {
   )
 }
 
-function SqBadge({ state }: { state: string | null }) {
+// Squeeze cell: colored dot + momentum arrow stacked, bar count below
+function SqCell({ state, moState, bars, fired }: {
+  state: string | null
+  moState?: string | null
+  bars?: number
+  fired?: number | null
+}) {
   if (!state) return <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>
-  const color = SQ_DOT[state] ?? '#64748b'
-  const label = SQ_LABEL[state] ?? state
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 700,
-      letterSpacing: '0.06em', background: `${color}25`, color,
-    }}>
-      <span style={{
-        width: 5, height: 5, borderRadius: '50%',
-        background: color, display: 'inline-block', flexShrink: 0,
-      }} />
-      {label}
-    </span>
-  )
-}
 
-function MoBadge({ state }: { state: string | null | undefined }) {
-  if (!state) return null
-  const color = MO_DOT[state] ?? '#64748b'
-  const labels: Record<string, string> = {
-    POS_UP: '▲+', POS_DN: '▼+', NEG_DN: '▼−', NEG_UP: '▲−',
-  }
+  const dotColor = SQ_COLOR[state] ?? '#64748b'
+  const moColor  = moState ? (MO_COLOR[moState] ?? '#64748b') : null
+  const isUp     = moState === 'POS_UP' || moState === 'NEG_UP'
+  const isFired  = state === 'FIRED'
+
   return (
-    <span style={{ color, fontWeight: 700, fontSize: 10 }}>
-      {labels[state] ?? state}
-    </span>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+      {/* Dot + arrow row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+        <span style={{
+          width: 11, height: 11, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
+          background: dotColor,
+          border: dotColor === '#1a1a1a' ? '1px solid #555' : 'none',
+          boxShadow: isFired ? `0 0 5px ${dotColor}88` : 'none',
+        }} />
+        {moColor && (
+          <span style={{ color: moColor, fontSize: 9, fontWeight: 800, lineHeight: 1 }}>
+            {isUp ? '▲' : '▼'}
+          </span>
+        )}
+      </div>
+      {/* Bar count */}
+      <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600, lineHeight: 1 }}>
+        {isFired && fired != null ? `+${fired}` : bars ? bars : ''}
+      </span>
+    </div>
   )
 }
 
@@ -368,26 +407,46 @@ export default function SwingScanner() {
         </div>
       )}
 
+      {/* ── Legend ─────────────────────────────────────────────────────────── */}
+      {data && <Legend />}
+
       {/* ── Table ──────────────────────────────────────────────────────────── */}
       {data && (
         <div style={{ flex: 1, overflow: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead>
+              {/* ── Group row ── */}
               <tr>
-                <th style={{ ...TH, paddingLeft: 16 }}>SYMBOL</th>
-                <th style={TH}>DIR</th>
-                <th style={TH}>SCORE</th>
-                <th style={TH}>SQZ D</th>
-                <th style={{ ...TH, textAlign: 'center' }}>W</th>
-                <th style={{ ...TH, textAlign: 'center' }}>M</th>
-                <th style={TH}>MOMO</th>
-                <th style={{ ...TH, textAlign: 'center' }}>SMA50</th>
-                <th style={{ ...TH, textAlign: 'center' }}>EMA</th>
-                <th style={TH}>MOXIE</th>
-                <th style={TH}>LAGR</th>
-                <th style={TH}>VA</th>
-                <th style={{ ...TH, textAlign: 'right' }}>VAW</th>
-                <th style={{ ...TH, textAlign: 'right' }}>VAM</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>SYMBOL</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>DIR</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>SCORE</th>
+                {/* Squeeze Matrix group */}
+                <th colSpan={3} style={{
+                  ...TH, textAlign: 'center', borderBottom: '1px solid var(--border)',
+                  letterSpacing: '0.1em', color: 'var(--text-muted)',
+                  borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+                }}>
+                  SQUEEZE MATRIX
+                </th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>SMA50</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>EMA</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>MOXIE W</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>LAGR</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>VA</th>
+                <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAW</th>
+                <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAM</th>
+              </tr>
+              {/* ── Sub-row for squeeze TFs ── */}
+              <tr>
+                <th style={{
+                  ...TH, textAlign: 'center', fontSize: 9,
+                  borderLeft: '1px solid var(--border)',
+                }}>D</th>
+                <th style={{ ...TH, textAlign: 'center', fontSize: 9 }}>W</th>
+                <th style={{
+                  ...TH, textAlign: 'center', fontSize: 9,
+                  borderRight: '1px solid var(--border)',
+                }}>M</th>
               </tr>
             </thead>
             <tbody>
@@ -450,35 +509,23 @@ export default function SwingScanner() {
                     </td>
 
                     {/* Daily squeeze */}
-                    <td style={TD}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <SqBadge state={r.d_sq_state} />
-                        {r.d_bars_in_sq > 0 && (
-                          <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600 }}>
-                            {r.d_bars_in_sq}d
-                          </span>
-                        )}
-                        {r.d_sq_state === 'FIRED' && r.d_bars_fired != null && (
-                          <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>
-                            +{r.d_bars_fired}
-                          </span>
-                        )}
-                      </div>
+                    <td style={{ ...TD, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
+                      <SqCell
+                        state={r.d_sq_state}
+                        moState={r.d_mo_state}
+                        bars={r.d_bars_in_sq}
+                        fired={r.d_bars_fired}
+                      />
                     </td>
 
                     {/* Weekly squeeze */}
                     <td style={{ ...TD, textAlign: 'center' }}>
-                      {r.w_sq_state ? <SqBadge state={r.w_sq_state} /> : <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>}
+                      <SqCell state={r.w_sq_state} bars={r.w_bars_in_sq} />
                     </td>
 
                     {/* Monthly squeeze */}
-                    <td style={{ ...TD, textAlign: 'center' }}>
-                      {r.m_sq_state ? <SqBadge state={r.m_sq_state} /> : <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>}
-                    </td>
-
-                    {/* Momentum */}
-                    <td style={TD}>
-                      <MoBadge state={r.d_mo_state} />
+                    <td style={{ ...TD, textAlign: 'center', borderRight: '1px solid var(--border)' }}>
+                      <SqCell state={r.m_sq_state} />
                     </td>
 
                     {/* SMA50 */}
