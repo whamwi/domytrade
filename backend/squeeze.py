@@ -21,7 +21,7 @@ NUM_DEV_UP  = +2.0
 FACTOR_HIGH = 1.0
 FACTOR_MID  = 1.5
 FACTOR_LOW  = 2.0
-TOLERANCE   = 0.05   # small rounding buffer to match TOS boundary behaviour
+TOLERANCE   = 0.0    # TOS uses strict comparisons — no tolerance buffer
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
