@@ -45,6 +45,16 @@ interface ScanResponse {
   scanned_at: string | null
 }
 
+// ── Universe classification ───────────────────────────────────────────────────
+
+const SECTOR_TICKERS = new Set([
+  'XLK','XLV','XLF','XLC','XLY','XLI','XLP','XLE','XLB','XLU','XLRE',
+  'SMH','HACK','SKYY','TAN','JETS','OIH','IYT','EEM','SOCL','KCE','XLG','XRT',
+  'QQQ','SPY','GLD','SLV','USO',
+])
+
+type UniverseFilter = 'ALL' | 'EQUITIES' | 'SECTORS'
+
 // ── Style maps ────────────────────────────────────────────────────────────────
 
 const SQ_DOT: Record<string, string> = {
@@ -187,12 +197,13 @@ const TD: React.CSSProperties = {
 }
 
 export default function SwingScanner() {
-  const [data, setData]         = useState<ScanResponse | null>(null)
-  const [loading, setLoading]   = useState(false)
-  const [dirFilter, setDir]     = useState<DirFilter>('ALL')
-  const [minScore, setScore]    = useState<ScoreFilter>(0)
-  const [sqOnly, setSqOnly]     = useState(false)
-  const [error, setError]       = useState<string | null>(null)
+  const [data, setData]           = useState<ScanResponse | null>(null)
+  const [loading, setLoading]     = useState(false)
+  const [dirFilter, setDir]       = useState<DirFilter>('ALL')
+  const [minScore, setScore]      = useState<ScoreFilter>(0)
+  const [sqOnly, setSqOnly]       = useState(false)
+  const [universe, setUniverse]   = useState<UniverseFilter>('ALL')
+  const [error, setError]         = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -235,14 +246,16 @@ export default function SwingScanner() {
   useEffect(() => { load() }, [load])
 
   const rows = (data?.rows ?? []).filter(r => {
+    if (universe === 'EQUITIES' &&  SECTOR_TICKERS.has(r.ticker)) return false
+    if (universe === 'SECTORS'  && !SECTOR_TICKERS.has(r.ticker)) return false
     if (dirFilter !== 'ALL' && r.direction !== dirFilter) return false
     if (r.score < minScore) return false
     if (sqOnly && r.d_sq_state === 'FIRED' && !r.d_bars_fired) return false
     return true
   })
 
-  const longCount  = (data?.rows ?? []).filter(r => r.direction === 'LONG').length
-  const shortCount = (data?.rows ?? []).filter(r => r.direction === 'SHORT').length
+  const longCount  = rows.filter(r => r.direction === 'LONG').length
+  const shortCount = rows.filter(r => r.direction === 'SHORT').length
 
   return (
     <div style={{
@@ -285,6 +298,13 @@ export default function SwingScanner() {
 
         {/* Filters */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Seg<UniverseFilter>
+            value={universe}
+            options={['ALL', 'EQUITIES', 'SECTORS']}
+            labels={{ ALL: 'All', EQUITIES: 'Equities', SECTORS: 'Sectors' }}
+            onChange={setUniverse}
+          />
+          <div style={{ width: 1, height: 16, background: 'var(--border)' }} />
           <Seg<DirFilter>
             value={dirFilter}
             options={['ALL', 'LONG', 'SHORT']}
@@ -354,8 +374,7 @@ export default function SwingScanner() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead>
               <tr>
-                <th style={{ ...TH, paddingLeft: 16 }}>TICKER</th>
-                <th style={{ ...TH, textAlign: 'right' }}>PRICE</th>
+                <th style={{ ...TH, paddingLeft: 16 }}>SYMBOL</th>
                 <th style={TH}>DIR</th>
                 <th style={TH}>SCORE</th>
                 <th style={TH}>SQZ D</th>
@@ -386,24 +405,24 @@ export default function SwingScanner() {
                     onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-row)')}
                     onMouseLeave={e => (e.currentTarget.style.background = rowBg)}
                   >
-                    {/* Ticker */}
-                    <td style={{ ...TD, paddingLeft: 16 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {/* Ticker + price */}
+                    <td style={{ ...TD, paddingLeft: 16, paddingTop: 8, paddingBottom: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <img
-                          src={`https://img.logo.dev/ticker/${r.ticker}?token=pk_fZOnZkh3QrCkdBG6NS8ckQ&size=64&format=png&retina=true`}
+                          src={`https://img.logo.dev/ticker/${r.ticker}?token=pk_fZOnZkh3QrCkdBG6NS8ckQ&size=128&format=png&retina=true`}
                           alt=""
-                          style={{ height: 20, width: 20, objectFit: 'contain', borderRadius: 4, flexShrink: 0 }}
+                          style={{ height: 32, width: 32, objectFit: 'contain', borderRadius: 6, flexShrink: 0 }}
                           onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                         />
-                        <span style={{ fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
-                          {r.ticker}
-                        </span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                          <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.04em', fontFamily: 'monospace' }}>
+                            {r.ticker}
+                          </span>
+                          <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace' }}>
+                            ${r.price.toFixed(2)}
+                          </span>
+                        </div>
                       </div>
-                    </td>
-
-                    {/* Price */}
-                    <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
-                      {r.price.toFixed(2)}
                     </td>
 
                     {/* Direction */}
@@ -535,7 +554,7 @@ export default function SwingScanner() {
 
               {rows.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={15} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 32 }}>
+                  <td colSpan={14} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 32 }}>
                     No symbols match the current filters.
                   </td>
                 </tr>
