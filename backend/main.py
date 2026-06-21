@@ -4968,13 +4968,20 @@ def _summarize_layer(
 
     total_net  = round(sum(r['net_gex_mm'] for r in rows), 2)
 
-    # Only set walls when there is real GEX concentration.
-    # When OI is zero (weekends / no data) all GEX values are 0 and max()
-    # would just return the first (lowest) strike — producing nonsense like $2000.
-    _best_call = max(rows, key=lambda r: r['call_gex_mm'])
-    _best_put  = max(rows, key=lambda r: r['put_gex_mm'])
-    call_wall  = _best_call['strike'] if _best_call['call_gex_mm'] > 0 else None
-    put_wall   = _best_put['strike']  if _best_put['put_gex_mm']  > 0 else None
+    # Call wall = highest call GEX ABOVE spot (overhead resistance).
+    # Put wall  = highest put GEX AT OR BELOW spot (floor support).
+    # Cap at ±30% OTM: LEAPS positions far OTM accumulate large notional GEX
+    # (massive OI × tiny gamma × high spot) and can dominate the global max,
+    # producing walls like $500 when spot is $379 — irrelevant to near-term action.
+    _wall_cap  = spot * 0.30
+    # Put wall extends 1% above spot to capture ATM puts (e.g. $380 strike when
+    # spot is $379.40 is the strongest support — excluding it is too strict).
+    _above = [r for r in rows if spot < r['strike'] <= spot + _wall_cap]
+    _below = [r for r in rows if spot - _wall_cap <= r['strike'] <= spot * 1.01]
+    _best_call = max(_above, key=lambda r: r['call_gex_mm']) if _above else None
+    _best_put  = max(_below, key=lambda r: r['put_gex_mm'])  if _below else None
+    call_wall  = _best_call['strike'] if _best_call and _best_call['call_gex_mm'] > 0 else None
+    put_wall   = _best_put['strike']  if _best_put  and _best_put['put_gex_mm']   > 0 else None
 
     # Mark walls
     for r in rows:
@@ -5094,6 +5101,34 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         spot,
         # no 0DTE adjustment for monthly layer — monthly expirations are never same-day
     )
+
+    # ── Nearest-expiry OI walls (primary call_wall / put_wall) ───────────────
+    # Uses raw open interest on the nearest expiry only — matches the methodology
+    # used by most retail data sources (Yahoo Finance, John Carter, etc.).
+    # Multi-expiry GEX aggregation inflates far-OTM LEAPS strikes and produces
+    # walls like $500 for MSFT at $379 or $300 puts for AAPL at $298.
+    _near_oi_calls: dict[float, int] = {}
+    _near_oi_puts:  dict[float, int] = {}
+    for _exp_key, _sd in call_map.items():
+        if _exp_key.split(':')[0] != nearest_date:
+            continue
+        for _sk, _ol in _sd.items():
+            _s = float(_sk)
+            _near_oi_calls[_s] = _near_oi_calls.get(_s, 0) + sum(int(o.get('openInterest') or 0) for o in _ol)
+    for _exp_key, _sd in put_map.items():
+        if _exp_key.split(':')[0] != nearest_date:
+            continue
+        for _sk, _ol in _sd.items():
+            _s = float(_sk)
+            _near_oi_puts[_s] = _near_oi_puts.get(_s, 0) + sum(int(o.get('openInterest') or 0) for o in _ol)
+
+    # 0.5% ATM buffer on put wall to capture strikes fractionally above spot
+    # (e.g. $380 when MSFT is at $379.40 is a legitimate ATM put wall).
+    _atm_buf   = spot * 0.005
+    _cw_cands  = {s: oi for s, oi in _near_oi_calls.items() if s > spot}
+    _pw_cands  = {s: oi for s, oi in _near_oi_puts.items()  if s <= spot + _atm_buf}
+    _call_wall = max(_cw_cands, key=_cw_cands.__getitem__) if _cw_cands else None
+    _put_wall  = max(_pw_cands, key=_pw_cands.__getitem__)  if _pw_cands else None
 
     layer_all     = _summarize_layer(c_all,     p_all,     spot, include_strike_rows=True)
     layer_exnext  = _summarize_layer(c_exnext,  p_exnext,  spot, include_strike_rows=True)
@@ -5258,8 +5293,11 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
         # All-expiry layer (primary)
         'net_gex_mm'         : layer_all['net_gex_mm'],
         'gamma_regime'       : layer_all['gamma_regime'],
-        'call_wall'          : layer_all['call_wall'],
-        'put_wall'           : layer_all['put_wall'],
+        # Walls: nearest-expiry raw OI (matches retail sources); GEX walls kept as _gex suffix
+        'call_wall'          : _call_wall,
+        'put_wall'           : _put_wall,
+        'call_wall_gex'      : layer_all['call_wall'],
+        'put_wall_gex'       : layer_all['put_wall'],
         'zero_gamma'         : layer_all['zero_gamma'],
         'expected_move_pct'  : expected_move_pct,
         'expected_move_pts'  : round(spot * expected_move_pct / 100, 2) if expected_move_pct else None,

@@ -223,6 +223,16 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
     if recently_fired and bars_since_fired:
         sq_label = f'FIRED — expansion in progress ({bars_since_fired} bars ago)'
 
+    # ── Consecutive bars in squeeze ───────────────────────────────────────────
+    # Walk backward from the most recent bar; count how many consecutive bars
+    # were in any squeeze state (PRE / ORIG / EXTRA).  Returns 0 if FIRED.
+    bars_in_squeeze = 0
+    for val in reversed(any_sq.values):
+        if val:
+            bars_in_squeeze += 1
+        else:
+            break
+
     return {
         # State codes (used by squeeze_confirms_signal and API consumers)
         'sq_state'        : sq_state,
@@ -237,6 +247,7 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
         'just_fired'      : just_fired,
         'recently_fired'  : recently_fired,
         'bars_since_fired': bars_since_fired,
+        'bars_in_squeeze' : bars_in_squeeze,
         'bars_used'       : len(df),
         # Band values — useful for debugging and UI display
         'upper_bb'        : round(v(upper_bb), 2),
