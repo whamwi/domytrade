@@ -10822,3 +10822,56 @@ async def api_manual_trade(req: ManualTradeRequest):
         'stop_price': req.stop_price,
         'order_id': result.get('order_id'),
     }
+
+
+# ── Swing scanner ─────────────────────────────────────────────────────────────
+
+_swing_scan_cache: list | None = None
+_swing_scan_ts: float = 0.0
+_SWING_CACHE_TTL = 900  # 15 minutes
+
+@app.get('/api/swing-scan')
+async def api_swing_scan(symbols: str = Query(None)):
+    """
+    Run the swing trade scanner across the universe (or a comma-separated
+    subset via ?symbols=AAPL,MSFT,...).
+
+    Full-universe results are cached for 15 minutes.
+    """
+    global _swing_scan_cache, _swing_scan_ts
+    from scanner import scan_swing
+
+    sym_list = [s.strip().upper() for s in symbols.split(',')] if symbols else None
+    now_ts   = time.time()
+
+    if (sym_list is None
+            and _swing_scan_cache is not None
+            and (now_ts - _swing_scan_ts) < _SWING_CACHE_TTL):
+        return {
+            'rows'    : _swing_scan_cache,
+            'cached'  : True,
+            'age_s'   : int(now_ts - _swing_scan_ts),
+            'count'   : len(_swing_scan_cache),
+        }
+
+    rows = await asyncio.to_thread(scan_swing, sym_list)
+
+    if sym_list is None:
+        _swing_scan_cache = rows
+        _swing_scan_ts    = now_ts
+
+    return {
+        'rows'  : rows,
+        'cached': False,
+        'age_s' : 0,
+        'count' : len(rows),
+    }
+
+
+@app.post('/api/swing-scan/refresh')
+async def api_swing_scan_refresh():
+    """Force-clear the swing scan cache so next GET re-runs the full scan."""
+    global _swing_scan_cache, _swing_scan_ts
+    _swing_scan_cache = None
+    _swing_scan_ts    = 0.0
+    return {'ok': True, 'message': 'Swing scan cache cleared'}

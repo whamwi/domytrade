@@ -20,6 +20,7 @@ import EntryLog from './components/EntryLog'
 import WatchlistDropdown from './components/WatchlistDropdown'
 import WatchlistEditor, { Watchlist } from './components/WatchlistEditor'
 import EquityBotPanel from './components/EquityBotPanel'
+import SwingScanner from './components/SwingScanner'
 
 const API_URL  = process.env.NEXT_PUBLIC_API_URL ?? ''
 // WebSocket URL — same host, ws(s):// scheme
@@ -470,7 +471,7 @@ export default function DashboardPage() {
       (assetFilter === 'sectors'  && isSector)
     // Focus mode: pin key futures+/GC always; everything else only if at zone
     const focusOk   = !focusMode || PINNED_TICKERS.has(ticker) ||
-                      sig.signal_state === 'NEAR' || sig.signal_state === 'ENTRY'
+                      sig.signal_state === 'NEAR' || sig.signal_state === 'ENTRY' || sig.is_reference
     return namedWLOk && watchOk && sideOk && modelOk && assetOk && focusOk
   }).sort((a, b) => {
     const ta = a.symbol.split(':')[0]
@@ -526,8 +527,13 @@ export default function DashboardPage() {
         <Positions />
       </div>
 
+      {/* Swing Scanner tab */}
+      <div className="flex-1 min-w-0 overflow-hidden" style={{ display: activeTab === 'swing' ? undefined : 'none' }}>
+        <SwingScanner />
+      </div>
+
       {/* Main content — dashboard tab */}
-      <div className="flex flex-col flex-1 min-w-0" style={{ display: (activeTab === 'agent' || activeTab === 'gex' || activeTab === 'regime' || activeTab === 'positions') ? 'none' : undefined }}>
+      <div className="flex flex-col flex-1 min-w-0" style={{ display: (activeTab === 'agent' || activeTab === 'gex' || activeTab === 'regime' || activeTab === 'positions' || activeTab === 'swing') ? 'none' : undefined }}>
         {/* Header */}
         <header
           className="flex items-center gap-4 px-5 py-3 shrink-0"

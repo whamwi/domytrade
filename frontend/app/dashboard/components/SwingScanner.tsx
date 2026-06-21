@@ -1,0 +1,518 @@
+'use client'
+
+import { useEffect, useState, useCallback } from 'react'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface SwingRow {
+  ticker: string
+  price: number
+  direction: 'LONG' | 'SHORT'
+  score: number
+  long_score: number
+  short_score: number
+  // Daily squeeze
+  d_sq_state: string | null
+  d_sq_color: string | null
+  d_mo_state: string | null
+  d_mo_color: string | null
+  d_momo: number | null
+  d_bars_in_sq: number
+  d_bars_fired: number | null
+  // Weekly / Monthly squeeze
+  w_sq_state: string | null
+  w_confirms: boolean
+  w_bars_in_sq: number
+  m_sq_state: string | null
+  m_confirms: boolean
+  // Indicator values
+  sma50: number
+  ema8: number
+  ema21: number
+  moxie_w: number
+  laguerre: number
+  // VAW / VAM
+  vaw_m: number
+  vam_m: number
+  va_badge: string
+}
+
+interface ScanResponse {
+  rows: SwingRow[]
+  cached: boolean
+  age_s: number
+  count: number
+}
+
+// ── Style maps ────────────────────────────────────────────────────────────────
+
+const SQ_DOT: Record<string, string> = {
+  EXTRA_IN:  '#7f1d1d', EXTRA_OUT: '#7f1d1d',
+  ORIG_IN:   '#dc2626', ORIG_OUT:  '#dc2626',
+  PRE_IN:    '#c026d3', PRE_OUT:   '#c026d3',
+  FIRED:     '#16a34a',
+}
+
+const SQ_LABEL: Record<string, string> = {
+  EXTRA_IN:  'XTRA', EXTRA_OUT: 'XTRA',
+  ORIG_IN:   'HIGH', ORIG_OUT:  'HIGH',
+  PRE_IN:    'LOW',  PRE_OUT:   'LOW',
+  FIRED:     'OFF',
+}
+
+const VA_STYLE: Record<string, { bg: string; color: string }> = {
+  ACCUM:     { bg: 'rgba(74,222,128,0.15)',   color: '#4ade80' },
+  DIST:      { bg: 'rgba(248,113,113,0.15)',  color: '#f87171' },
+  'CHURN↑':  { bg: 'rgba(251,191,36,0.15)',   color: '#fbbf24' },
+  'CHURN↓':  { bg: 'rgba(249,115,22,0.15)',   color: '#f97316' },
+  NEUTRAL:   { bg: 'rgba(148,163,184,0.08)',  color: '#94a3b8' },
+}
+
+const MO_DOT: Record<string, string> = {
+  POS_UP: '#22d3ee', POS_DN: '#3b82f6',
+  NEG_DN: '#dc2626', NEG_UP: '#fbbf24',
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function ScoreDots({ score, direction }: { score: number; direction: 'LONG' | 'SHORT' }) {
+  const fill = direction === 'LONG' ? '#4ade80' : '#f87171'
+  return (
+    <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+      {[1, 2, 3, 4, 5].map(i => (
+        <span
+          key={i}
+          style={{
+            width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
+            background: i <= score ? fill : 'rgba(255,255,255,0.12)',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+function Check({ ok }: { ok: boolean }) {
+  return (
+    <span style={{ color: ok ? '#4ade80' : '#ef4444', fontWeight: 700, fontSize: 12 }}>
+      {ok ? '✓' : '✗'}
+    </span>
+  )
+}
+
+function SqBadge({ state }: { state: string | null }) {
+  if (!state) return <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>
+  const color = SQ_DOT[state] ?? '#64748b'
+  const label = SQ_LABEL[state] ?? state
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 700,
+      letterSpacing: '0.06em', background: `${color}25`, color,
+    }}>
+      <span style={{
+        width: 5, height: 5, borderRadius: '50%',
+        background: color, display: 'inline-block', flexShrink: 0,
+      }} />
+      {label}
+    </span>
+  )
+}
+
+function MoBadge({ state }: { state: string | null | undefined }) {
+  if (!state) return null
+  const color = MO_DOT[state] ?? '#64748b'
+  const labels: Record<string, string> = {
+    POS_UP: '▲+', POS_DN: '▼+', NEG_DN: '▼−', NEG_UP: '▲−',
+  }
+  return (
+    <span style={{ color, fontWeight: 700, fontSize: 10 }}>
+      {labels[state] ?? state}
+    </span>
+  )
+}
+
+// ── Segmented button ──────────────────────────────────────────────────────────
+
+type DirFilter   = 'ALL' | 'LONG' | 'SHORT'
+type ScoreFilter = 0 | 3 | 4 | 5
+
+function Seg<T extends string | number>({
+  value, options, labels, onChange,
+}: {
+  value: T
+  options: T[]
+  labels?: Record<string, string>
+  onChange: (v: T) => void
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 3 }}>
+      {options.map(opt => {
+        const active = opt === value
+        return (
+          <button
+            key={String(opt)}
+            onClick={() => onChange(opt)}
+            style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+              padding: '3px 9px', borderRadius: 5, cursor: 'pointer',
+              background: active ? 'var(--accent-blue)' : 'rgba(255,255,255,0.04)',
+              border:     active ? '1px solid var(--accent-blue)' : '1px solid var(--border)',
+              color:      active ? '#fff' : 'var(--text-dim)',
+              transition: 'all 0.12s',
+            }}
+          >
+            {labels ? labels[String(opt)] : String(opt)}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
+const TH: React.CSSProperties = {
+  padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700,
+  letterSpacing: '0.07em', color: 'var(--text-dim)',
+  borderBottom: '1px solid var(--border)',
+  position: 'sticky', top: 0, background: 'var(--bg-panel)', zIndex: 1,
+  whiteSpace: 'nowrap',
+}
+const TD: React.CSSProperties = {
+  padding: '5px 10px', fontSize: 11,
+  borderBottom: '1px solid rgba(255,255,255,0.03)',
+  whiteSpace: 'nowrap',
+}
+
+export default function SwingScanner() {
+  const [data, setData]         = useState<ScanResponse | null>(null)
+  const [loading, setLoading]   = useState(false)
+  const [dirFilter, setDir]     = useState<DirFilter>('ALL')
+  const [minScore, setScore]    = useState<ScoreFilter>(0)
+  const [sqOnly, setSqOnly]     = useState(false)
+  const [error, setError]       = useState<string | null>(null)
+
+  const load = useCallback(async (forceRefresh = false) => {
+    setLoading(true)
+    setError(null)
+    try {
+      if (forceRefresh) {
+        await fetch(`${API_URL}/api/swing-scan/refresh`, { method: 'POST' })
+      }
+      const r = await fetch(`${API_URL}/api/swing-scan`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const d = await r.json() as ScanResponse
+      setData(d)
+    } catch (e) {
+      setError('Failed to load scan results')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const rows = (data?.rows ?? []).filter(r => {
+    if (dirFilter !== 'ALL' && r.direction !== dirFilter) return false
+    if (r.score < minScore) return false
+    if (sqOnly && r.d_sq_state === 'FIRED' && !r.d_bars_fired) return false
+    return true
+  })
+
+  const longCount  = (data?.rows ?? []).filter(r => r.direction === 'LONG').length
+  const shortCount = (data?.rows ?? []).filter(r => r.direction === 'SHORT').length
+
+  return (
+    <div style={{
+      height: '100vh', display: 'flex', flexDirection: 'column',
+      background: 'var(--bg-base)', color: 'var(--text-primary)',
+    }}>
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
+        borderBottom: '1px solid var(--border)', background: 'var(--bg-panel)',
+        flexShrink: 0, flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 4 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.05em', color: 'var(--text-primary)' }}>
+            SWING SCANNER
+          </span>
+          {data && (
+            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+              {data.count} symbols
+              {data.cached && <span> · cached {data.age_s}s ago</span>}
+            </span>
+          )}
+        </div>
+
+        {/* Direction summary */}
+        {data && (
+          <div style={{ display: 'flex', gap: 8, fontSize: 10, fontWeight: 700 }}>
+            <span style={{ color: '#4ade80' }}>▲ {longCount} LONG</span>
+            <span style={{ color: '#f87171' }}>▼ {shortCount} SHORT</span>
+          </div>
+        )}
+
+        <div style={{ flex: 1 }} />
+
+        {/* Filters */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Seg<DirFilter>
+            value={dirFilter}
+            options={['ALL', 'LONG', 'SHORT']}
+            onChange={setDir}
+          />
+          <Seg<ScoreFilter>
+            value={minScore}
+            options={[0, 3, 4, 5]}
+            labels={{ '0': 'All', '3': '3+', '4': '4+', '5': '5★' }}
+            onChange={setScore}
+          />
+          <button
+            onClick={() => setSqOnly(v => !v)}
+            style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+              padding: '3px 9px', borderRadius: 5, cursor: 'pointer',
+              background: sqOnly ? 'rgba(192,38,211,0.25)' : 'rgba(255,255,255,0.04)',
+              border: sqOnly ? '1px solid #c026d3' : '1px solid var(--border)',
+              color: sqOnly ? '#e879f9' : 'var(--text-dim)',
+              transition: 'all 0.12s',
+            }}
+          >
+            IN SQZ
+          </button>
+          <button
+            onClick={() => load(true)}
+            disabled={loading}
+            style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+              padding: '3px 9px', borderRadius: 5, cursor: loading ? 'wait' : 'pointer',
+              background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)',
+              color: loading ? 'var(--text-dim)' : 'var(--text-primary)',
+              transition: 'all 0.12s',
+            }}
+          >
+            {loading ? 'SCANNING…' : '↺ REFRESH'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Error ──────────────────────────────────────────────────────────── */}
+      {error && (
+        <div style={{ padding: 16, color: '#f87171', fontSize: 12 }}>{error}</div>
+      )}
+
+      {/* ── Loading state ──────────────────────────────────────────────────── */}
+      {loading && !data && (
+        <div style={{
+          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flexDirection: 'column', gap: 12,
+        }}>
+          <div style={{
+            width: 32, height: 32, border: '2px solid var(--border)',
+            borderTopColor: 'var(--accent-blue)', borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+          }} />
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+            Scanning 161 symbols…
+          </span>
+        </div>
+      )}
+
+      {/* ── Table ──────────────────────────────────────────────────────────── */}
+      {data && (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr>
+                <th style={{ ...TH, paddingLeft: 16 }}>TICKER</th>
+                <th style={{ ...TH, textAlign: 'right' }}>PRICE</th>
+                <th style={TH}>DIR</th>
+                <th style={TH}>SCORE</th>
+                <th style={TH}>SQZ D</th>
+                <th style={{ ...TH, textAlign: 'center' }}>W</th>
+                <th style={{ ...TH, textAlign: 'center' }}>M</th>
+                <th style={TH}>MOMO</th>
+                <th style={{ ...TH, textAlign: 'center' }}>SMA50</th>
+                <th style={{ ...TH, textAlign: 'center' }}>EMA</th>
+                <th style={TH}>MOXIE</th>
+                <th style={TH}>LAGR</th>
+                <th style={TH}>VA</th>
+                <th style={{ ...TH, textAlign: 'right' }}>VAW</th>
+                <th style={{ ...TH, textAlign: 'right' }}>VAM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const isLong = r.direction === 'LONG'
+                const dirColor = isLong ? '#4ade80' : '#f87171'
+                const rowBg = r.score >= 4
+                  ? (isLong ? 'rgba(74,222,128,0.04)' : 'rgba(248,113,113,0.04)')
+                  : 'transparent'
+
+                return (
+                  <tr
+                    key={r.ticker}
+                    style={{ background: rowBg }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-row)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = rowBg)}
+                  >
+                    {/* Ticker */}
+                    <td style={{ ...TD, paddingLeft: 16, fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
+                      {r.ticker}
+                    </td>
+
+                    {/* Price */}
+                    <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                      {r.price.toFixed(2)}
+                    </td>
+
+                    {/* Direction */}
+                    <td style={{ ...TD }}>
+                      <span style={{
+                        fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',
+                        color: dirColor, padding: '2px 6px', borderRadius: 3,
+                        background: `${dirColor}18`,
+                      }}>
+                        {r.direction}
+                      </span>
+                    </td>
+
+                    {/* Score */}
+                    <td style={TD}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <ScoreDots score={r.score} direction={r.direction} />
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, color: dirColor,
+                          fontFamily: 'monospace',
+                        }}>
+                          {r.score}/5
+                        </span>
+                      </div>
+                    </td>
+
+                    {/* Daily squeeze */}
+                    <td style={TD}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <SqBadge state={r.d_sq_state} />
+                        {r.d_bars_in_sq > 0 && (
+                          <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600 }}>
+                            {r.d_bars_in_sq}d
+                          </span>
+                        )}
+                        {r.d_sq_state === 'FIRED' && r.d_bars_fired != null && (
+                          <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 600 }}>
+                            +{r.d_bars_fired}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Weekly squeeze */}
+                    <td style={{ ...TD, textAlign: 'center' }}>
+                      {r.w_sq_state ? <SqBadge state={r.w_sq_state} /> : <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>}
+                    </td>
+
+                    {/* Monthly squeeze */}
+                    <td style={{ ...TD, textAlign: 'center' }}>
+                      {r.m_sq_state ? <SqBadge state={r.m_sq_state} /> : <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>}
+                    </td>
+
+                    {/* Momentum */}
+                    <td style={TD}>
+                      <MoBadge state={r.d_mo_state} />
+                    </td>
+
+                    {/* SMA50 */}
+                    <td style={{ ...TD, textAlign: 'center' }}>
+                      <Check ok={isLong ? r.price > r.sma50 : r.price < r.sma50} />
+                    </td>
+
+                    {/* EMA stack */}
+                    <td style={{ ...TD, textAlign: 'center' }}>
+                      <Check ok={isLong ? r.ema8 > r.ema21 : r.ema8 < r.ema21} />
+                    </td>
+
+                    {/* Moxie W */}
+                    <td style={TD}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <Check ok={isLong ? r.moxie_w > 0 : r.moxie_w < 0} />
+                        <span style={{
+                          fontSize: 10, color: r.moxie_w >= 0 ? '#22d3ee' : '#f87171',
+                          fontFamily: 'monospace',
+                        }}>
+                          {r.moxie_w >= 0 ? '+' : ''}{r.moxie_w.toFixed(2)}
+                        </span>
+                      </div>
+                    </td>
+
+                    {/* Laguerre RSI */}
+                    <td style={TD}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <Check ok={isLong ? r.laguerre > 0.5 : r.laguerre < 0.5} />
+                        <span style={{
+                          fontSize: 10, fontFamily: 'monospace',
+                          color: r.laguerre < 0.2 ? '#f87171'
+                               : r.laguerre > 0.8 ? '#fbbf24'
+                               : 'var(--text-muted)',
+                        }}>
+                          {r.laguerre.toFixed(3)}
+                        </span>
+                      </div>
+                    </td>
+
+                    {/* VA Badge */}
+                    <td style={TD}>
+                      {(() => {
+                        const s = VA_STYLE[r.va_badge] ?? VA_STYLE.NEUTRAL
+                        return (
+                          <span style={{
+                            fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                            padding: '2px 7px', borderRadius: 4,
+                            background: s.bg, color: s.color,
+                          }}>
+                            {r.va_badge}
+                          </span>
+                        )
+                      })()}
+                    </td>
+
+                    {/* VAW */}
+                    <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace' }}>
+                      <span style={{ color: r.vaw_m >= 0 ? '#4ade80' : '#f87171', fontSize: 10 }}>
+                        {r.vaw_m >= 0 ? '+' : ''}{r.vaw_m.toFixed(1)}M
+                      </span>
+                    </td>
+
+                    {/* VAM */}
+                    <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace' }}>
+                      <span style={{ color: r.vam_m >= 0 ? '#4ade80' : '#f87171', fontSize: 10 }}>
+                        {r.vam_m >= 0 ? '+' : ''}{r.vam_m.toFixed(1)}M
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+
+              {rows.length === 0 && !loading && (
+                <tr>
+                  <td colSpan={15} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 32 }}>
+                    No symbols match the current filters.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+    </div>
+  )
+}

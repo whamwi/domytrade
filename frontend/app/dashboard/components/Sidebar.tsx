@@ -212,6 +212,44 @@ export default function Sidebar({ activeTab = 'dashboard', focusMode = false, on
           </svg>
         </button>
 
+        {/* Swing Scanner nav item */}
+        <button
+          title="Swing Scanner"
+          className="flex items-center justify-center w-full rounded-lg py-2.5 transition-colors"
+          style={{
+            background: activeTab === 'swing' ? 'var(--accent-blue-dim)' : 'transparent',
+            color: activeTab === 'swing' ? 'var(--accent-blue)' : 'var(--text-muted)',
+          }}
+          onMouseEnter={(e) => {
+            if (activeTab !== 'swing') {
+              e.currentTarget.style.background = 'var(--bg-row)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeTab !== 'swing') {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-muted)'
+            }
+          }}
+          onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.set('tab', 'swing')
+            window.history.pushState({}, '', url)
+            window.dispatchEvent(new Event('popstate'))
+          }}
+        >
+          {/* Crosshair / scanner icon */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="8" />
+            <line x1="12" y1="2" x2="12" y2="6" />
+            <line x1="12" y1="18" x2="12" y2="22" />
+            <line x1="2" y1="12" x2="6" y2="12" />
+            <line x1="18" y1="12" x2="22" y2="12" />
+            <circle cx="12" cy="12" r="2" fill="currentColor" />
+          </svg>
+        </button>
+
         {/* Settings nav item */}
         <button
           title="Settings"
