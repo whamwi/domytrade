@@ -5134,6 +5134,13 @@ def _compute_gex(symbol: str, strike_count: int = 60, vix: float | None = None) 
     layer_exnext  = _summarize_layer(c_exnext,  p_exnext,  spot, include_strike_rows=True)
     layer_monthly = _summarize_layer(c_monthly, p_monthly, spot, include_strike_rows=True)
 
+    # ── Re-stamp strike row flags to match OI-based walls ────────────────────
+    # _summarize_layer sets is_call_wall/is_put_wall from GEX; override them so
+    # the bar chart highlights the same strikes as the top-level call_wall/put_wall.
+    for _row in layer_all.get('strikes', []):
+        _row['is_call_wall'] = (_call_wall is not None and _row['strike'] == _call_wall)
+        _row['is_put_wall']  = (_put_wall  is not None and _row['strike'] == _put_wall)
+
     # ── Expected 1-day move from ATM IV ───────────────────────────────────────
     expected_move_pct: float | None = None
     try:
