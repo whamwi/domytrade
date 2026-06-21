@@ -479,13 +479,13 @@ export default function SwingScanner() {
                 }}>
                   SQUEEZE MATRIX
                 </th>
-                {/* Stacked MAs — single merged column */}
-                <th style={{
-                  ...TH, textAlign: 'center', borderBottom: 'none',
+                {/* Stacked MAs group */}
+                <th colSpan={2} style={{
+                  ...TH, textAlign: 'center', borderBottom: '1px solid var(--border)',
                   letterSpacing: '0.1em', color: 'var(--text-muted)',
                   borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-                }} rowSpan={2}>
-                  MAs
+                }}>
+                  STACKED MAs
                 </th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>MOXIE W</th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>LAGR</th>
@@ -493,7 +493,7 @@ export default function SwingScanner() {
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAW</th>
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAM</th>
               </tr>
-              {/* ── Sub-row for squeeze TFs ── */}
+              {/* ── Sub-row for squeeze TFs + MA levels ── */}
               <tr>
                 <th style={{
                   ...TH, textAlign: 'center', fontSize: 9,
@@ -504,6 +504,14 @@ export default function SwingScanner() {
                   ...TH, textAlign: 'center', fontSize: 9,
                   borderRight: '1px solid var(--border)',
                 }}>M</th>
+                <th style={{
+                  ...TH, textAlign: 'center', fontSize: 9,
+                  borderLeft: '1px solid var(--border)',
+                }}>50</th>
+                <th style={{
+                  ...TH, textAlign: 'center', fontSize: 9,
+                  borderRight: '1px solid var(--border)',
+                }}>8/21</th>
               </tr>
             </thead>
             <tbody>
@@ -583,12 +591,14 @@ export default function SwingScanner() {
                       <SqCell state={r.m_sq_state} moState={r.m_mo_state} bars={r.m_bars_in_sq} fired={r.m_bars_fired} justFired={r.m_just_fired} tf="M" />
                     </td>
 
-                    {/* Stacked MAs — SMA50 · EMA8/21 */}
-                    <td style={{ ...TD, textAlign: 'center', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)' }}>
-                      <span style={{ display: 'inline-flex', gap: 3 }}>
-                        <Triangle above={r.price > r.sma50} />
-                        <Triangle above={r.ema8 > r.ema21} />
-                      </span>
+                    {/* SMA50 */}
+                    <td style={{ ...TD, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
+                      <Triangle above={r.price > r.sma50} />
+                    </td>
+
+                    {/* EMA stack */}
+                    <td style={{ ...TD, textAlign: 'center', borderRight: '1px solid var(--border)' }}>
+                      <Triangle above={r.ema8 > r.ema21} />
                     </td>
 
                     {/* Moxie W */}
