@@ -283,14 +283,14 @@ function Seg<T extends string | number>({
 // ── Main component ────────────────────────────────────────────────────────────
 
 const TH: React.CSSProperties = {
-  padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700,
+  padding: '5px 7px', textAlign: 'left', fontSize: 10, fontWeight: 700,
   letterSpacing: '0.07em', color: 'var(--text-dim)',
   borderBottom: '1px solid var(--border)',
   position: 'sticky', top: 0, background: 'var(--bg-panel)', zIndex: 1,
   whiteSpace: 'nowrap',
 }
 const TD: React.CSSProperties = {
-  padding: '5px 10px', fontSize: 11,
+  padding: '4px 7px', fontSize: 11,
   borderBottom: '1px solid rgba(255,255,255,0.03)',
   whiteSpace: 'nowrap',
 }
@@ -479,15 +479,21 @@ export default function SwingScanner() {
                 }}>
                   SQUEEZE MATRIX
                 </th>
-                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>SMA50</th>
-                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>EMA</th>
+                {/* Stacked MAs group */}
+                <th colSpan={2} style={{
+                  ...TH, textAlign: 'center', borderBottom: '1px solid var(--border)',
+                  letterSpacing: '0.1em', color: 'var(--text-muted)',
+                  borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+                }}>
+                  STACKED MAs
+                </th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>MOXIE W</th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>LAGR</th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>VA</th>
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAW</th>
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAM</th>
               </tr>
-              {/* ── Sub-row for squeeze TFs ── */}
+              {/* ── Sub-row for squeeze TFs + MA levels ── */}
               <tr>
                 <th style={{
                   ...TH, textAlign: 'center', fontSize: 9,
@@ -498,6 +504,14 @@ export default function SwingScanner() {
                   ...TH, textAlign: 'center', fontSize: 9,
                   borderRight: '1px solid var(--border)',
                 }}>M</th>
+                <th style={{
+                  ...TH, textAlign: 'center', fontSize: 9,
+                  borderLeft: '1px solid var(--border)',
+                }}>50</th>
+                <th style={{
+                  ...TH, textAlign: 'center', fontSize: 9,
+                  borderRight: '1px solid var(--border)',
+                }}>8/21</th>
               </tr>
             </thead>
             <tbody>
@@ -578,12 +592,12 @@ export default function SwingScanner() {
                     </td>
 
                     {/* SMA50 */}
-                    <td style={{ ...TD, textAlign: 'center' }}>
+                    <td style={{ ...TD, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
                       <Triangle above={r.price > r.sma50} />
                     </td>
 
                     {/* EMA stack */}
-                    <td style={{ ...TD, textAlign: 'center' }}>
+                    <td style={{ ...TD, textAlign: 'center', borderRight: '1px solid var(--border)' }}>
                       <Triangle above={r.ema8 > r.ema21} />
                     </td>
 
