@@ -151,6 +151,14 @@ function Check({ ok }: { ok: boolean }) {
   )
 }
 
+function Triangle({ above }: { above: boolean }) {
+  return (
+    <span style={{ color: above ? '#4ade80' : '#ef4444', fontSize: 13, lineHeight: 1 }}>
+      {above ? '▲' : '▼'}
+    </span>
+  )
+}
+
 // Squeeze cell — mirrors squeezesetups.com .sqzd-cell layout:
 //   [dot  ▲/▼]   ← cell-row
 //      25         ← cell-bars mono
@@ -571,12 +579,12 @@ export default function SwingScanner() {
 
                     {/* SMA50 */}
                     <td style={{ ...TD, textAlign: 'center' }}>
-                      <Check ok={isLong ? r.price > r.sma50 : r.price < r.sma50} />
+                      <Triangle above={r.price > r.sma50} />
                     </td>
 
                     {/* EMA stack */}
                     <td style={{ ...TD, textAlign: 'center' }}>
-                      <Check ok={isLong ? r.ema8 > r.ema21 : r.ema8 < r.ema21} />
+                      <Triangle above={r.ema8 > r.ema21} />
                     </td>
 
                     {/* Moxie W */}
