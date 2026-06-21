@@ -2,6 +2,15 @@
 
 import { useEffect, useState, useCallback } from 'react'
 
+const PULSE_STYLE = `
+@keyframes sqz-first-fire {
+  0%   { box-shadow: 0 0 0 0 rgba(74,222,128,0.9), 0 0 6px rgba(74,222,128,0.6); }
+  60%  { box-shadow: 0 0 0 7px rgba(74,222,128,0), 0 0 10px rgba(74,222,128,0.3); }
+  100% { box-shadow: 0 0 0 0 rgba(74,222,128,0),   0 0 6px rgba(74,222,128,0.6); }
+}
+.sqz-first-fire { animation: sqz-first-fire 1.4s ease-out infinite; }
+`
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -21,12 +30,20 @@ interface SwingRow {
   d_momo: number | null
   d_bars_in_sq: number
   d_bars_fired: number | null
+  d_just_fired: boolean
   // Weekly / Monthly squeeze
   w_sq_state: string | null
+  w_mo_state: string | null
   w_confirms: boolean
   w_bars_in_sq: number
+  w_bars_fired: number | null
+  w_just_fired: boolean
   m_sq_state: string | null
+  m_mo_state: string | null
   m_confirms: boolean
+  m_bars_in_sq: number
+  m_bars_fired: number | null
+  m_just_fired: boolean
   // Indicator values
   sma50: number
   ema8: number
@@ -58,12 +75,13 @@ type UniverseFilter = 'ALL' | 'EQUITIES' | 'SECTORS'
 // ── Style maps ────────────────────────────────────────────────────────────────
 
 // Squeeze dot colors — match TOS SqueezePRO palette
-// PRE (slow) = orange  ORIG (normal) = red  EXTRA (fast) = near-black  FIRED = green
+// _IN  = tightening (squeeze building)   _OUT = loosening (about to fire)
+// PRE_IN=pink  PRE_OUT=yellow  ORIG=red  EXTRA=yellow  FIRED=green
 const SQ_COLOR: Record<string, string> = {
-  EXTRA_IN: '#ffffff', EXTRA_OUT: '#ffffff',
-  ORIG_IN:  '#dc2626', ORIG_OUT:  '#dc2626',
-  PRE_IN:   '#f97316', PRE_OUT:   '#f97316',
-  FIRED:    '#16a34a',
+  EXTRA_IN:  '#eab308', EXTRA_OUT: '#eab308',
+  ORIG_IN:   '#dc2626', ORIG_OUT:  '#dc2626',
+  PRE_IN:    '#ec4899', PRE_OUT:   '#eab308',
+  FIRED:     '#16a34a',
 }
 
 // Momentum arrow color
@@ -72,11 +90,14 @@ const MO_COLOR: Record<string, string> = {
   NEG_DN: '#dc2626', NEG_UP: '#fbbf24',
 }
 
-const VA_STYLE: Record<string, { bg: string; color: string }> = {
+const VA_STYLE: Record<string, { bg: string; color: string; label?: string }> = {
   ACCUM:    { bg: 'rgba(74,222,128,0.15)',  color: '#4ade80' },
   DIST:     { bg: 'rgba(248,113,113,0.15)', color: '#f87171' },
-  'CHURN↑': { bg: 'rgba(251,191,36,0.15)',  color: '#fbbf24' },
-  'CHURN↓': { bg: 'rgba(249,115,22,0.15)',  color: '#f97316' },
+  // Legacy keys with ↑↓ arrows from DB — normalize to ▲▼ for display
+  'CHURN↑': { bg: 'rgba(251,191,36,0.15)',  color: '#fbbf24', label: 'CHURN▲' },
+  'CHURN↓': { bg: 'rgba(249,115,22,0.15)',  color: '#f97316', label: 'CHURN▼' },
+  'CHURN▲': { bg: 'rgba(251,191,36,0.15)',  color: '#fbbf24' },
+  'CHURN▼': { bg: 'rgba(249,115,22,0.15)',  color: '#f97316' },
   NEUTRAL:  { bg: 'rgba(148,163,184,0.08)', color: '#94a3b8' },
 }
 
@@ -84,9 +105,9 @@ const VA_STYLE: Record<string, { bg: string; color: string }> = {
 
 function Legend() {
   const items: { color: string; label: string }[] = [
-    { color: '#f97316', label: 'Slow squeeze' },
+    { color: '#ec4899', label: 'Slow (building)' },
+    { color: '#eab308', label: 'Slow (loosening) / Fast' },
     { color: '#dc2626', label: 'Normal' },
-    { color: '#ffffff', label: 'Fast' },
     { color: '#16a34a', label: 'Fired' },
   ]
   return (
@@ -101,7 +122,7 @@ function Legend() {
         <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
           <span style={{
             width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0,
-            border: color === '#ffffff' ? '1px solid #555' : 'none',
+            border: 'none',
           }} />
           {label}
         </span>
@@ -122,20 +143,6 @@ function Legend() {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function ScoreDots({ score, direction }: { score: number; direction: 'LONG' | 'SHORT' }) {
-  const fill = direction === 'LONG' ? '#4ade80' : '#f87171'
-  return (
-    <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-      {[1, 2, 3, 4, 5].map(i => (
-        <span key={i} style={{
-          width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
-          background: i <= score ? fill : 'rgba(255,255,255,0.12)',
-        }} />
-      ))}
-    </div>
-  )
-}
-
 function Check({ ok }: { ok: boolean }) {
   return (
     <span style={{ color: ok ? '#4ade80' : '#ef4444', fontWeight: 700, fontSize: 12 }}>
@@ -144,41 +151,86 @@ function Check({ ok }: { ok: boolean }) {
   )
 }
 
-// Squeeze cell: colored dot + momentum arrow stacked, bar count below
-function SqCell({ state, moState, bars, fired }: {
+// Squeeze cell — mirrors squeezesetups.com .sqzd-cell layout:
+//   [dot  ▲/▼]   ← cell-row
+//      25         ← cell-bars mono
+function SqCell({ state, moState, bars, fired, justFired, tf }: {
   state: string | null
   moState?: string | null
   bars?: number
   fired?: number | null
+  justFired?: boolean
+  tf?: 'D' | 'W' | 'M'
 }) {
   if (!state) return <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>
 
-  const dotColor = SQ_COLOR[state] ?? '#64748b'
-  const moColor  = moState ? (MO_COLOR[moState] ?? '#64748b') : null
-  const isUp     = moState === 'POS_UP' || moState === 'NEG_UP'
-  const isFired  = state === 'FIRED'
+  const dotColor   = SQ_COLOR[state] ?? '#64748b'
+  const moColor    = moState ? (MO_COLOR[moState] ?? '#64748b') : null
+  const isUp       = moState === 'POS_UP' || moState === 'NEG_UP'
+  const isFired    = state === 'FIRED'
+  // Flash ⚡ window: daily = just_fired or bars=2 (covers weekend gap); weekly/monthly = just_fired only
+  const recentFire = tf === 'D'
+    ? (justFired || fired === 2)
+    : justFired
+  const showFlash  = isFired && moState === 'POS_UP' && recentFire
+  const barLabel   = showFlash ? '⚡' : isFired && fired != null ? `+${fired}` : (bars || '')
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
-      {/* Dot + arrow row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-        <span style={{
-          width: 11, height: 11, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
-          background: dotColor,
-          border: dotColor === '#ffffff' ? '1px solid #555' : 'none',
-          boxShadow: isFired ? `0 0 5px ${dotColor}88` : 'none',
-        }} />
+    <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      {/* cell-row: dot + arrow */}
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <span
+          className={justFired ? 'sqz-first-fire' : undefined}
+          style={{
+            width: 12, height: 12, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
+            background: dotColor,
+            border: 'none',
+            boxShadow: isFired ? `0 0 ${showFlash ? 8 : 5}px ${dotColor}${showFlash ? 'cc' : '88'}` : 'none',
+          }}
+        />
         {moColor && (
-          <span style={{ color: moColor, fontSize: 9, fontWeight: 800, lineHeight: 1 }}>
+          <span style={{
+            color: moColor, fontSize: 10, fontWeight: 900, lineHeight: 1,
+            fontFamily: 'monospace',
+          }}>
             {isUp ? '▲' : '▼'}
           </span>
         )}
-      </div>
-      {/* Bar count */}
-      <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600, lineHeight: 1 }}>
-        {isFired && fired != null ? `+${fired}` : bars ? bars : ''}
       </span>
+      {/* cell-bars mono */}
+      {barLabel !== '' && (
+        <span style={{
+          fontSize: showFlash ? 11 : 10,
+          fontWeight: 700,
+          fontFamily: showFlash ? 'inherit' : 'monospace',
+          color: showFlash ? '#4ade80' : isFired ? '#86efac' : 'var(--text-muted)',
+          lineHeight: 1,
+        }}>
+          {barLabel}
+        </span>
+      )}
     </div>
+  )
+}
+
+// Score pill — hot badge like .sqzd-tfs.hot when score=5
+function ScorePill({ score, direction }: { score: number; direction: 'LONG' | 'SHORT' }) {
+  const isHot  = score >= 5
+  const isWarm = score === 4
+  const fill   = direction === 'LONG' ? '#4ade80' : '#f87171'
+  const bg     = isHot  ? (direction === 'LONG' ? '#14532d' : '#7f1d1d')
+               : isWarm ? 'rgba(255,255,255,0.08)'
+               : 'rgba(255,255,255,0.04)'
+  const color  = isHot ? fill : isWarm ? fill : 'var(--text-dim)'
+  const border = isHot ? `1px solid ${fill}55` : '1px solid var(--border)'
+  return (
+    <span style={{
+      display: 'inline-block', fontFamily: 'monospace', fontWeight: 800,
+      fontSize: 11, padding: '3px 9px', borderRadius: 6,
+      background: bg, color, border, letterSpacing: '0.04em',
+    }}>
+      {score}/5
+    </span>
   )
 }
 
@@ -241,6 +293,7 @@ export default function SwingScanner() {
   const [dirFilter, setDir]       = useState<DirFilter>('ALL')
   const [minScore, setScore]      = useState<ScoreFilter>(0)
   const [sqOnly, setSqOnly]       = useState(false)
+  const [fireOnly, setFireOnly]   = useState(false)
   const [universe, setUniverse]   = useState<UniverseFilter>('ALL')
   const [error, setError]         = useState<string | null>(null)
 
@@ -259,29 +312,6 @@ export default function SwingScanner() {
     }
   }, [])
 
-  const triggerRescan = useCallback(async () => {
-    setError(null)
-    try {
-      await fetch(`${API_URL}/api/swing-scan/refresh`, { method: 'POST' })
-      // Poll until scanned_at changes (rescan takes ~60s)
-      const prevAt = data?.scanned_at
-      let attempts = 0
-      const poll = setInterval(async () => {
-        attempts++
-        try {
-          const r = await fetch(`${API_URL}/api/swing-scan`)
-          const d = await r.json() as ScanResponse
-          if (d.scanned_at !== prevAt || attempts > 18) {
-            clearInterval(poll)
-            setData(d)
-          }
-        } catch { clearInterval(poll) }
-      }, 5000)
-    } catch (e) {
-      setError('Failed to trigger rescan')
-    }
-  }, [data])
-
   useEffect(() => { load() }, [load])
 
   const rows = (data?.rows ?? []).filter(r => {
@@ -290,6 +320,19 @@ export default function SwingScanner() {
     if (dirFilter !== 'ALL' && r.direction !== dirFilter) return false
     if (r.score < minScore) return false
     if (sqOnly && r.d_sq_state === 'FIRED' && !r.d_bars_fired) return false
+    if (fireOnly) {
+      // Fresh FIRE signal per timeframe:
+      //   Daily  — fired last trading day (just_fired OR bars_fired=2, covers weekend gap)
+      //   Weekly — fired this past week (just_fired only)
+      //   Monthly — fired this past month (just_fired only)
+      const NEG = new Set(['NEG_DN', 'NEG_UP'])
+      const wOk = !NEG.has(r.w_mo_state ?? '')
+      const mOk = !NEG.has(r.m_mo_state ?? '')
+      const dFire = (r.d_just_fired || r.d_bars_fired === 2) && r.d_mo_state === 'POS_UP'
+      const wFire = r.w_just_fired && r.w_mo_state === 'POS_UP'
+      const mFire = r.m_just_fired && r.m_mo_state === 'POS_UP'
+      if (!(( dFire || wFire || mFire) && wOk && mOk)) return false
+    }
     return true
   })
 
@@ -369,18 +412,18 @@ export default function SwingScanner() {
             IN SQZ
           </button>
           <button
-            onClick={triggerRescan}
-            disabled={loading}
-            title="Trigger a full rescan (~60s) — runs automatically at 5:15 PM ET"
+            onClick={() => setFireOnly(v => !v)}
+            title="Show only tickers where a squeeze fired for the first time today (any timeframe)"
             style={{
               fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
-              padding: '3px 9px', borderRadius: 5, cursor: loading ? 'wait' : 'pointer',
-              background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)',
-              color: loading ? 'var(--text-dim)' : 'var(--text-primary)',
+              padding: '3px 9px', borderRadius: 5, cursor: 'pointer',
+              background: fireOnly ? 'rgba(74,222,128,0.2)' : 'rgba(255,255,255,0.04)',
+              border: fireOnly ? '1px solid #4ade80' : '1px solid var(--border)',
+              color: fireOnly ? '#4ade80' : 'var(--text-dim)',
               transition: 'all 0.12s',
             }}
           >
-            ↺ RESCAN
+            ⚡ 1ST FIRE
           </button>
         </div>
       </div>
@@ -484,28 +527,24 @@ export default function SwingScanner() {
                       </div>
                     </td>
 
-                    {/* Direction */}
+                    {/* Direction — status-pill style */}
                     <td style={{ ...TD }}>
                       <span style={{
-                        fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',
-                        color: dirColor, padding: '2px 6px', borderRadius: 3,
-                        background: `${dirColor}18`,
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+                        fontFamily: 'monospace',
+                        color: dirColor,
+                        padding: '3px 8px', borderRadius: 20,
+                        background: `${dirColor}15`,
+                        border: `1px solid ${dirColor}40`,
                       }}>
-                        {r.direction}
+                        {isLong ? '▲' : '▼'} {r.direction}
                       </span>
                     </td>
 
-                    {/* Score */}
+                    {/* Score — hot pill like .sqzd-tfs.hot */}
                     <td style={TD}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <ScoreDots score={r.score} direction={r.direction} />
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, color: dirColor,
-                          fontFamily: 'monospace',
-                        }}>
-                          {r.score}/5
-                        </span>
-                      </div>
+                      <ScorePill score={r.score} direction={r.direction} />
                     </td>
 
                     {/* Daily squeeze */}
@@ -515,17 +554,19 @@ export default function SwingScanner() {
                         moState={r.d_mo_state}
                         bars={r.d_bars_in_sq}
                         fired={r.d_bars_fired}
+                        justFired={r.d_just_fired}
+                        tf="D"
                       />
                     </td>
 
                     {/* Weekly squeeze */}
                     <td style={{ ...TD, textAlign: 'center' }}>
-                      <SqCell state={r.w_sq_state} bars={r.w_bars_in_sq} />
+                      <SqCell state={r.w_sq_state} moState={r.w_mo_state} bars={r.w_bars_in_sq} fired={r.w_bars_fired} justFired={r.w_just_fired} tf="W" />
                     </td>
 
                     {/* Monthly squeeze */}
                     <td style={{ ...TD, textAlign: 'center', borderRight: '1px solid var(--border)' }}>
-                      <SqCell state={r.m_sq_state} />
+                      <SqCell state={r.m_sq_state} moState={r.m_mo_state} bars={r.m_bars_in_sq} fired={r.m_bars_fired} justFired={r.m_just_fired} tf="M" />
                     </td>
 
                     {/* SMA50 */}
@@ -566,17 +607,20 @@ export default function SwingScanner() {
                       </div>
                     </td>
 
-                    {/* VA Badge */}
+                    {/* VA Badge — mp-chip pill style */}
                     <td style={TD}>
                       {(() => {
                         const s = VA_STYLE[r.va_badge] ?? VA_STYLE.NEUTRAL
                         return (
                           <span style={{
-                            fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                            padding: '2px 7px', borderRadius: 4,
+                            fontSize: 9, fontWeight: 700, letterSpacing: '0.05em',
+                            fontFamily: 'monospace',
+                            padding: '3px 8px', borderRadius: 20,
                             background: s.bg, color: s.color,
+                            border: `1px solid ${s.color}40`,
+                            display: 'inline-block',
                           }}>
-                            {r.va_badge}
+                            {s.label ?? r.va_badge}
                           </span>
                         )
                       })()}
@@ -613,6 +657,7 @@ export default function SwingScanner() {
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        ${PULSE_STYLE}
       `}</style>
     </div>
   )
