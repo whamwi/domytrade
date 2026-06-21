@@ -505,11 +505,11 @@ export default function SwingScanner() {
                   borderRight: '1px solid var(--border)',
                 }}>M</th>
                 <th style={{
-                  ...TH, textAlign: 'center', fontSize: 9,
+                  ...TH, textAlign: 'center', fontSize: 9, padding: '5px 4px', width: 28,
                   borderLeft: '1px solid var(--border)',
                 }}>50</th>
                 <th style={{
-                  ...TH, textAlign: 'center', fontSize: 9,
+                  ...TH, textAlign: 'center', fontSize: 9, padding: '5px 4px', width: 28,
                   borderRight: '1px solid var(--border)',
                 }}>8/21</th>
               </tr>
@@ -592,12 +592,12 @@ export default function SwingScanner() {
                     </td>
 
                     {/* SMA50 */}
-                    <td style={{ ...TD, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
+                    <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 28, borderLeft: '1px solid var(--border)' }}>
                       <Triangle above={r.price > r.sma50} />
                     </td>
 
                     {/* EMA stack */}
-                    <td style={{ ...TD, textAlign: 'center', borderRight: '1px solid var(--border)' }}>
+                    <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 28, borderRight: '1px solid var(--border)' }}>
                       <Triangle above={r.ema8 > r.ema21} />
                     </td>
 
