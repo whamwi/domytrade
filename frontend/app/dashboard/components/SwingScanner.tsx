@@ -41,9 +41,8 @@ interface SwingRow {
 
 interface ScanResponse {
   rows: SwingRow[]
-  cached: boolean
-  age_s: number
   count: number
+  scanned_at: string | null
 }
 
 // ── Style maps ────────────────────────────────────────────────────────────────
@@ -195,13 +194,10 @@ export default function SwingScanner() {
   const [sqOnly, setSqOnly]     = useState(false)
   const [error, setError]       = useState<string | null>(null)
 
-  const load = useCallback(async (forceRefresh = false) => {
+  const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      if (forceRefresh) {
-        await fetch(`${API_URL}/api/swing-scan/refresh`, { method: 'POST' })
-      }
       const r = await fetch(`${API_URL}/api/swing-scan`)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const d = await r.json() as ScanResponse
@@ -212,6 +208,29 @@ export default function SwingScanner() {
       setLoading(false)
     }
   }, [])
+
+  const triggerRescan = useCallback(async () => {
+    setError(null)
+    try {
+      await fetch(`${API_URL}/api/swing-scan/refresh`, { method: 'POST' })
+      // Poll until scanned_at changes (rescan takes ~60s)
+      const prevAt = data?.scanned_at
+      let attempts = 0
+      const poll = setInterval(async () => {
+        attempts++
+        try {
+          const r = await fetch(`${API_URL}/api/swing-scan`)
+          const d = await r.json() as ScanResponse
+          if (d.scanned_at !== prevAt || attempts > 18) {
+            clearInterval(poll)
+            setData(d)
+          }
+        } catch { clearInterval(poll) }
+      }, 5000)
+    } catch (e) {
+      setError('Failed to trigger rescan')
+    }
+  }, [data])
 
   useEffect(() => { load() }, [load])
 
@@ -244,7 +263,12 @@ export default function SwingScanner() {
           {data && (
             <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
               {data.count} symbols
-              {data.cached && <span> · cached {data.age_s}s ago</span>}
+              {data.scanned_at && (
+                <span> · scanned {new Date(data.scanned_at).toLocaleString('en-US', {
+                  month: 'short', day: 'numeric',
+                  hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+                })}</span>
+              )}
             </span>
           )}
         </div>
@@ -286,8 +310,9 @@ export default function SwingScanner() {
             IN SQZ
           </button>
           <button
-            onClick={() => load(true)}
+            onClick={triggerRescan}
             disabled={loading}
+            title="Trigger a full rescan (~60s) — runs automatically at 5:15 PM ET"
             style={{
               fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
               padding: '3px 9px', borderRadius: 5, cursor: loading ? 'wait' : 'pointer',
@@ -296,7 +321,7 @@ export default function SwingScanner() {
               transition: 'all 0.12s',
             }}
           >
-            {loading ? 'SCANNING…' : '↺ REFRESH'}
+            ↺ RESCAN
           </button>
         </div>
       </div>
@@ -362,8 +387,18 @@ export default function SwingScanner() {
                     onMouseLeave={e => (e.currentTarget.style.background = rowBg)}
                   >
                     {/* Ticker */}
-                    <td style={{ ...TD, paddingLeft: 16, fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
-                      {r.ticker}
+                    <td style={{ ...TD, paddingLeft: 16 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <img
+                          src={`https://img.logo.dev/ticker/${r.ticker}?token=pk_fZOnZkh3QrCkdBG6NS8ckQ&size=64&format=png&retina=true`}
+                          alt=""
+                          style={{ height: 20, width: 20, objectFit: 'contain', borderRadius: 4, flexShrink: 0 }}
+                          onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                        />
+                        <span style={{ fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
+                          {r.ticker}
+                        </span>
+                      </div>
                     </td>
 
                     {/* Price */}

@@ -340,7 +340,30 @@ def _scan_swing_ticker(ticker: str) -> dict | None:
     }
 
 
-def scan_swing(symbols: list[str] | None = None) -> list[dict]:
+def _persist_swing_results(rows: list[dict]) -> None:
+    """Upsert swing scan results into swing_scan_results table."""
+    from datetime import datetime, timezone
+    db      = get_db()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    upsert_rows = [{**r, 'scanned_at': now_iso} for r in rows]
+    db.table('swing_scan_results').upsert(
+        upsert_rows, on_conflict='ticker',
+    ).execute()
+
+
+def load_swing_results() -> list[dict]:
+    """Read persisted swing scan results from DB, sorted by score DESC -> d_bars_in_sq DESC."""
+    resp = (get_db()
+            .table('swing_scan_results')
+            .select('*')
+            .order('score', desc=True)
+            .execute())
+    rows = resp.data or []
+    rows.sort(key=lambda r: (r['score'], r.get('d_bars_in_sq', 0)), reverse=True)
+    return rows
+
+
+def scan_swing(symbols: list[str] | None = None, persist: bool = True) -> list[dict]:
     """
     Full swing trade scan across the universe.
 
@@ -349,6 +372,7 @@ def scan_swing(symbols: list[str] | None = None) -> list[dict]:
     Direction = whichever scores higher.  Appends VAW/VAM badge.
 
     Sorted by score DESC -> d_bars_in_sq DESC.
+    If persist=True (default), upserts results to swing_scan_results table.
     """
     db = get_db()
     if symbols is None:
@@ -365,6 +389,13 @@ def scan_swing(symbols: list[str] | None = None) -> list[dict]:
             pass
 
     results.sort(key=lambda r: (r['score'], r['d_bars_in_sq']), reverse=True)
+
+    if persist and results:
+        try:
+            _persist_swing_results(results)
+        except Exception:
+            pass
+
     return results
 
 

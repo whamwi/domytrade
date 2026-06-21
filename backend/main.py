@@ -2257,6 +2257,7 @@ async def background_loop():
     last_vbh_stocks_vbh_run = ''   # 'YYYY-MM-DD' of last Saturday VBH recompute for stocks
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
     last_archive_run        = ''   # 'YYYY-MM-DD' of last entry_log → archive move
+    last_swing_scan_run     = ''   # 'YYYY-MM-DD' of last 5:15 PM swing scan
     last_gex_baseline_run   = ''   # 'YYYY-MM-DD' of last successful GEX baseline (real OI)
     last_gex_baseline_ts    = 0.0  # epoch of last baseline attempt (for 5-min retry rate-limit)
     last_gex_stocks_run     = ''   # 'YYYY-MM-DD' of last 5:30 PM stock GEX snapshot
@@ -2375,6 +2376,16 @@ async def background_loop():
             if _et_hhmm == 16 * 60 + 30 and last_daily_close_run != _today:
                 asyncio.create_task(refresh_daily_candles(incremental=True))
                 last_daily_close_run = _today
+
+            # 5:15 PM ET on weekdays — swing scan (daily candles refreshed at 4:30 PM)
+            if _et_hhmm == 17 * 60 + 15 and last_swing_scan_run != _today and _weekday < 5:
+                try:
+                    from scanner import scan_swing
+                    asyncio.create_task(asyncio.to_thread(scan_swing))
+                    log.info('Swing scan started (nightly 5:15 PM ET)')
+                except Exception as e:
+                    log.warning('Swing scan error: %s', e)
+                last_swing_scan_run = _today
 
             # 5:00 PM ET — compact 1-min bars older than 2 days into 15-min bars
             if _et_hhmm == 17 * 60 and last_1min_agg_run != _today:
@@ -10826,52 +10837,25 @@ async def api_manual_trade(req: ManualTradeRequest):
 
 # ── Swing scanner ─────────────────────────────────────────────────────────────
 
-_swing_scan_cache: list | None = None
-_swing_scan_ts: float = 0.0
-_SWING_CACHE_TTL = 900  # 15 minutes
-
 @app.get('/api/swing-scan')
-async def api_swing_scan(symbols: str = Query(None)):
+async def api_swing_scan():
     """
-    Run the swing trade scanner across the universe (or a comma-separated
-    subset via ?symbols=AAPL,MSFT,...).
-
-    Full-universe results are cached for 15 minutes.
+    Return the latest persisted swing scan results from DB — always instant.
+    Results are refreshed nightly by the background scheduler at 5:15 PM ET.
     """
-    global _swing_scan_cache, _swing_scan_ts
-    from scanner import scan_swing
-
-    sym_list = [s.strip().upper() for s in symbols.split(',')] if symbols else None
-    now_ts   = time.time()
-
-    if (sym_list is None
-            and _swing_scan_cache is not None
-            and (now_ts - _swing_scan_ts) < _SWING_CACHE_TTL):
-        return {
-            'rows'    : _swing_scan_cache,
-            'cached'  : True,
-            'age_s'   : int(now_ts - _swing_scan_ts),
-            'count'   : len(_swing_scan_cache),
-        }
-
-    rows = await asyncio.to_thread(scan_swing, sym_list)
-
-    if sym_list is None:
-        _swing_scan_cache = rows
-        _swing_scan_ts    = now_ts
-
+    from scanner import load_swing_results
+    rows = await asyncio.to_thread(load_swing_results)
+    scanned_at = rows[0].get('scanned_at') if rows else None
     return {
-        'rows'  : rows,
-        'cached': False,
-        'age_s' : 0,
-        'count' : len(rows),
+        'rows'      : rows,
+        'count'     : len(rows),
+        'scanned_at': scanned_at,
     }
 
 
 @app.post('/api/swing-scan/refresh')
 async def api_swing_scan_refresh():
-    """Force-clear the swing scan cache so next GET re-runs the full scan."""
-    global _swing_scan_cache, _swing_scan_ts
-    _swing_scan_cache = None
-    _swing_scan_ts    = 0.0
-    return {'ok': True, 'message': 'Swing scan cache cleared'}
+    """Trigger a full swing scan immediately and persist the results."""
+    from scanner import scan_swing
+    asyncio.create_task(asyncio.to_thread(scan_swing))
+    return {'ok': True, 'message': 'Swing scan started — results will be ready in ~60s'}
