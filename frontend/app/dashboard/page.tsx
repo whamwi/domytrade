@@ -21,6 +21,7 @@ import WatchlistDropdown from './components/WatchlistDropdown'
 import WatchlistEditor, { Watchlist } from './components/WatchlistEditor'
 import EquityBotPanel from './components/EquityBotPanel'
 import SwingScanner from './components/SwingScanner'
+import SchwabTokenAlert from './components/SchwabTokenAlert'
 
 const API_URL  = process.env.NEXT_PUBLIC_API_URL ?? ''
 // WebSocket URL — same host, ws(s):// scheme
@@ -504,7 +505,9 @@ export default function DashboardPage() {
   if (!authed) return null
 
   return (
-    <div className="flex h-full min-h-screen" style={{ background: 'var(--bg-base)' }}>
+    <div className="flex flex-col h-full min-h-screen" style={{ background: 'var(--bg-base)' }}>
+      <SchwabTokenAlert />
+      <div className="flex flex-1 min-h-0">
       <Sidebar activeTab={activeTab} focusMode={focusMode} onFocusToggle={() => setFocusMode(f => !f)} showLog={showLog} onLogToggle={() => setShowLog(v => !v)} />
 
       {/* Market Profile tab */}
@@ -820,6 +823,7 @@ export default function DashboardPage() {
       {/* Gemini Ask AI — floating corner chat */}
       <AskAI />
 
+      </div>{/* end flex flex-1 min-h-0 */}
     </div>
   )
 }

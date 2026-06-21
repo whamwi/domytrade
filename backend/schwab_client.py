@@ -53,6 +53,8 @@ FUTURES_SCHEDULES: dict[str, list[int]] = {
     'KC': [3, 5, 7, 9, 12],           # Coffee
     'CT': [3, 5, 7, 10, 12],          # Cotton
     'SB': [3, 5, 7, 10],              # Sugar
+    # ── Crypto (CME) ───────────────────────────────────────────────────────────
+    'BTC': list(range(1, 13)),         # Bitcoin: all 12 months; expires last Friday of month
 }
 
 # Symbols whose contract expires in the month BEFORE the delivery month.
@@ -67,6 +69,11 @@ _PRIOR_MONTH_ROLL: frozenset[str] = frozenset({'CL', 'NG', 'RB', 'HO'})
 _METALS_PRIOR_ROLL: frozenset[str] = frozenset({'GC', 'SI', 'HG', 'PL'})
 _ENERGY_ROLL_DAY  = 20   # NYMEX energy contracts expire ~20th of prior month
 _METALS_ROLL_DAY  = 20   # Metals FND is ~EOM of prior month; roll at day 20 for liquidity
+
+# BTC futures expire on the last Friday of the contract month (~day 25-28).
+# Roll late so the contract stays active until close to expiry.
+_LATE_ROLL: frozenset[str] = frozenset({'BTC'})
+_LATE_ROLL_DAY = 24
 
 
 def front_month_code(base: str, ref_date: datetime | None = None) -> str:
@@ -105,6 +112,8 @@ def front_month_code(base: str, ref_date: datetime | None = None) -> str:
         roll_day = _METALS_ROLL_DAY
     elif bare in _PRIOR_MONTH_ROLL:
         roll_day = _ENERGY_ROLL_DAY
+    elif bare in _LATE_ROLL:
+        roll_day = _LATE_ROLL_DAY
     else:
         roll_day = ROLL_DAY
 

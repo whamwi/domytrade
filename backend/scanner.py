@@ -51,6 +51,27 @@ def agg_weekly(df: pd.DataFrame) -> pd.DataFrame:
     ).dropna()
 
 
+def load_weekly_candles(ticker: str) -> pd.DataFrame:
+    """Load weekly OHLCV from ticker_candles_weekly (Schwab-sourced).
+    Falls back to resampling daily candles if the weekly table is empty."""
+    rows = (get_db()
+            .table('ticker_candles_weekly')
+            .select('bar_date,open,high,low,close,volume')
+            .eq('ticker', ticker.upper())
+            .order('bar_date', desc=False)
+            .execute().data)
+    if rows:
+        df = pd.DataFrame(rows)
+        df['bar_date'] = pd.to_datetime(df['bar_date'])
+        df = df.rename(columns={
+            'bar_date': 'DateTime',
+            'open': 'Open', 'high': 'High',
+            'low': 'Low', 'close': 'Close', 'volume': 'Volume',
+        })
+        return df.set_index('DateTime').sort_index()
+    return pd.DataFrame()
+
+
 def fetch_monthly_av(ticker: str) -> pd.DataFrame:
     """Fetch full monthly OHLCV history from Alpha Vantage."""
     if not AV_KEY:
@@ -117,7 +138,7 @@ def scan_ticker(ticker: str, fetch_monthly: bool = True) -> dict:
     if daily.empty:
         return {'ticker': ticker, 'error': 'no daily data in DB'}
 
-    weekly  = agg_weekly(daily)
+    weekly  = load_weekly_candles(ticker)
     monthly = fetch_monthly_av(ticker) if fetch_monthly else pd.DataFrame()
 
     return {
@@ -207,8 +228,8 @@ def _compute_va(daily_df: pd.DataFrame) -> tuple[float, float]:
 def _va_badge(vaw: float, vam: float) -> str:
     if vaw > 0 and vam > 0: return 'ACCUM'
     if vaw < 0 and vam < 0: return 'DIST'
-    if vaw > 0 and vam < 0: return 'CHURN↑'
-    if vaw < 0 and vam > 0: return 'CHURN↓'
+    if vaw > 0 and vam < 0: return 'CHURN▲'
+    if vaw < 0 and vam > 0: return 'CHURN▼'
     return 'NEUTRAL'
 
 
@@ -271,7 +292,7 @@ def _scan_swing_ticker(ticker: str) -> dict | None:
     if daily.empty or len(daily) < 60:
         return None
 
-    weekly  = agg_weekly(daily)
+    weekly  = load_weekly_candles(ticker)
     monthly = load_monthly_candles(ticker)
 
     # ── Indicator values ──────────────────────────────────────────────────────
@@ -320,13 +341,21 @@ def _scan_swing_ticker(ticker: str) -> dict | None:
         'd_momo'       : d_sq.get('momo_value'),
         'd_bars_in_sq' : d_sq.get('bars_in_squeeze', 0),
         'd_bars_fired' : d_sq.get('bars_since_fired'),
+        'd_just_fired' : bool(d_sq.get('just_fired', False)),
         # Weekly squeeze
         'w_sq_state'   : w_sq.get('sq_state') if 'error' not in w_sq else None,
+        'w_mo_state'   : w_sq.get('mo_state') if 'error' not in w_sq else None,
         'w_confirms'   : w_in,
         'w_bars_in_sq' : w_sq.get('bars_in_squeeze', 0) if 'error' not in w_sq else 0,
+        'w_bars_fired' : w_sq.get('bars_since_fired') if 'error' not in w_sq else None,
+        'w_just_fired' : bool(w_sq.get('just_fired', False)) if 'error' not in w_sq else False,
         # Monthly squeeze
         'm_sq_state'   : m_sq.get('sq_state') if 'error' not in m_sq else None,
+        'm_mo_state'   : m_sq.get('mo_state') if 'error' not in m_sq else None,
         'm_confirms'   : m_in,
+        'm_bars_in_sq' : m_sq.get('bars_in_squeeze', 0) if 'error' not in m_sq else 0,
+        'm_bars_fired' : m_sq.get('bars_since_fired') if 'error' not in m_sq else None,
+        'm_just_fired' : bool(m_sq.get('just_fired', False)) if 'error' not in m_sq else False,
         # Indicator values
         'sma50'        : round(sma50, 2),
         'ema8'         : round(ema8, 2),
@@ -376,8 +405,8 @@ def scan_swing(symbols: list[str] | None = None, persist: bool = True) -> list[d
     """
     db = get_db()
     if symbols is None:
-        resp    = db.table('ticker_candles_daily').select('ticker').execute()
-        symbols = sorted(set(r['ticker'] for r in resp.data))
+        resp    = db.table('ticker_universe').select('ticker').execute()
+        symbols = sorted(r['ticker'] for r in resp.data)
 
     results = []
     for ticker in symbols:
