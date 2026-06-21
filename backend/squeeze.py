@@ -21,7 +21,7 @@ NUM_DEV_UP  = +2.0
 FACTOR_HIGH = 1.0
 FACTOR_MID  = 1.5
 FACTOR_LOW  = 2.0
-TOLERANCE   = 0.0    # TOS uses strict comparisons — no tolerance
+TOLERANCE   = 0.05   # small rounding buffer to match TOS boundary behaviour
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -118,9 +118,9 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
     low   = df['Low']
 
     # Bollinger Bands — EMA midline (TOS averageType=EXPONENTIAL)
-    # ddof=1 matches TOS StDev() which uses sample standard deviation (divides by n-1)
+    # ddof=0: TOS StdDev() uses population std (divides by n, not n-1)
     mid_bb   = _ema(close, LENGTH)
-    sdev     = close.rolling(LENGTH).std(ddof=1)
+    sdev     = close.rolling(LENGTH).std(ddof=0)
     upper_bb = mid_bb + NUM_DEV_UP * sdev
     lower_bb = mid_bb + NUM_DEV_DN * sdev
 
@@ -206,7 +206,7 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
     else:
         mo_state = 'UNKNOWN'; mo_color = 'GRAY';  mo_label = 'unknown'
 
-    # ── Recently fired detection ──────────────────────────────────────────────
+    # ── Fired detection — how many bars since squeeze released ───────────────
     any_sq           = pre_sq | orig_sq | extra_sq
     prev_sq_val      = bool(any_sq.iloc[-2]) if len(df) > LENGTH + 2 else False
     just_fired       = prev_sq_val and sq_state == 'FIRED'
@@ -214,14 +214,15 @@ def _calc_squeeze(df: pd.DataFrame) -> dict:
     bars_since_fired = None
 
     if sq_state == 'FIRED' and not just_fired:
-        for lookback in range(2, min(6, len(df) - LENGTH)):
+        # Look back up to 200 bars (covers >9 months daily / >3 years weekly)
+        for lookback in range(2, min(201, len(df) - LENGTH)):
             if bool(any_sq.iloc[-lookback]):
                 recently_fired   = True
                 bars_since_fired = lookback - 1
                 break
 
-    if recently_fired and bars_since_fired:
-        sq_label = f'FIRED — expansion in progress ({bars_since_fired} bars ago)'
+    if bars_since_fired:
+        sq_label = f'FIRED — {bars_since_fired} bars since squeeze'
 
     # ── Consecutive bars in squeeze ───────────────────────────────────────────
     # Walk backward from the most recent bar; count how many consecutive bars
