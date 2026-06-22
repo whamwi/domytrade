@@ -10852,10 +10852,10 @@ async def api_swing_scan():
         ticker = sig.get('symbol')
         if ticker and ticker not in price_map:
             last       = sig.get('last')
-            prev_close = sig.get('prev_close')
             net_chg    = sig.get('net_change')
+            prev_close = sig.get('prev_close') or (last - net_chg if last and net_chg else None)
             if last:
-                pct = round(net_chg / prev_close * 100, 2) if net_chg is not None and prev_close else None
+                pct = round(net_chg / prev_close * 100, 2) if net_chg and prev_close else None
                 price_map[ticker] = {'price': round(last, 2), 'pct_change': pct}
 
     for row in rows:
