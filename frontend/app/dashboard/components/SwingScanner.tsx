@@ -18,6 +18,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 interface SwingRow {
   ticker: string
   price: number
+  pct_change?: number
   direction: 'LONG' | 'SHORT'
   score: number
   long_score: number
@@ -322,6 +323,30 @@ export default function SwingScanner() {
 
   useEffect(() => { load() }, [load])
 
+  // Refresh price + % change every 30s without re-sorting rows
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch(`${API_URL}/api/swing-scan`)
+        if (!r.ok) return
+        const d = await r.json() as ScanResponse
+        setData(prev => {
+          if (!prev) return d
+          const priceMap = new Map(d.rows.map(r => [r.ticker, { price: r.price, pct_change: r.pct_change }]))
+          return {
+            ...prev,
+            rows: prev.rows.map(row => {
+              const updated = priceMap.get(row.ticker)
+              if (!updated) return row
+              return { ...row, price: updated.price, pct_change: updated.pct_change }
+            }),
+          }
+        })
+      } catch { /* silent — keep stale prices */ }
+    }, 30_000)
+    return () => clearInterval(id)
+  }, [])
+
   const rows = (data?.rows ?? []).filter(r => {
     if (universe === 'EQUITIES' &&  SECTOR_TICKERS.has(r.ticker)) return false
     if (universe === 'SECTORS'  && !SECTOR_TICKERS.has(r.ticker)) return false
@@ -542,9 +567,14 @@ export default function SwingScanner() {
                           <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.04em', fontFamily: 'monospace' }}>
                             {r.ticker}
                           </span>
-                          <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace' }}>
-                            ${r.price.toFixed(2)}
-                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'monospace', fontSize: 10 }}>
+                            <span style={{ color: 'var(--text-dim)' }}>${r.price.toFixed(2)}</span>
+                            {r.pct_change != null && (
+                              <span style={{ color: r.pct_change >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>
+                                {r.pct_change >= 0 ? '+' : ''}{r.pct_change.toFixed(2)}%
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>
