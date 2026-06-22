@@ -601,7 +601,7 @@ def make_signal(
     #
     # Entry = CR mid, Stop = opposite CR extreme, Target = breach extreme.
     # Sticky logic in main.py keeps NEAR visible for 4 cycles after it first fires.
-    if cr and cr.get('complete') and cr_breached:
+    if cr and cr.get('complete') and cr_breached and symbol_display.startswith('/'):
         cr_mid         = cr['mid']
         cr_entry_long  = cr['entry_long']
         cr_entry_short = cr['entry_short']
