@@ -997,12 +997,8 @@ async def refresh_signals():
                     state['hourly_high'][sid] = display_price
                     state['hourly_low'][sid]  = display_price
             else:
-                old_h = state['hourly_high'].get(sid, display_price)
-                old_l = state['hourly_low'].get(sid,  display_price)
-                state['hourly_high'][sid] = max(old_h, display_price)
-                state['hourly_low'][sid]  = min(old_l, display_price)
-                if (state['hourly_high'][sid] != old_h or state['hourly_low'][sid] != old_l) and tick.startswith('/'):
-                    log.debug('%s: accumulator updated h=%f→%f l=%f→%f px=%f', tick, old_h, state['hourly_high'][sid], old_l, state['hourly_low'][sid], display_price)
+                state['hourly_high'][sid] = max(state['hourly_high'].get(sid, display_price), display_price)
+                state['hourly_low'][sid]  = min(state['hourly_low'].get(sid,  display_price), display_price)
 
         # Merge accumulator (tracks live ticks between 1-min bar closes) with ohlc.
         # acc_high / acc_low extend the DB bars to cover the developing bar's extremes.
