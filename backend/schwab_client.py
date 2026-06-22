@@ -454,12 +454,17 @@ def get_option_chain(
 
 
 def get_current_hour_ohlc(symbol: str) -> dict | None:
-    """Fetch the current ET hour's running OHLC from 1-min bars."""
-    from zoneinfo import ZoneInfo
+    """Fetch the prior completed ET hour's OHLC from 1-min bars.
+
+    TOS's high(period=AggregationPeriod.HOUR) on a sub-hourly chart returns
+    the last *completed* hourly bar, not the forming one.  Matching that
+    behaviour keeps our box levels in sync with TOS throughout the hour.
+    """
     now_et     = datetime.now(ZoneInfo('America/New_York'))
-    hour_start = now_et.replace(minute=0, second=0, microsecond=0)
-    start_ms   = int(hour_start.astimezone(timezone.utc).timestamp() * 1000)
-    end_ms     = int(datetime.now(timezone.utc).timestamp() * 1000)
+    this_hour  = now_et.replace(minute=0, second=0, microsecond=0)
+    prev_hour  = this_hour - timedelta(hours=1)
+    start_ms   = int(prev_hour.astimezone(timezone.utc).timestamp() * 1000)
+    end_ms     = int(this_hour.astimezone(timezone.utc).timestamp() * 1000) - 1
     params = {
         'symbol'               : symbol,
         'frequencyType'        : 'minute',

@@ -1018,14 +1018,41 @@ async def refresh_signals():
             acc_high = state['hourly_high'].get(sid, display_price)
             acc_low  = state['hourly_low'].get(sid,  display_price)
 
-        if not ohlc:
-            # Cold start — anchor to accumulated H/L (or live price if no accumulator yet)
-            ohlc = {'open': display_price, 'high': acc_high, 'low': acc_low,
-                    'close': display_price, 'volume': 0}
+        # ── Futures: override ohlc with prior COMPLETED hourly bar ──────────────
+        # TOS's high(period=AggregationPeriod.HOUR) on a sub-hourly chart returns
+        # the last COMPLETED hourly bar, not the forming one.  The accumulator
+        # above still tracks the current forming hour for monitoring.
+        if tick.startswith('/'):
+            try:
+                _prior_floor    = (now_et_h - timedelta(hours=1)).replace(
+                                      minute=0, second=0, microsecond=0)
+                _cur_floor      = now_et_h.replace(minute=0, second=0, microsecond=0)
+                _prior_floor_ms = int(_prior_floor.astimezone(timezone.utc).timestamp() * 1000)
+                _cur_floor_ms   = int(_cur_floor.astimezone(timezone.utc).timestamp() * 1000)
+                _prior_bars     = [b for b in min_bars
+                                   if _prior_floor_ms <= b.get('datetime', 0) < _cur_floor_ms]
+                if _prior_bars:
+                    ohlc = {
+                        'open'  : _prior_bars[0]['open'],
+                        'high'  : max(b['high']   for b in _prior_bars),
+                        'low'   : min(b['low']    for b in _prior_bars),
+                        'close' : _prior_bars[-1]['close'],
+                        'volume': sum(b.get('volume', 0) for b in _prior_bars),
+                    }
+            except Exception as _e:
+                log.warning('%s: prior-hour OHLC override error: %s', tick, _e)
+            # Futures prior hour is complete — no accumulator merge needed.
+            if not ohlc:
+                ohlc = {'open': display_price, 'high': display_price,
+                        'low': display_price, 'close': display_price, 'volume': 0}
         else:
-            # Merge closed 1-min bars with accumulated live H/L
-            ohlc['high'] = max(ohlc['high'], acc_high)
-            ohlc['low']  = min(ohlc['low'],  acc_low)
+            # Stocks: cold-start anchor + accumulator merge (current forming hour)
+            if not ohlc:
+                ohlc = {'open': display_price, 'high': acc_high, 'low': acc_low,
+                        'close': display_price, 'volume': 0}
+            else:
+                ohlc['high'] = max(ohlc['high'], acc_high)
+                ohlc['low']  = min(ohlc['low'],  acc_low)
 
         now_et    = datetime.now(ET)
         et_minute = now_et.hour * 60 + now_et.minute

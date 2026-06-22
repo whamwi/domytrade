@@ -34,8 +34,8 @@ log = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-LOOKBACK_DAYS    = 365   # raised from 90 — more history → stable σ, especially H9
-LOOKBACK_DAYS_30 = 365   # same window for 30-min source
+LOOKBACK_DAYS    = 21    # 21d best matches TOS weekly constants (calibrated Jun-2026)
+LOOKBACK_DAYS_30 = 21    # same window for 30-min source
 ET               = ZoneInfo('America/New_York')
 
 # 2022 original methodology (reverse-engineered from Dec-2022 TOS study):

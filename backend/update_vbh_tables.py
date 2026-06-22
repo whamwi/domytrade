@@ -30,10 +30,9 @@ try:
     import schwab_client
     with open(TOKEN_PATH) as _f:
         _tok = json.load(_f)['token']
-    schwab_client._token_cache['access_token'] = _tok['access_token']
-    schwab_client._token_cache['expires_at']   = time.time() + 1800   # treat as fresh
-    if _tok.get('refresh_token'):
-        schwab_client._token_cache['refresh_token'] = _tok['refresh_token']
+    schwab_client._token_cache['access_token']  = _tok['access_token']
+    schwab_client._token_cache['refresh_token'] = _tok.get('refresh_token', '')
+    schwab_client._token_cache['expires_at']    = 0   # force refresh on first use
 except Exception as _e:
     print(f'Warning: could not seed token from {TOKEN_PATH}: {_e}')
 
