@@ -10846,18 +10846,24 @@ async def api_swing_scan():
     from scanner import load_swing_results
     rows = await asyncio.to_thread(load_swing_results)
 
-    sym_by_ticker = {s['ticker']: s['id'] for s in state['symbols']}
+    # Build price map from state['signals'] — same live data as VBH dashboard
+    price_map: dict[str, dict] = {}
+    for sig in state['signals']:
+        ticker = sig.get('symbol')
+        if ticker and ticker not in price_map:
+            last       = sig.get('last')
+            prev_close = sig.get('prev_close')
+            net_chg    = sig.get('net_change')
+            if last:
+                pct = round(net_chg / prev_close * 100, 2) if net_chg is not None and prev_close else None
+                price_map[ticker] = {'price': round(last, 2), 'pct_change': pct}
+
     for row in rows:
-        sid = sym_by_ticker.get(row.get('ticker'))
-        if sid is None:
-            continue
-        live_px    = state['last_price'].get(sid)
-        net_chg    = state['net_change'].get(sid)
-        prev_close = state['prev_close'].get(sid)
-        if live_px:
-            row['price'] = round(live_px, 2)
-        if net_chg is not None and prev_close:
-            row['pct_change'] = round(net_chg / prev_close * 100, 2)
+        p = price_map.get(row.get('ticker'))
+        if p:
+            row['price'] = p['price']
+            if p['pct_change'] is not None:
+                row['pct_change'] = p['pct_change']
 
     scanned_at = rows[0].get('scanned_at') if rows else None
     return {
