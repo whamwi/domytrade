@@ -10841,23 +10841,22 @@ async def api_swing_scan():
     """
     Return the latest persisted swing scan results from DB — always instant.
     Results are refreshed nightly by the background scheduler at 5:15 PM ET.
-    Live price + pct_change overlaid from state['last_price'] and state['prev_close'].
+    Live price + pct_change overlaid via a single Schwab batch quote call.
     """
     from scanner import load_swing_results
     rows = await asyncio.to_thread(load_swing_results)
 
-    # Overlay live intraday price + pct_change from in-memory state
-    sym_by_ticker = {s['ticker']: s['id'] for s in state['symbols']}
-    for row in rows:
-        sid = sym_by_ticker.get(row.get('ticker'))
-        if sid is None:
-            continue
-        live_px    = state['last_price'].get(sid)
-        prev_close = state['prev_close'].get(sid)
-        if live_px:
-            row['price'] = round(live_px, 2)
-        if live_px and prev_close:
-            row['pct_change'] = round((live_px - prev_close) / prev_close * 100, 2)
+    if rows:
+        tickers = [r['ticker'] for r in rows if r.get('ticker')]
+        try:
+            quotes = await asyncio.to_thread(get_quotes, tickers)
+            for row in rows:
+                q = quotes.get(row.get('ticker'))
+                if q and q.get('last'):
+                    row['price']      = round(q['last'], 2)
+                    row['pct_change'] = round(q.get('net_pct_change', 0), 2)
+        except Exception:
+            pass  # keep stale DB prices on any Schwab error
 
     scanned_at = rows[0].get('scanned_at') if rows else None
     return {
