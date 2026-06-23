@@ -362,13 +362,14 @@ export default function SwingScanner() {
       //   Daily  — fired last trading day (just_fired OR bars_fired=2, covers weekend gap)
       //   Weekly — fired this past week (just_fired only)
       //   Monthly — fired this past month (just_fired only)
+      // Upper-TF momo check only applied to weekly/monthly fires (daily fires stand alone;
+      // the score column already reflects higher-TF alignment).
       const NEG = new Set(['NEG_DN', 'NEG_UP'])
-      const wOk = !NEG.has(r.w_mo_state ?? '')
       const mOk = !NEG.has(r.m_mo_state ?? '')
       const dFire = (r.d_just_fired || r.d_bars_fired === 2) && r.d_mo_state === 'POS_UP'
-      const wFire = r.w_just_fired && r.w_mo_state === 'POS_UP'
+      const wFire = r.w_just_fired && r.w_mo_state === 'POS_UP' && mOk
       const mFire = r.m_just_fired && r.m_mo_state === 'POS_UP'
-      if (!(( dFire || wFire || mFire) && wOk && mOk)) return false
+      if (!(dFire || wFire || mFire)) return false
     }
     return true
   })
