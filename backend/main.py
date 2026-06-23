@@ -2376,12 +2376,12 @@ async def background_loop():
                 asyncio.create_task(refresh_daily_candles(incremental=True))
                 last_daily_close_run = _today
 
-            # 5:15 PM ET on weekdays — swing scan (daily candles refreshed at 4:30 PM)
-            if _et_hhmm == 17 * 60 + 15 and last_swing_scan_run != _today and _weekday < 5:
+            # 5:30 PM ET on weekdays — swing scan (daily candles refreshed at 4:30 PM)
+            if _et_hhmm == 17 * 60 + 30 and last_swing_scan_run != _today and _weekday < 5:
                 try:
                     from scanner import scan_swing
                     asyncio.create_task(asyncio.to_thread(scan_swing))
-                    log.info('Swing scan started (nightly 5:15 PM ET)')
+                    log.info('Swing scan started (nightly 5:30 PM ET)')
                 except Exception as e:
                     log.warning('Swing scan error: %s', e)
                 last_swing_scan_run = _today
