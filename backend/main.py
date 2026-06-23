@@ -10840,8 +10840,9 @@ async def api_manual_trade(req: ManualTradeRequest):
 async def api_swing_scan():
     """
     Return the latest persisted swing scan results from DB — always instant.
-    Results are refreshed nightly by the background scheduler at 5:15 PM ET.
-    Live price + pct_change overlaid from state — same data that drives VBH signals.
+    Results are refreshed nightly by the background scheduler at 5:30 PM ET.
+    Live price + pct_change overlaid from state['signals'] for VBH-tracked symbols;
+    remaining symbols fetched in one Schwab batch call.
     """
     from scanner import load_swing_results
     rows = await asyncio.to_thread(load_swing_results)
@@ -10857,6 +10858,23 @@ async def api_swing_scan():
             if last:
                 pct = round(net_chg / prev_close * 100, 2) if net_chg and prev_close else None
                 price_map[ticker] = {'price': round(last, 2), 'pct_change': pct}
+
+    # Find swing symbols not covered by state['signals'] — batch-fetch from Schwab
+    missing = [r['ticker'] for r in rows if r.get('ticker') and r['ticker'] not in price_map]
+    if missing:
+        try:
+            quotes = await asyncio.to_thread(get_quotes, missing)
+            for sym, q in quotes.items():
+                last    = q.get('last') or 0
+                close   = q.get('close') or 0
+                net_pct = q.get('net_pct_change')
+                if last:
+                    pct = round(net_pct, 2) if net_pct else (
+                        round((last - close) / close * 100, 2) if close else None
+                    )
+                    price_map[sym] = {'price': round(last, 2), 'pct_change': pct}
+        except Exception as e:
+            log.warning('swing-scan Schwab batch quote error: %s', e)
 
     for row in rows:
         p = price_map.get(row.get('ticker'))
