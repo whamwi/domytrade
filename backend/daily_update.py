@@ -26,7 +26,7 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(__file__))
 
 from db import get_db
-from schwab_client import PRICE_HISTORY_URL, _headers
+from schwab_client import PRICE_HISTORY_URL, _headers, get_quotes
 
 # ── Thresholds — below these, do a full historical backfill ───────────────────
 MIN_DAILY_BARS   = 210    # need 5y for reliable squeeze
@@ -161,6 +161,49 @@ def update_tf(db, tickers: list[str], tf: str):
     log(f"{tf.upper()} done: {ok}/{total} tickers  ({failed} failed)")
 
 
+# ── Today's bar injection (quotes-based, handles Schwab history lag) ──────────
+
+def _inject_today_bar(db, tickers: list[str]) -> None:
+    """Upsert today's OHLCV bar from Schwab live quotes for all tickers.
+
+    Schwab's price history API typically lags by 1 business day, so the
+    most recent daily close is often absent after running update_tf().
+    This fixes that by pulling current-session OHLCV from the quotes endpoint.
+    """
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo('America/New_York')
+    today_str = datetime.now(ET).date().isoformat()
+    stocks = [t for t in tickers if not t.startswith('/')]
+    log(f"Injecting today's bar ({today_str}) from live quotes for {len(stocks)} symbols")
+
+    CHUNK = 100
+    ok = 0
+    for i in range(0, len(stocks), CHUNK):
+        chunk = stocks[i:i+CHUNK]
+        quotes = get_quotes(chunk)
+        rows = []
+        for ticker in chunk:
+            q = quotes.get(ticker, {})
+            last = q.get('last')
+            if not last:
+                continue
+            rows.append({
+                'ticker':   ticker,
+                'bar_date': today_str,
+                'open':     float(q.get('open') or last),
+                'high':     float(q.get('high') or last),
+                'low':      float(q.get('low') or last),
+                'close':    float(last),
+                'volume':   int(q.get('volume') or 0),
+            })
+        if rows:
+            db.table('ticker_candles_daily').upsert(rows, on_conflict='ticker,bar_date').execute()
+            ok += len(rows)
+        time.sleep(0.2)
+
+    log(f"Today's bar injected: {ok}/{len(stocks)} symbols")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -179,6 +222,11 @@ def main():
     tfs = [args.tf] if args.tf else ['daily', 'weekly']
     for tf in tfs:
         update_tf(db, tickers, tf)
+
+    # Schwab price history lags ~1 day — inject today's OHLCV from live quotes
+    # so the scanner always has the current session's close.
+    if 'daily' in tfs and not args.tf:
+        _inject_today_bar(db, tickers)
 
     if args.dry_run:
         log("--dry-run: skipping scan")
