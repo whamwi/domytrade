@@ -10929,7 +10929,8 @@ async def api_swing_scan():
     for row in rows:
         p = price_map.get(row.get('ticker'))
         if p:
-            row['price'] = p['price']
+            row['scan_price'] = row.get('price')   # preserve EOD close from the scan
+            row['price'] = p['price']               # overwrite with live intraday price
             if p['pct_change'] is not None:
                 row['pct_change'] = p['pct_change']
 

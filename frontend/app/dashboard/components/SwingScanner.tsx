@@ -314,8 +314,8 @@ export default function SwingScanner() {
       const r = await fetch(`${API_URL}/api/swing-scan`)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const d = await r.json() as ScanResponse
-      // Stamp scan_price from the EOD price returned at load time
-      d.rows = d.rows.map(row => ({ ...row, scan_price: row.price }))
+      // scan_price comes from backend (EOD close); fall back to price if symbol had no live quote
+      d.rows = d.rows.map(row => ({ ...row, scan_price: row.scan_price ?? row.price }))
       setData(d)
     } catch (e) {
       setError('Failed to load scan results')
