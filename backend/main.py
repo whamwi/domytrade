@@ -2413,7 +2413,7 @@ async def background_loop():
                     try:
                         await asyncio.to_thread(
                             lambda: __import__('subprocess').run(
-                                ['python3', 'daily_update.py', '--dry-run'],
+                                ['python3', 'daily_update.py'],
                                 cwd=os.path.dirname(__file__),
                             )
                         )
