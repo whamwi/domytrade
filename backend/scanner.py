@@ -255,14 +255,17 @@ def _score_swing(
     d_state = d_sq.get('sq_state', 'FIRED')
     d_momo  = d_sq.get('momo_value') or 0.0
     d_fired = d_sq.get('bars_since_fired')
+    d_just  = d_sq.get('just_fired', False)
     in_sq   = d_state in _SQ_IN_STATES
+    # just_fired = bar 1 of fire (bars_since_fired is None); treat it as fired <= 3
+    fired_early = d_just or (d_fired is not None and d_fired <= 3)
 
     ls = ss = 0
 
     # 1 — Squeeze
-    if (in_sq and d_momo >= 0) or (d_state == 'FIRED' and d_fired and d_fired <= 3 and d_momo > 0):
+    if (in_sq and d_momo >= 0) or (d_state == 'FIRED' and fired_early and d_momo > 0):
         ls += 1
-    if (in_sq and d_momo <= 0) or (d_state == 'FIRED' and d_fired and d_fired <= 3 and d_momo < 0):
+    if (in_sq and d_momo <= 0) or (d_state == 'FIRED' and fired_early and d_momo < 0):
         ss += 1
 
     # 2 — SMA50
