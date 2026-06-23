@@ -43,7 +43,7 @@ SCHWAB_PARAMS = {
     'weekly':  { 'backfill': ('year',  5,  'weekly',  1),
                  'update':   ('month', 3,  'weekly',  1) },
     'monthly': { 'backfill': ('year',  20, 'monthly', 1),
-                 'update':   ('month', 6,  'monthly', 1) },
+                 'update':   ('year',  2,  'monthly', 1) },
 }
 
 TABLE = {
