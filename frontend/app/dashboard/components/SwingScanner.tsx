@@ -18,6 +18,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 interface SwingRow {
   ticker: string
   price: number
+  scan_price: number   // EOD close from the scan — never overwritten by live refresh
   pct_change?: number
   direction: 'LONG' | 'SHORT'
   score: number
@@ -313,6 +314,8 @@ export default function SwingScanner() {
       const r = await fetch(`${API_URL}/api/swing-scan`)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const d = await r.json() as ScanResponse
+      // Stamp scan_price from the EOD price returned at load time
+      d.rows = d.rows.map(row => ({ ...row, scan_price: row.price }))
       setData(d)
     } catch (e) {
       setError('Failed to load scan results')
@@ -339,6 +342,7 @@ export default function SwingScanner() {
               const updated = priceMap.get(row.ticker)
               if (!updated) return row
               return { ...row, price: updated.price, pct_change: updated.pct_change }
+              // scan_price is intentionally NOT updated — it stays as EOD close
             }),
           }
         })
@@ -624,10 +628,10 @@ export default function SwingScanner() {
                       <SqCell state={r.m_sq_state} moState={r.m_mo_state} bars={r.m_bars_in_sq} fired={r.m_bars_fired} justFired={r.m_just_fired} tf="M" />
                     </td>
 
-                    {/* SMA50 — price vs SMA50 % */}
+                    {/* SMA50 — EOD close vs SMA50 % */}
                     {(() => {
-                      const pct50 = r.sma50 ? ((r.price - r.sma50) / r.sma50 * 100) : null
-                      const above50 = r.price > r.sma50
+                      const pct50 = r.sma50 ? ((r.scan_price - r.sma50) / r.sma50 * 100) : null
+                      const above50 = r.scan_price > r.sma50
                       return (
                         <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 42, borderLeft: '1px solid var(--border)' }}>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
@@ -642,10 +646,10 @@ export default function SwingScanner() {
                       )
                     })()}
 
-                    {/* EMA8 — price vs EMA8 % */}
+                    {/* EMA8 — EOD close vs EMA8 % */}
                     {(() => {
-                      const pct8 = r.ema8 ? ((r.price - r.ema8) / r.ema8 * 100) : null
-                      const above8 = r.price > r.ema8
+                      const pct8 = r.ema8 ? ((r.scan_price - r.ema8) / r.ema8 * 100) : null
+                      const above8 = r.scan_price > r.ema8
                       return (
                         <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 42 }}>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
