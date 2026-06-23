@@ -505,7 +505,7 @@ export default function SwingScanner() {
                   SQUEEZE MATRIX
                 </th>
                 {/* Stacked MAs group */}
-                <th colSpan={2} style={{
+                <th colSpan={3} style={{
                   ...TH, textAlign: 'center', borderBottom: '1px solid var(--border)',
                   letterSpacing: '0.1em', color: 'var(--text-muted)',
                   borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
@@ -530,13 +530,16 @@ export default function SwingScanner() {
                   borderRight: '1px solid var(--border)',
                 }}>M</th>
                 <th style={{
-                  ...TH, textAlign: 'center', fontSize: 9, padding: '5px 4px', width: 28,
+                  ...TH, textAlign: 'center', fontSize: 9, padding: '5px 4px', width: 42,
                   borderLeft: '1px solid var(--border)',
-                }}>50</th>
+                }}>SMA50</th>
                 <th style={{
-                  ...TH, textAlign: 'center', fontSize: 9, padding: '5px 4px', width: 28,
+                  ...TH, textAlign: 'center', fontSize: 9, padding: '5px 4px', width: 42,
+                }}>EMA8</th>
+                <th style={{
+                  ...TH, textAlign: 'center', fontSize: 9, padding: '5px 4px', width: 42,
                   borderRight: '1px solid var(--border)',
-                }}>8/21</th>
+                }}>EMA21</th>
               </tr>
             </thead>
             <tbody>
@@ -621,15 +624,59 @@ export default function SwingScanner() {
                       <SqCell state={r.m_sq_state} moState={r.m_mo_state} bars={r.m_bars_in_sq} fired={r.m_bars_fired} justFired={r.m_just_fired} tf="M" />
                     </td>
 
-                    {/* SMA50 */}
-                    <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 28, borderLeft: '1px solid var(--border)' }}>
-                      <Triangle above={r.price > r.sma50} />
-                    </td>
+                    {/* SMA50 — price vs SMA50 % */}
+                    {(() => {
+                      const pct50 = r.sma50 ? ((r.price - r.sma50) / r.sma50 * 100) : null
+                      const above50 = r.price > r.sma50
+                      return (
+                        <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 42, borderLeft: '1px solid var(--border)' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                            <Triangle above={above50} />
+                            {pct50 != null && (
+                              <span style={{ fontSize: 9, fontFamily: 'monospace', color: above50 ? '#4ade80' : '#f87171' }}>
+                                {pct50 >= 0 ? '+' : ''}{pct50.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      )
+                    })()}
 
-                    {/* EMA stack */}
-                    <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 28, borderRight: '1px solid var(--border)' }}>
-                      <Triangle above={r.ema8 > r.ema21} />
-                    </td>
+                    {/* EMA8 — price vs EMA8 % */}
+                    {(() => {
+                      const pct8 = r.ema8 ? ((r.price - r.ema8) / r.ema8 * 100) : null
+                      const above8 = r.price > r.ema8
+                      return (
+                        <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 42 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                            <Triangle above={above8} />
+                            {pct8 != null && (
+                              <span style={{ fontSize: 9, fontFamily: 'monospace', color: above8 ? '#4ade80' : '#f87171' }}>
+                                {pct8 >= 0 ? '+' : ''}{pct8.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      )
+                    })()}
+
+                    {/* EMA21 — EMA8 vs EMA21 % spread */}
+                    {(() => {
+                      const pct21 = r.ema21 ? ((r.ema8 - r.ema21) / r.ema21 * 100) : null
+                      const above21 = r.ema8 > r.ema21
+                      return (
+                        <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 42, borderRight: '1px solid var(--border)' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                            <Triangle above={above21} />
+                            {pct21 != null && (
+                              <span style={{ fontSize: 9, fontFamily: 'monospace', color: above21 ? '#4ade80' : '#f87171' }}>
+                                {pct21 >= 0 ? '+' : ''}{pct21.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      )
+                    })()}
 
                     {/* Moxie W */}
                     <td style={TD}>
