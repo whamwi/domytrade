@@ -10860,10 +10860,13 @@ async def api_swing_scan():
                 price_map[ticker] = {'price': round(last, 2), 'pct_change': pct}
 
     # Find swing symbols not covered by state['signals'] — batch-fetch from Schwab
+    # Schwab caps batch size; chunk into 100 per call.
     missing = [r['ticker'] for r in rows if r.get('ticker') and r['ticker'] not in price_map]
-    if missing:
+    CHUNK = 100
+    for i in range(0, len(missing), CHUNK):
+        chunk = missing[i:i + CHUNK]
         try:
-            quotes = await asyncio.to_thread(get_quotes, missing)
+            quotes = await asyncio.to_thread(get_quotes, chunk)
             for sym, q in quotes.items():
                 last    = q.get('last') or 0
                 close   = q.get('close') or 0
@@ -10874,7 +10877,7 @@ async def api_swing_scan():
                     )
                     price_map[sym] = {'price': round(last, 2), 'pct_change': pct}
         except Exception as e:
-            log.warning('swing-scan Schwab batch quote error: %s', e)
+            log.warning('swing-scan Schwab batch quote error (chunk %d): %s', i // CHUNK, e)
 
     for row in rows:
         p = price_map.get(row.get('ticker'))
