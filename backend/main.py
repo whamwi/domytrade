@@ -2256,7 +2256,7 @@ async def background_loop():
     last_vbh_stocks_vbh_run = ''   # 'YYYY-MM-DD' of last Saturday VBH recompute for stocks
     last_profiles_run       = ''   # 'YYYY-MM-DD' of last 6:00 AM stock profiles refresh
     last_archive_run        = ''   # 'YYYY-MM-DD' of last entry_log → archive move
-    last_swing_scan_run     = ''   # 'YYYY-MM-DD' of last 5:15 PM swing scan
+    last_swing_scan_run     = ''   # 'YYYY-MM-DD' of last 5:30 PM swing scan
     last_gex_baseline_run   = ''   # 'YYYY-MM-DD' of last successful GEX baseline (real OI)
     last_gex_baseline_ts    = 0.0  # epoch of last baseline attempt (for 5-min retry rate-limit)
     last_gex_stocks_run     = ''   # 'YYYY-MM-DD' of last 5:30 PM stock GEX snapshot
