@@ -384,14 +384,25 @@ def _persist_swing_results(rows: list[dict]) -> None:
 
 
 def load_swing_results() -> list[dict]:
-    """Read persisted swing scan results from DB, sorted by score DESC -> d_bars_in_sq DESC."""
+    """Read persisted swing scan results from DB.
+
+    Sort: score DESC → just_fired first → d_bars_in_sq DESC.
+    just_fired (bar-1 fire) floats above long-squeeze holders.
+    """
     resp = (get_db()
             .table('swing_scan_results')
             .select('*')
             .order('score', desc=True)
             .execute())
     rows = resp.data or []
-    rows.sort(key=lambda r: (r['score'], r.get('d_bars_in_sq', 0)), reverse=True)
+    rows.sort(
+        key=lambda r: (
+            r['score'],
+            1 if r.get('d_just_fired') or r.get('w_just_fired') or r.get('m_just_fired') else 0,
+            r.get('d_bars_in_sq', 0),
+        ),
+        reverse=True,
+    )
     return rows
 
 
