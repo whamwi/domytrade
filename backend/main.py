@@ -1725,6 +1725,40 @@ async def refresh_daily_candles(incremental: bool = False) -> None:
         await _warm_fib_cache(all_tickers)
 
 
+async def refresh_swing_candles() -> None:
+    """Fetch last 2 days of daily candles for ticker_universe symbols NOT in symbols table.
+    Runs at 4:30 PM ET so swing scan at 5:30 PM always uses fresh data."""
+    try:
+        from db import get_db as _get_db
+        _db = _get_db()
+        tu = {r['ticker'] for r in _db.table('ticker_universe').select('ticker').execute().data}
+        sy = {r['ticker'] for r in _db.table('symbols').select('ticker').execute().data}
+        swing_only = sorted(tu - sy)
+    except Exception as e:
+        log.warning('refresh_swing_candles: symbol load failed: %s', e)
+        return
+
+    log.info('Swing candle refresh: %d swing-only tickers, 2 days…', len(swing_only))
+    sem = asyncio.Semaphore(10)
+    ok = 0
+
+    async def fetch_one(ticker: str) -> None:
+        nonlocal ok
+        async with sem:
+            try:
+                raw  = await asyncio.to_thread(get_daily_candles, ticker, 2)
+                rows = _schwab_daily_to_rows(ticker, raw)
+                if rows:
+                    await asyncio.to_thread(upsert_daily_candles, rows)
+                    ok += 1
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                log.debug('swing candle %s: %s', ticker, e)
+
+    await asyncio.gather(*[fetch_one(t) for t in swing_only])
+    log.info('Swing candle refresh done — %d/%d tickers stored', ok, len(swing_only))
+
+
 async def _warm_fib_cache(tickers: list[str]) -> None:
     """Pre-compute Fib levels using ONE batch DB query — zero per-ticker round-trips."""
     if not tickers:
@@ -2374,6 +2408,7 @@ async def background_loop():
 
             if _et_hhmm == 16 * 60 + 30 and last_daily_close_run != _today:
                 asyncio.create_task(refresh_daily_candles(incremental=True))
+                asyncio.create_task(refresh_swing_candles())   # swing-only tickers not in symbols
                 last_daily_close_run = _today
 
             # 5:30 PM ET on weekdays — swing scan (daily candles refreshed at 4:30 PM)
