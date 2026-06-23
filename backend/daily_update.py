@@ -176,7 +176,7 @@ def main():
     tickers = get_universe(db)
     log(f"daily_update starting — {len(tickers)} tickers")
 
-    tfs = [args.tf] if args.tf else ['daily', 'weekly', 'monthly']
+    tfs = [args.tf] if args.tf else ['daily', 'weekly']
     for tf in tfs:
         update_tf(db, tickers, tf)
 
