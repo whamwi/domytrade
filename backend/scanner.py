@@ -269,9 +269,9 @@ def _score_swing(
     if price > sma50: ls += 1
     else:             ss += 1
 
-    # 3 — EMA stack
-    if ema8 > ema21: ls += 1
-    else:            ss += 1
+    # 3 — EMA stack (full alignment: EMA8 > EMA21 > SMA50 bullish, reverse bearish)
+    if ema8 > ema21 and ema21 > sma50:   ls += 1
+    elif ema8 < ema21 and ema21 < sma50: ss += 1
 
     # 4 — Moxie (weekly)
     if moxie_w > 0: ls += 1
