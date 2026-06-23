@@ -296,110 +296,116 @@ export default function GexPanel() {
 
       {/* ── Top bar ──────────────────────────────────────────────────────── */}
       <div
-        className="flex items-center gap-2 px-5 py-2.5 shrink-0 flex-wrap"
+        className="flex flex-col shrink-0"
         style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-panel)' }}
       >
-        <span className="text-xs font-bold tracking-widest" style={{ color: 'var(--text-muted)', letterSpacing: '0.18em' }}>GEX</span>
-        <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
-
-        {/* Index symbol tabs */}
-        {INDEX_SYMBOLS.map(sym => (
-          <button
-            key={sym}
-            onClick={() => selectSymbol(sym)}
-            className="text-xs px-3 py-1 rounded font-mono font-semibold transition-colors"
-            style={{
-              background: activeSymbol === sym ? 'var(--accent-blue-dim)' : 'var(--bg-row)',
-              color:      activeSymbol === sym ? 'var(--accent-blue)' : 'var(--text-muted)',
-              border:     `1px solid ${activeSymbol === sym ? 'var(--accent-blue)' : 'var(--border)'}`,
-            }}
-          >
-            {sym}
-            {sym === 'SPX' && <span className="ml-1 text-xs opacity-60">0DTE</span>}
-          </button>
-        ))}
-
-        {savedSymbols.length > 0 && (
+        {/* Row 1: label + index tabs + input + source/refresh */}
+        <div className="flex items-center gap-2 px-5 py-2.5">
+          <span className="text-xs font-bold tracking-widest" style={{ color: 'var(--text-muted)', letterSpacing: '0.18em' }}>GEX</span>
           <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
-        )}
 
-        {/* Saved stock ribbon — persists across sessions via localStorage */}
-        {savedSymbols.map(sym => (
-          <span key={sym} className="flex items-center gap-0.5">
+          {/* Index symbol tabs */}
+          {INDEX_SYMBOLS.map(sym => (
             <button
+              key={sym}
               onClick={() => selectSymbol(sym)}
-              className="text-xs px-2.5 py-1 rounded-l font-mono font-semibold transition-colors"
+              className="text-xs px-3 py-1 rounded font-mono font-semibold transition-colors"
               style={{
-                background: activeSymbol === sym ? 'rgba(251,191,36,0.15)' : 'var(--bg-row)',
-                color:      activeSymbol === sym ? '#fbbf24' : 'var(--text-muted)',
-                border:     `1px solid ${activeSymbol === sym ? 'rgba(251,191,36,0.4)' : 'var(--border)'}`,
-                borderRight: 'none',
+                background: activeSymbol === sym ? 'var(--accent-blue-dim)' : 'var(--bg-row)',
+                color:      activeSymbol === sym ? 'var(--accent-blue)' : 'var(--text-muted)',
+                border:     `1px solid ${activeSymbol === sym ? 'var(--accent-blue)' : 'var(--border)'}`,
               }}
             >
               {sym}
+              {sym === 'SPX' && <span className="ml-1 text-xs opacity-60">0DTE</span>}
             </button>
+          ))}
+
+          <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+
+          {/* Symbol input — adds to saved ribbon on submit */}
+          <form onSubmit={handleCustomSubmit} className="flex items-center gap-1">
+            <input
+              value={customInput}
+              onChange={e => setCustomInput(e.target.value.toUpperCase())}
+              placeholder="AMZN…"
+              maxLength={10}
+              className="text-xs px-2 py-1 rounded font-mono w-20 outline-none"
+              style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            />
             <button
-              onClick={() => removeSaved(sym)}
-              className="text-xs px-1 py-1 rounded-r transition-colors"
-              style={{
-                background: 'var(--bg-row)',
-                color:      'var(--text-dim)',
-                border:     `1px solid var(--border)`,
-                lineHeight: 1,
-              }}
-              title="Remove"
+              type="submit"
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
             >
-              ×
+              ↗
             </button>
-          </span>
-        ))}
+          </form>
 
-        <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+          <div style={{ flex: 1 }} />
 
-        {/* Symbol input — adds to saved ribbon on submit */}
-        <form onSubmit={handleCustomSubmit} className="flex items-center gap-1">
-          <input
-            value={customInput}
-            onChange={e => setCustomInput(e.target.value.toUpperCase())}
-            placeholder="AMZN…"
-            maxLength={10}
-            className="text-xs px-2 py-1 rounded font-mono w-20 outline-none"
-            style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-          />
+          {/* Source + time */}
+          {data && (
+            <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
+              {sourceLabel} · {capturedTime}
+            </span>
+          )}
+
+          {/* Fetch duration */}
+          {fetchMs != null && !loading && (
+            <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
+              {fetchMs < 1000 ? `${fetchMs}ms` : `${(fetchMs / 1000).toFixed(1)}s`}
+            </span>
+          )}
+
+          {/* Refresh */}
           <button
-            type="submit"
+            onClick={() => fetchGex(activeSymbol)}
+            disabled={loading}
             className="text-xs px-2 py-1 rounded"
             style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
           >
-            ↗
+            {loading ? '…' : '↻'}
           </button>
-        </form>
+        </div>
 
-        <div style={{ flex: 1 }} />
-
-        {/* Source + time */}
-        {data && (
-          <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
-            {sourceLabel} · {capturedTime}
-          </span>
+        {/* Row 2: saved symbol ribbon — only when non-empty */}
+        {savedSymbols.length > 0 && (
+          <div
+            className="flex items-center gap-1.5 flex-wrap px-5 py-1.5"
+            style={{ borderTop: '1px solid var(--border)' }}
+          >
+            {savedSymbols.map(sym => (
+              <span key={sym} className="flex items-center gap-0">
+                <button
+                  onClick={() => selectSymbol(sym)}
+                  className="text-xs px-2.5 py-0.5 rounded-l font-mono font-semibold transition-colors"
+                  style={{
+                    background: activeSymbol === sym ? 'rgba(251,191,36,0.15)' : 'var(--bg-row)',
+                    color:      activeSymbol === sym ? '#fbbf24' : 'var(--text-muted)',
+                    border:     `1px solid ${activeSymbol === sym ? 'rgba(251,191,36,0.4)' : 'var(--border)'}`,
+                    borderRight: 'none',
+                  }}
+                >
+                  {sym}
+                </button>
+                <button
+                  onClick={() => removeSaved(sym)}
+                  className="text-xs px-1 py-0.5 rounded-r transition-colors"
+                  style={{
+                    background: 'var(--bg-row)',
+                    color:      'var(--text-dim)',
+                    border:     `1px solid var(--border)`,
+                    lineHeight: 1.6,
+                  }}
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
         )}
-
-        {/* Fetch duration */}
-        {fetchMs != null && !loading && (
-          <span className="text-xs tabular-nums" style={{ color: 'var(--text-dim)' }}>
-            {fetchMs < 1000 ? `${fetchMs}ms` : `${(fetchMs / 1000).toFixed(1)}s`}
-          </span>
-        )}
-
-        {/* Refresh */}
-        <button
-          onClick={() => fetchGex(activeSymbol)}
-          disabled={loading}
-          className="text-xs px-2 py-1 rounded"
-          style={{ background: 'var(--bg-row)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
-        >
-          {loading ? '…' : '↻'}
-        </button>
       </div>
 
       {/* ── Error ────────────────────────────────────────────────────────── */}
