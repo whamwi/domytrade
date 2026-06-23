@@ -8,8 +8,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const INDEX_SYMBOLS = ['SPX', 'NDX', 'RUT'] as const
 type IndexSymbol = typeof INDEX_SYMBOLS[number]
 
-// Daily-use stock quick-picks (transient live compute via Schwab)
-const QUICK_SYMBOLS = ['SPY', 'QQQ', 'AAPL', 'NVDA', 'TSLA', 'AMZN', 'MSFT', 'META', 'MU']
+const LS_KEY = 'gex_saved_symbols'
 
 // Expiry layer tabs
 type Layer = 'all' | 'ex_next' | 'monthly'
@@ -137,8 +136,11 @@ function layerValues(data: GexData, layer: Layer) {
 
 // ── Component ──────────────────────────────────────────────────────────────
 export default function GexPanel() {
-  const [activeSymbol, setActiveSymbol] = useState<string>('SPX')
-  const [customInput,  setCustomInput]  = useState('')
+  const [activeSymbol,   setActiveSymbol]   = useState<string>('SPX')
+  const [customInput,    setCustomInput]    = useState('')
+  const [savedSymbols,   setSavedSymbols]   = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(LS_KEY) ?? '[]') } catch { return [] }
+  })
   const [layer, setLayer]               = useState<Layer>('all')
   const [data,  setData]                = useState<GexData | null>(null)
   const [loading, setLoading]           = useState(false)
@@ -198,7 +200,22 @@ export default function GexPanel() {
 
   function handleCustomSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (customInput.trim()) selectSymbol(customInput)
+    const s = customInput.toUpperCase().trim()
+    if (!s) return
+    // Add to saved ribbon if not already there and not an index
+    if (!INDEX_SYMBOLS.includes(s as IndexSymbol) && !savedSymbols.includes(s)) {
+      const next = [...savedSymbols, s]
+      setSavedSymbols(next)
+      try { localStorage.setItem(LS_KEY, JSON.stringify(next)) } catch {}
+    }
+    selectSymbol(s)
+  }
+
+  function removeSaved(sym: string) {
+    const next = savedSymbols.filter(s => s !== sym)
+    setSavedSymbols(next)
+    try { localStorage.setItem(LS_KEY, JSON.stringify(next)) } catch {}
+    if (activeSymbol === sym) selectSymbol('SPX')
   }
 
   // ── Active layer values ──────────────────────────────────────────────────
@@ -302,27 +319,44 @@ export default function GexPanel() {
           </button>
         ))}
 
-        <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+        {savedSymbols.length > 0 && (
+          <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+        )}
 
-        {/* Stock quick-pick chips */}
-        {QUICK_SYMBOLS.map(sym => (
-          <button
-            key={sym}
-            onClick={() => selectSymbol(sym)}
-            className="text-xs px-2.5 py-1 rounded font-mono font-semibold transition-colors"
-            style={{
-              background: activeSymbol === sym ? 'rgba(251,191,36,0.15)' : 'var(--bg-row)',
-              color:      activeSymbol === sym ? '#fbbf24' : 'var(--text-muted)',
-              border:     `1px solid ${activeSymbol === sym ? 'rgba(251,191,36,0.4)' : 'var(--border)'}`,
-            }}
-          >
-            {sym}
-          </button>
+        {/* Saved stock ribbon — persists across sessions via localStorage */}
+        {savedSymbols.map(sym => (
+          <span key={sym} className="flex items-center gap-0.5">
+            <button
+              onClick={() => selectSymbol(sym)}
+              className="text-xs px-2.5 py-1 rounded-l font-mono font-semibold transition-colors"
+              style={{
+                background: activeSymbol === sym ? 'rgba(251,191,36,0.15)' : 'var(--bg-row)',
+                color:      activeSymbol === sym ? '#fbbf24' : 'var(--text-muted)',
+                border:     `1px solid ${activeSymbol === sym ? 'rgba(251,191,36,0.4)' : 'var(--border)'}`,
+                borderRight: 'none',
+              }}
+            >
+              {sym}
+            </button>
+            <button
+              onClick={() => removeSaved(sym)}
+              className="text-xs px-1 py-1 rounded-r transition-colors"
+              style={{
+                background: 'var(--bg-row)',
+                color:      'var(--text-dim)',
+                border:     `1px solid var(--border)`,
+                lineHeight: 1,
+              }}
+              title="Remove"
+            >
+              ×
+            </button>
+          </span>
         ))}
 
         <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
 
-        {/* Custom / transient symbol input */}
+        {/* Symbol input — adds to saved ribbon on submit */}
         <form onSubmit={handleCustomSubmit} className="flex items-center gap-1">
           <input
             value={customInput}
@@ -340,13 +374,6 @@ export default function GexPanel() {
             ↗
           </button>
         </form>
-
-        {/* Transient symbol indicator */}
-        {!INDEX_SYMBOLS.includes(activeSymbol as IndexSymbol) && (
-          <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(251,191,36,0.1)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.2)' }}>
-            {activeSymbol} · transient
-          </span>
-        )}
 
         <div style={{ flex: 1 }} />
 
