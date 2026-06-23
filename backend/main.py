@@ -2408,7 +2408,19 @@ async def background_loop():
 
             if _et_hhmm == 16 * 60 + 30 and last_daily_close_run != _today:
                 asyncio.create_task(refresh_daily_candles(incremental=True))
-                asyncio.create_task(refresh_swing_candles())   # swing-only tickers not in symbols
+                # Full D/W/M candle update for all 646 ticker_universe symbols
+                async def _run_daily_update():
+                    try:
+                        await asyncio.to_thread(
+                            lambda: __import__('subprocess').run(
+                                ['python3', 'daily_update.py', '--dry-run'],
+                                cwd=os.path.dirname(__file__),
+                            )
+                        )
+                        log.info('daily_update.py complete (D/W/M for full universe)')
+                    except Exception as e:
+                        log.warning('daily_update.py error: %s', e)
+                asyncio.create_task(_run_daily_update())
                 last_daily_close_run = _today
 
             # 5:30 PM ET on weekdays — swing scan (daily candles refreshed at 4:30 PM)
