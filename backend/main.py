@@ -4673,9 +4673,9 @@ def _fetch_asia_yfinance() -> list[dict]:
                 'change_pct': round((last - prev) / prev * 100, 2),
             })
         except Exception as e:
-            log.debug('Asia yfinance %s error: %s', item['symbol'], e)
+            log.warning('Asia yfinance %s error: %s', item['symbol'], e)
         time.sleep(0.4)   # gentle pacing between symbols
-    log.info('Asia yfinance fetch: %d/%d indices', len(result), len(ASIAN_INDICES))
+    log.warning('Asia yfinance fetch: %d/%d indices', len(result), len(ASIAN_INDICES))
     return result
 
 
