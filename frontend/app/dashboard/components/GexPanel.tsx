@@ -8,6 +8,9 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 const INDEX_SYMBOLS = ['SPX', 'NDX', 'RUT'] as const
 type IndexSymbol = typeof INDEX_SYMBOLS[number]
 
+// Daily-use stock quick-picks (transient live compute via Schwab)
+const QUICK_SYMBOLS = ['SPY', 'QQQ', 'AAPL', 'NVDA', 'TSLA', 'AMZN', 'MSFT', 'META', 'MU']
+
 // Expiry layer tabs
 type Layer = 'all' | 'ex_next' | 'monthly'
 const LAYERS: { key: Layer; label: string; sub: string }[] = [
@@ -296,6 +299,24 @@ export default function GexPanel() {
           >
             {sym}
             {sym === 'SPX' && <span className="ml-1 text-xs opacity-60">0DTE</span>}
+          </button>
+        ))}
+
+        <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+
+        {/* Stock quick-pick chips */}
+        {QUICK_SYMBOLS.map(sym => (
+          <button
+            key={sym}
+            onClick={() => selectSymbol(sym)}
+            className="text-xs px-2.5 py-1 rounded font-mono font-semibold transition-colors"
+            style={{
+              background: activeSymbol === sym ? 'rgba(251,191,36,0.15)' : 'var(--bg-row)',
+              color:      activeSymbol === sym ? '#fbbf24' : 'var(--text-muted)',
+              border:     `1px solid ${activeSymbol === sym ? 'rgba(251,191,36,0.4)' : 'var(--border)'}`,
+            }}
+          >
+            {sym}
           </button>
         ))}
 
