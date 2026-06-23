@@ -664,10 +664,10 @@ export default function SwingScanner() {
                       )
                     })()}
 
-                    {/* EMA21 — EMA8 vs EMA21 % spread */}
+                    {/* EMA21 — EOD close vs EMA21 % */}
                     {(() => {
-                      const pct21 = r.ema21 ? ((r.ema8 - r.ema21) / r.ema21 * 100) : null
-                      const above21 = r.ema8 > r.ema21
+                      const pct21 = r.ema21 ? ((r.scan_price - r.ema21) / r.ema21 * 100) : null
+                      const above21 = r.scan_price > r.ema21
                       return (
                         <td style={{ ...TD, textAlign: 'center', padding: '4px 4px', width: 42, borderRight: '1px solid var(--border)' }}>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
