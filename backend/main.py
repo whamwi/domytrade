@@ -2313,6 +2313,59 @@ async def background_loop():
         last_gex_baseline_run = _startup_et.date().isoformat()
         log.info('GEX startup baseline queued (weekday, post-6AM ET)')
 
+    # ── Startup catch-up: daily_update + swing scan ────────────────────────────
+    # If Railway redeploys after 4:30/5:30 PM ET, the in-memory guards are reset
+    # and the nightly windows are missed.  Check the DB and re-fire if needed.
+    _startup_hhmm = _startup_et.hour * 60 + _startup_et.minute
+    if _startup_et.weekday() < 5 and _startup_hhmm >= 16 * 60 + 30:
+        try:
+            _db_startup    = get_db()
+            _today_iso     = _startup_et.date().isoformat()
+            _today_candles = (_db_startup.table('ticker_candles_daily')
+                              .select('ticker').eq('bar_date', _today_iso)
+                              .limit(1).execute().data)
+            if not _today_candles:
+                async def _startup_daily_update():
+                    try:
+                        import subprocess as _sp
+                        await asyncio.to_thread(
+                            lambda: _sp.run(
+                                ['python3', 'daily_update.py'],
+                                cwd=os.path.dirname(__file__),
+                            )
+                        )
+                        log.info('Startup catch-up: daily_update.py complete')
+                    except Exception as _e:
+                        log.warning('Startup catch-up: daily_update.py error: %s', _e)
+                asyncio.create_task(_startup_daily_update())
+                last_daily_close_run = _today_iso
+                log.info('Startup catch-up: daily_update.py queued (no %s candles in DB)', _today_iso)
+        except Exception as _e:
+            log.warning('Startup catch-up daily_update check failed: %s', _e)
+
+    if _startup_et.weekday() < 5 and _startup_hhmm >= 17 * 60 + 30:
+        try:
+            _db_startup  = get_db()
+            _today_iso   = _startup_et.date().isoformat()
+            _latest_scan = (_db_startup.table('swing_scan_results')
+                            .select('scanned_at').order('scanned_at', desc=True)
+                            .limit(1).execute().data)
+            _scan_date   = (_latest_scan[0]['scanned_at'][:10] if _latest_scan else '')
+            if _scan_date != _today_iso:
+                async def _startup_swing_scan():
+                    try:
+                        from scanner import scan_swing as _scan_swing
+                        await asyncio.to_thread(lambda: _scan_swing(persist=True))
+                        log.info('Startup catch-up: swing scan complete')
+                    except Exception as _e:
+                        log.warning('Startup catch-up: swing scan error: %s', _e)
+                asyncio.create_task(_startup_swing_scan())
+                last_swing_scan_run = _today_iso
+                log.info('Startup catch-up: swing scan queued (last scan was %s, not %s)',
+                         _scan_date, _today_iso)
+        except Exception as _e:
+            log.warning('Startup catch-up swing scan check failed: %s', _e)
+
     while True:
         await asyncio.sleep(SIGNAL_REFRESH_SECS)   # 30s cadence
         try:
@@ -2427,7 +2480,7 @@ async def background_loop():
             if _et_hhmm == 17 * 60 + 30 and last_swing_scan_run != _today and _weekday < 5:
                 try:
                     from scanner import scan_swing
-                    asyncio.create_task(asyncio.to_thread(scan_swing))
+                    asyncio.create_task(asyncio.to_thread(lambda: scan_swing(persist=True)))
                     log.info('Swing scan started (nightly 5:30 PM ET)')
                 except Exception as e:
                     log.warning('Swing scan error: %s', e)
