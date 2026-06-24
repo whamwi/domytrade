@@ -152,12 +152,23 @@ def calc_laguerre_signal(
     ).values.astype(float)
 
     closes = close.values.astype(float)
+    opens  = df['Open'].values.astype(float)
     highs  = df['High'].values.astype(float)
     lows   = df['Low'].values.astype(float)
     prev_c = np.concatenate([[np.nan], closes[:-1]])
 
-    tr  = np.maximum(highs - lows,
-          np.maximum(np.abs(highs - prev_c), np.abs(lows - prev_c)))
+    # TOS uses hybrid candle OHLC for ATR (same candle as Laguerre input):
+    #   h = max(high, prev_close),  l = min(low, prev_close)
+    #   c = (o + h + l + close) / 4  where o = (open + prev_close) / 2
+    # TrueRange is then computed on (h, c, l) of hybrid candle.
+    o_h    = (opens + prev_c) / 2
+    h_h    = np.maximum(highs, prev_c)
+    l_h    = np.minimum(lows,  prev_c)
+    c_h    = (o_h + h_h + l_h + closes) / 4
+    prev_ch = np.concatenate([[np.nan], c_h[:-1]])
+
+    tr  = np.maximum(h_h - l_h,
+          np.maximum(np.abs(h_h - prev_ch), np.abs(l_h - prev_ch)))
     atr = pd.Series(tr).rolling(atr_len).mean().values
 
     n    = len(rsi_s)
