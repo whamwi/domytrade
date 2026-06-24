@@ -479,13 +479,19 @@ def _log_lag_signals(results: list[dict], scan_date: str) -> None:
         atr    = dist / 3.0
         stop   = round(entry - atr, 2) if signal == 'BUY' else round(entry + atr, 2)
         rows.append({
-            'ticker'     : r['ticker'],
-            'signal_date': scan_date,
-            'signal'     : signal,
-            'entry'      : entry,
-            'target'     : target,
-            'stop_price' : stop,
-            'outcome'    : 'OPEN',
+            'ticker'      : r['ticker'],
+            'signal_date' : scan_date,
+            'signal'      : signal,
+            'entry'       : entry,
+            'target'      : target,
+            'stop_price'  : stop,
+            'outcome'     : 'OPEN',
+            'score'       : r.get('score'),
+            'd_sq_state'  : r.get('d_sq_state'),
+            'd_mo_state'  : r.get('d_mo_state'),
+            'd_just_fired': r.get('d_just_fired', False),
+            'w_sq_state'  : r.get('w_sq_state'),
+            'w_mo_state'  : r.get('w_mo_state'),
         })
     if rows:
         db.table('lag_signal_log').upsert(rows, on_conflict='ticker,signal_date').execute()

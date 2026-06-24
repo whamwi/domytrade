@@ -16,6 +16,12 @@ interface LogRow {
   outcome_date: string | null
   outcome_price: number | null
   pnl_pct: number | null
+  score: number | null
+  d_sq_state: string | null
+  d_mo_state: string | null
+  d_just_fired: boolean | null
+  w_sq_state: string | null
+  w_mo_state: string | null
 }
 
 type OutcomeFilter = 'ALL' | 'OPEN' | 'HIT_TARGET' | 'HIT_STOP'
@@ -81,6 +87,48 @@ function SegBtn<T extends string>({
         </button>
       ))}
     </div>
+  )
+}
+
+const SQ_COLOR: Record<string, string> = {
+  FIRED:     '#facc15',
+  EXTRA_IN:  '#f97316',
+  ORIG_IN:   '#fb923c',
+  PRE_IN:    '#fbbf24',
+  EXTRA_OUT: '#818cf8',
+  ORIG_OUT:  '#a78bfa',
+  PRE_OUT:   '#c4b5fd',
+}
+const MO_COLOR: Record<string, string> = {
+  POS_UP: '#4ade80',
+  POS_DN: '#86efac',
+  NEG_DN: '#f87171',
+  NEG_UP: '#fca5a5',
+}
+
+function SqBadge({ state, fired }: { state: string | null; fired?: boolean | null }) {
+  if (!state) return <span style={{ color: 'var(--text-dim)' }}>—</span>
+  const color = SQ_COLOR[state] ?? '#94a3b8'
+  const label = fired ? '★ ' + state : state.replace('_', ' ')
+  return (
+    <span style={{
+      fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
+      padding: '2px 6px', borderRadius: 4,
+      background: `${color}18`, color, border: `1px solid ${color}44`,
+      whiteSpace: 'nowrap',
+    }}>{label}</span>
+  )
+}
+
+function MoBadge({ state }: { state: string | null }) {
+  if (!state) return <span style={{ color: 'var(--text-dim)' }}>—</span>
+  const color = MO_COLOR[state] ?? '#94a3b8'
+  return (
+    <span style={{
+      fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
+      padding: '2px 6px', borderRadius: 4,
+      background: `${color}18`, color, border: `1px solid ${color}44`,
+    }}>{state.replace('_', ' ')}</span>
   )
 }
 
@@ -226,14 +274,19 @@ export default function LagSignalLog() {
           <thead>
             <tr>
               <th style={TH}>TICKER</th>
-              <th style={TH}>SIGNAL DATE</th>
+              <th style={TH}>DATE</th>
               <th style={TH}>SIG</th>
+              <th style={{ ...TH, textAlign: 'right' }}>SCORE</th>
+              <th style={TH}>D SQ</th>
+              <th style={TH}>D MO</th>
+              <th style={TH}>W SQ</th>
+              <th style={TH}>W MO</th>
               <th style={{ ...TH, textAlign: 'right' }}>ENTRY</th>
               <th style={{ ...TH, textAlign: 'right' }}>TARGET</th>
               <th style={{ ...TH, textAlign: 'right' }}>STOP</th>
               <th style={{ ...TH, textAlign: 'right' }}>DIST %</th>
               <th style={TH}>OUTCOME</th>
-              <th style={TH}>OUTCOME DATE</th>
+              <th style={TH}>OUT DATE</th>
               <th style={{ ...TH, textAlign: 'right' }}>EXIT</th>
             </tr>
           </thead>
@@ -280,6 +333,31 @@ export default function LagSignalLog() {
                     </span>
                   </td>
 
+                  {/* Score */}
+                  <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>
+                    {r.score != null ? r.score.toFixed(1) : '—'}
+                  </td>
+
+                  {/* D SQ */}
+                  <td style={TD}>
+                    <SqBadge state={r.d_sq_state} fired={r.d_just_fired} />
+                  </td>
+
+                  {/* D MO */}
+                  <td style={TD}>
+                    <MoBadge state={r.d_mo_state} />
+                  </td>
+
+                  {/* W SQ */}
+                  <td style={TD}>
+                    <SqBadge state={r.w_sq_state} />
+                  </td>
+
+                  {/* W MO */}
+                  <td style={TD}>
+                    <MoBadge state={r.w_mo_state} />
+                  </td>
+
                   {/* Entry */}
                   <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace' }}>
                     {fmt(r.entry)}
@@ -320,7 +398,7 @@ export default function LagSignalLog() {
 
             {filtered.length === 0 && !loading && (
               <tr>
-                <td colSpan={10} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 40 }}>
+                <td colSpan={15} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 40 }}>
                   {rows.length === 0 ? 'No signals logged yet — runs nightly after each scan.' : 'No entries match filters.'}
                 </td>
               </tr>
