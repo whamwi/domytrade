@@ -309,6 +309,7 @@ export default function SwingScanner() {
   const [sqOnly, setSqOnly]       = useState(false)
   const [fireOnly, setFireOnly]   = useState(false)
   const [universe, setUniverse]   = useState<UniverseFilter>('ALL')
+  const [sortBy, setSortBy]       = useState<'lag' | 'score'>('lag')
   const [error, setError]         = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -377,6 +378,14 @@ export default function SwingScanner() {
     }
     return true
   })
+
+  const sorted = sortBy === 'lag'
+    ? [...rows].sort((a, b) => {
+        const av = a.lag_bars_ago ?? Infinity
+        const bv = b.lag_bars_ago ?? Infinity
+        return av - bv
+      })
+    : rows
 
   const longCount  = rows.filter(r => r.direction === 'LONG').length
   const shortCount = rows.filter(r => r.direction === 'SHORT').length
@@ -523,7 +532,17 @@ export default function SwingScanner() {
                 </th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>MOXIE W</th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>LAGR</th>
-                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>LAG SIG</th>
+                <th
+                  rowSpan={2}
+                  onClick={() => setSortBy(s => s === 'lag' ? 'score' : 'lag')}
+                  style={{
+                    ...TH, borderBottom: 'none', cursor: 'pointer', userSelect: 'none',
+                    color: sortBy === 'lag' ? 'var(--accent-blue)' : 'var(--text-dim)',
+                  }}
+                  title="Click to toggle sort: by signal age ↔ by score"
+                >
+                  LAG SIG {sortBy === 'lag' ? '↑' : ''}
+                </th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>VA</th>
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAW</th>
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAM</th>
@@ -553,7 +572,7 @@ export default function SwingScanner() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => {
+              {sorted.map(r => {
                 const isLong = r.direction === 'LONG'
                 const dirColor = isLong ? '#4ade80' : '#f87171'
                 const rowBg = r.score >= 4
@@ -790,7 +809,7 @@ export default function SwingScanner() {
                 )
               })}
 
-              {rows.length === 0 && !loading && (
+              {sorted.length === 0 && !loading && (
                 <tr>
                   <td colSpan={15} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 32 }}>
                     No symbols match the current filters.
