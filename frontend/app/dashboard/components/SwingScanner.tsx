@@ -310,6 +310,7 @@ export default function SwingScanner() {
   const [fireOnly, setFireOnly]   = useState(false)
   const [universe, setUniverse]   = useState<UniverseFilter>('ALL')
   const [sortBy, setSortBy]       = useState<'lag' | 'score'>('lag')
+  const [search, setSearch]       = useState('')
   const [error, setError]         = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -357,6 +358,7 @@ export default function SwingScanner() {
   }, [])
 
   const rows = (data?.rows ?? []).filter(r => {
+    if (search && !r.ticker.toUpperCase().includes(search.toUpperCase())) return false
     if (universe === 'EQUITIES' &&  SECTOR_TICKERS.has(r.ticker)) return false
     if (universe === 'SECTORS'  && !SECTOR_TICKERS.has(r.ticker)) return false
     if (dirFilter !== 'ALL' && r.direction !== dirFilter) return false
@@ -428,6 +430,34 @@ export default function SwingScanner() {
         )}
 
         <div style={{ flex: 1 }} />
+
+        {/* Search */}
+        <div style={{ position: 'relative' }}>
+          <input
+            type="text"
+            placeholder="Search ticker…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{
+              fontSize: 11, fontFamily: 'monospace', fontWeight: 700,
+              padding: '4px 28px 4px 9px', borderRadius: 5, width: 130,
+              background: search ? 'rgba(59,130,246,0.1)' : 'rgba(255,255,255,0.04)',
+              border: search ? '1px solid var(--accent-blue)' : '1px solid var(--border)',
+              color: 'var(--text-primary)',
+              outline: 'none',
+            }}
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              style={{
+                position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: 'var(--text-dim)', fontSize: 12, lineHeight: 1, padding: 0,
+              }}
+            >✕</button>
+          )}
+        </div>
 
         {/* Filters */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
