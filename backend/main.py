@@ -11001,3 +11001,11 @@ async def api_swing_scan_refresh():
     from scanner import scan_swing
     asyncio.create_task(asyncio.to_thread(scan_swing))
     return {'ok': True, 'message': 'Swing scan started — results will be ready in ~60s'}
+
+
+@app.get('/api/lag-log')
+async def api_lag_log():
+    """Return the Laguerre signal log — all entries newest first."""
+    from scanner import load_lag_signal_log
+    rows = await asyncio.to_thread(load_lag_signal_log)
+    return {'rows': rows, 'count': len(rows)}

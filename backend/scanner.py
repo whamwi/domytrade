@@ -444,8 +444,122 @@ def scan_swing(symbols: list[str] | None = None, persist: bool = True) -> list[d
             _persist_swing_results(results)
         except Exception:
             pass
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            scan_date = datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+            _log_lag_signals(results, scan_date)
+            _grade_lag_signals()
+        except Exception:
+            pass
 
     return results
+
+
+# ── Laguerre Signal Log ───────────────────────────────────────────────────────
+
+def _log_lag_signals(results: list[dict], scan_date: str) -> None:
+    """Insert today's fresh Laguerre signals (bars_ago == 0) into lag_signal_log."""
+    db   = get_db()
+    rows = []
+    for r in results:
+        if r.get('lag_signal') and r.get('lag_bars_ago') == 0:
+            entry  = r['lag_entry']
+            target = r['lag_target']
+            if entry is None or target is None:
+                continue
+            dist = abs(target - entry)
+            atr  = dist / 3.0
+            if r['lag_signal'] == 'BUY':
+                stop = round(entry - atr, 2)
+            else:
+                stop = round(entry + atr, 2)
+            rows.append({
+                'ticker'     : r['ticker'],
+                'signal_date': scan_date,
+                'signal'     : r['lag_signal'],
+                'entry'      : entry,
+                'target'     : target,
+                'stop_price' : stop,
+                'outcome'    : 'OPEN',
+            })
+    if rows:
+        db.table('lag_signal_log').upsert(rows, on_conflict='ticker,signal_date').execute()
+
+
+def _grade_lag_signals() -> None:
+    """Grade all OPEN lag signals against subsequent daily candles."""
+    db   = get_db()
+    open_rows = db.table('lag_signal_log').select(
+        'id,ticker,signal_date,signal,entry,target,stop_price'
+    ).eq('outcome', 'OPEN').execute().data
+    if not open_rows:
+        return
+
+    for row in open_rows:
+        ticker      = row['ticker']
+        signal_date = row['signal_date']
+        signal      = row['signal']
+        entry       = float(row['entry'])
+        target      = float(row['target'])
+        stop        = float(row['stop_price'])
+
+        # Fetch candles strictly after signal_date
+        candles = db.table('ticker_candles_daily').select(
+            'bar_date,high,low,close'
+        ).eq('ticker', ticker).gt('bar_date', signal_date).order(
+            'bar_date', desc=False
+        ).limit(90).execute().data
+        if not candles:
+            continue
+
+        outcome = outcome_date = outcome_price = pnl_pct = None
+        for c in candles:
+            high  = float(c['high'])
+            low   = float(c['low'])
+            close = float(c['close'])
+            date  = c['bar_date']
+
+            if signal == 'BUY':
+                hit_stop   = low  <= stop
+                hit_target = high >= target
+            else:
+                hit_stop   = high >= stop
+                hit_target = low  <= target
+
+            if hit_stop and hit_target:
+                # Both in same bar — stop assumed first (conservative)
+                hit_target = False
+
+            if hit_stop:
+                outcome       = 'HIT_STOP'
+                outcome_date  = date
+                outcome_price = stop
+                break
+            if hit_target:
+                outcome       = 'HIT_TARGET'
+                outcome_date  = date
+                outcome_price = target
+                break
+
+        if outcome:
+            if signal == 'BUY':
+                pnl_pct = round((outcome_price - entry) / entry * 100, 4)
+            else:
+                pnl_pct = round((entry - outcome_price) / entry * 100, 4)
+            db.table('lag_signal_log').update({
+                'outcome'      : outcome,
+                'outcome_date' : outcome_date,
+                'outcome_price': outcome_price,
+                'pnl_pct'     : pnl_pct,
+            }).eq('id', row['id']).execute()
+
+
+def load_lag_signal_log(limit: int = 300) -> list[dict]:
+    """Return recent Laguerre signal log rows, newest first."""
+    return get_db().table('lag_signal_log').select('*').order(
+        'signal_date', desc=True
+    ).limit(limit).execute().data or []
 
 
 # ── Grading helpers ───────────────────────────────────────────────────────────
