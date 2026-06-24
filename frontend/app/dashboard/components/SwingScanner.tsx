@@ -52,6 +52,10 @@ interface SwingRow {
   ema21: number
   moxie_w: number
   laguerre: number
+  lag_signal:   'BUY' | 'SELL' | null
+  lag_entry:    number | null
+  lag_target:   number | null
+  lag_bars_ago: number | null
   // VAW / VAM
   vaw_m: number
   vam_m: number
@@ -519,6 +523,7 @@ export default function SwingScanner() {
                 </th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>MOXIE W</th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>LAGR</th>
+                <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>LAG SIG</th>
                 <th style={{ ...TH, borderBottom: 'none' }} rowSpan={2}>VA</th>
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAW</th>
                 <th style={{ ...TH, textAlign: 'right', borderBottom: 'none' }} rowSpan={2}>VAM</th>
@@ -711,6 +716,44 @@ export default function SwingScanner() {
                       </div>
                     </td>
 
+                    {/* Laguerre Signal */}
+                    <td style={{ ...TD, minWidth: 90 }}>
+                      {r.lag_signal ? (() => {
+                        const isBuy = r.lag_signal === 'BUY'
+                        const col   = isBuy ? '#4ade80' : '#f87171'
+                        const dim   = 'var(--text-muted)'
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span style={{
+                                fontSize: 8, fontWeight: 700, letterSpacing: '0.06em',
+                                padding: '2px 5px', borderRadius: 4,
+                                background: `${col}22`, color: col,
+                                border: `1px solid ${col}55`,
+                              }}>
+                                {r.lag_signal}
+                              </span>
+                              {r.lag_bars_ago != null && (
+                                <span style={{ fontSize: 9, color: dim, fontFamily: 'monospace' }}>
+                                  {r.lag_bars_ago === 0 ? 'today' : `${r.lag_bars_ago}d`}
+                                </span>
+                              )}
+                            </div>
+                            {r.lag_entry != null && (
+                              <span style={{ fontSize: 9, fontFamily: 'monospace', color: dim }}>
+                                E {r.lag_entry.toFixed(2)}
+                              </span>
+                            )}
+                            {r.lag_target != null && (
+                              <span style={{ fontSize: 9, fontFamily: 'monospace', color: col }}>
+                                T {r.lag_target.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })() : <span style={{ color: 'var(--text-dim)', fontSize: 9 }}>—</span>}
+                    </td>
+
                     {/* VA Badge — mp-chip pill style */}
                     <td style={TD}>
                       {(() => {
@@ -749,7 +792,7 @@ export default function SwingScanner() {
 
               {rows.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={14} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 32 }}>
+                  <td colSpan={15} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 32 }}>
                     No symbols match the current filters.
                   </td>
                 </tr>
