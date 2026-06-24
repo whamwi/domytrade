@@ -164,44 +164,60 @@ def update_tf(db, tickers: list[str], tf: str):
 # ── Today's bar injection (quotes-based, handles Schwab history lag) ──────────
 
 def _inject_today_bar(db, tickers: list[str]) -> None:
-    """Upsert today's OHLCV bar from Schwab live quotes for all tickers.
+    """Upsert today's OHLCV bar using yfinance (official regular-session close).
 
-    Schwab's price history API typically lags by 1 business day, so the
-    most recent daily close is often absent after running update_tf().
-    This fixes that by pulling current-session OHLCV from the quotes endpoint.
+    Schwab's price history API lags ~1 business day and the quotes endpoint
+    returns lastPrice which includes after-hours trades — giving an incorrect
+    close when called after 4 PM ET.  yfinance always returns the official
+    exchange closing auction price.
     """
+    import yfinance as yf
     from zoneinfo import ZoneInfo
     ET = ZoneInfo('America/New_York')
     today_str = datetime.now(ET).date().isoformat()
     stocks = [t for t in tickers if not t.startswith('/')]
-    log(f"Injecting today's bar ({today_str}) from live quotes for {len(stocks)} symbols")
+    log(f"Injecting today's bar ({today_str}) via yfinance for {len(stocks)} symbols")
 
-    CHUNK = 100
-    ok = 0
-    for i in range(0, len(stocks), CHUNK):
-        chunk = stocks[i:i+CHUNK]
-        quotes = get_quotes(chunk)
-        rows = []
-        for ticker in chunk:
-            q = quotes.get(ticker, {})
-            last = q.get('last')
-            if not last:
+    # yfinance batch download — end date is exclusive so add 1 day
+    from datetime import date, timedelta
+    end_str = (date.fromisoformat(today_str) + timedelta(days=1)).isoformat()
+    try:
+        df = yf.download(stocks, start=today_str, end=end_str,
+                         progress=False, auto_adjust=False, threads=True)
+    except Exception as e:
+        log(f"yfinance download failed: {e}")
+        return
+
+    if df.empty:
+        log("yfinance returned no data — market may not have closed yet")
+        return
+
+    rows = []
+    for ticker in stocks:
+        try:
+            o = float(df[('Open',   ticker)].iloc[0])
+            h = float(df[('High',   ticker)].iloc[0])
+            l = float(df[('Low',    ticker)].iloc[0])
+            c = float(df[('Close',  ticker)].iloc[0])
+            v = int(df[('Volume',  ticker)].iloc[0])
+            if not c or c != c:   # NaN check
                 continue
             rows.append({
                 'ticker':   ticker,
                 'bar_date': today_str,
-                'open':     float(q.get('open') or last),
-                'high':     float(q.get('high') or last),
-                'low':      float(q.get('low') or last),
-                'close':    float(last),
-                'volume':   int(q.get('volume') or 0),
+                'open':     round(o, 4),
+                'high':     round(h, 4),
+                'low':      round(l, 4),
+                'close':    round(c, 4),
+                'volume':   v,
             })
-        if rows:
-            db.table('ticker_candles_daily').upsert(rows, on_conflict='ticker,bar_date').execute()
-            ok += len(rows)
-        time.sleep(0.2)
+        except Exception:
+            continue
 
-    log(f"Today's bar injected: {ok}/{len(stocks)} symbols")
+    if rows:
+        db.table('ticker_candles_daily').upsert(rows, on_conflict='ticker,bar_date').execute()
+
+    log(f"Today's bar injected: {len(rows)}/{len(stocks)} symbols")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
