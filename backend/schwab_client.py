@@ -300,6 +300,7 @@ def get_quotes(symbols: list[str]) -> dict:
         last_price = (q.get('lastPrice') or 0) if is_futures else (q.get('lastPrice') or q.get('mark', 0))
         out[sym] = {
             'last'      : last_price,
+            'mark'      : q.get('mark', 0),          # RTH close — stable after 4 PM, unaffected by AH trades
             'open'      : q.get('openPrice', 0),
             'high'      : q.get('highPrice', 0),
             'low'       : q.get('lowPrice', 0),
