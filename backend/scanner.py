@@ -486,12 +486,16 @@ def _log_lag_signals(results: list[dict], scan_date: str) -> None:
             'target'      : target,
             'stop_price'  : stop,
             'outcome'     : 'OPEN',
-            'score'       : r.get('score'),
-            'd_sq_state'  : r.get('d_sq_state'),
-            'd_mo_state'  : r.get('d_mo_state'),
-            'd_just_fired': r.get('d_just_fired', False),
-            'w_sq_state'  : r.get('w_sq_state'),
-            'w_mo_state'  : r.get('w_mo_state'),
+            'score'        : r.get('score'),
+            'd_sq_state'   : r.get('d_sq_state'),
+            'd_mo_state'   : r.get('d_mo_state'),
+            'd_just_fired' : r.get('d_just_fired', False),
+            'd_bars_in_sq' : r.get('d_bars_in_sq'),
+            'd_bars_fired' : r.get('d_bars_fired'),
+            'sma50'        : r.get('sma50'),
+            'ema8'         : r.get('ema8'),
+            'ema21'        : r.get('ema21'),
+            'moxie_w'      : r.get('moxie_w'),
         })
     if rows:
         db.table('lag_signal_log').upsert(rows, on_conflict='ticker,signal_date').execute()

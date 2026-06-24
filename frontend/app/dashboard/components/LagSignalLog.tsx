@@ -20,30 +20,117 @@ interface LogRow {
   d_sq_state: string | null
   d_mo_state: string | null
   d_just_fired: boolean | null
-  w_sq_state: string | null
-  w_mo_state: string | null
+  d_bars_in_sq: number | null
+  d_bars_fired: number | null
+  sma50: number | null
+  ema8: number | null
+  ema21: number | null
+  moxie_w: number | null
 }
 
 type OutcomeFilter = 'ALL' | 'OPEN' | 'HIT_TARGET' | 'HIT_STOP'
 type SigFilter     = 'ALL' | 'BUY'  | 'SELL'
 
-const TH: React.CSSProperties = {
-  padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700,
-  letterSpacing: '0.07em', color: 'var(--text-dim)',
-  borderBottom: '1px solid var(--border)',
-  position: 'sticky', top: 0, background: 'var(--bg-panel)', zIndex: 1,
-  whiteSpace: 'nowrap',
+// ── Shared scanner colours ─────────────────────────────────────────────────────
+const SQ_COLOR: Record<string, string> = {
+  EXTRA_IN:  '#eab308', EXTRA_OUT: '#eab308',
+  ORIG_IN:   '#dc2626', ORIG_OUT:  '#dc2626',
+  PRE_IN:    '#ec4899', PRE_OUT:   '#eab308',
+  FIRED:     '#16a34a',
 }
-const TD: React.CSSProperties = {
-  padding: '6px 10px', fontSize: 11,
-  borderBottom: '1px solid rgba(255,255,255,0.03)',
-  whiteSpace: 'nowrap',
+const MO_COLOR: Record<string, string> = {
+  POS_UP: '#22d3ee', POS_DN: '#3b82f6',
+  NEG_DN: '#dc2626', NEG_UP: '#fbbf24',
 }
 
+// ── Reused scanner sub-components ─────────────────────────────────────────────
+function Check({ ok }: { ok: boolean }) {
+  return (
+    <span style={{ color: ok ? '#4ade80' : '#ef4444', fontWeight: 700, fontSize: 12 }}>
+      {ok ? '✓' : '✗'}
+    </span>
+  )
+}
+
+function Triangle({ above }: { above: boolean }) {
+  return (
+    <span style={{ color: above ? '#4ade80' : '#ef4444', fontSize: 13, lineHeight: 1 }}>
+      {above ? '▲' : '▼'}
+    </span>
+  )
+}
+
+function SqCell({ state, moState, bars, fired, justFired }: {
+  state: string | null
+  moState?: string | null
+  bars?: number | null
+  fired?: number | null
+  justFired?: boolean | null
+}) {
+  if (!state) return <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>—</span>
+  const dotColor  = SQ_COLOR[state] ?? '#64748b'
+  const moColor   = moState ? (MO_COLOR[moState] ?? '#64748b') : null
+  const isUp      = moState === 'POS_UP' || moState === 'NEG_UP'
+  const isFired   = state === 'FIRED'
+  const recentFire = justFired || fired === 2
+  const showFlash  = isFired && moState === 'POS_UP' && recentFire
+  const barLabel   = showFlash ? '⚡' : isFired && fired != null ? `+${fired}` : (bars ?? '')
+  return (
+    <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <span
+          className={justFired ? 'sqz-first-fire' : undefined}
+          style={{
+            width: 12, height: 12, borderRadius: '50%', display: 'inline-block',
+            background: dotColor,
+            boxShadow: isFired ? `0 0 ${showFlash ? 8 : 5}px ${dotColor}${showFlash ? 'cc' : '88'}` : 'none',
+          }}
+        />
+        {moColor && (
+          <span style={{ color: moColor, fontSize: 10, fontWeight: 900, lineHeight: 1, fontFamily: 'monospace' }}>
+            {isUp ? '▲' : '▼'}
+          </span>
+        )}
+      </span>
+      {barLabel !== '' && (
+        <span style={{
+          fontSize: showFlash ? 11 : 10, fontWeight: 700,
+          fontFamily: showFlash ? 'inherit' : 'monospace',
+          color: showFlash ? '#4ade80' : isFired ? '#86efac' : 'var(--text-muted)',
+          lineHeight: 1,
+        }}>
+          {barLabel}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function ScorePill({ score, direction }: { score: number; direction: 'LONG' | 'SHORT' }) {
+  const isHot  = score >= 5
+  const isWarm = score === 4
+  const fill   = direction === 'LONG' ? '#4ade80' : '#f87171'
+  const bg     = isHot  ? (direction === 'LONG' ? '#14532d' : '#7f1d1d')
+               : isWarm ? 'rgba(255,255,255,0.08)'
+               :           'rgba(255,255,255,0.04)'
+  const color  = isHot ? fill : isWarm ? fill : 'var(--text-dim)'
+  const border = isHot ? `1px solid ${fill}55` : '1px solid var(--border)'
+  return (
+    <span style={{
+      display: 'inline-block', fontFamily: 'monospace', fontWeight: 800,
+      fontSize: 11, padding: '3px 9px', borderRadius: 6,
+      background: bg, color, border, letterSpacing: '0.04em',
+    }}>
+      {score}/5
+    </span>
+  )
+}
+
+// ── Outcome badge ──────────────────────────────────────────────────────────────
 function OutcomeBadge({ outcome, pnl }: { outcome: LogRow['outcome']; pnl: number | null }) {
   const cfg = {
-    OPEN:       { label: 'OPEN',    bg: 'rgba(148,163,184,0.1)', color: '#94a3b8', border: 'rgba(148,163,184,0.25)' },
-    HIT_TARGET: { label: '✓ TARGET', bg: 'rgba(74,222,128,0.12)', color: '#4ade80', border: 'rgba(74,222,128,0.3)'  },
+    OPEN:       { label: 'OPEN',     bg: 'rgba(148,163,184,0.1)',  color: '#94a3b8', border: 'rgba(148,163,184,0.25)' },
+    HIT_TARGET: { label: '✓ TARGET', bg: 'rgba(74,222,128,0.12)',  color: '#4ade80', border: 'rgba(74,222,128,0.3)'  },
     HIT_STOP:   { label: '✗ STOP',   bg: 'rgba(248,113,113,0.12)', color: '#f87171', border: 'rgba(248,113,113,0.3)' },
   }[outcome]
   return (
@@ -56,10 +143,7 @@ function OutcomeBadge({ outcome, pnl }: { outcome: LogRow['outcome']; pnl: numbe
         {cfg.label}
       </span>
       {pnl != null && outcome !== 'OPEN' && (
-        <span style={{
-          fontSize: 10, fontWeight: 700, fontFamily: 'monospace',
-          color: pnl >= 0 ? '#4ade80' : '#f87171',
-        }}>
+        <span style={{ fontSize: 10, fontWeight: 700, fontFamily: 'monospace', color: pnl >= 0 ? '#4ade80' : '#f87171' }}>
           {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}%
         </span>
       )}
@@ -67,11 +151,10 @@ function OutcomeBadge({ outcome, pnl }: { outcome: LogRow['outcome']; pnl: numbe
   )
 }
 
+// ── Filter button ──────────────────────────────────────────────────────────────
 function SegBtn<T extends string>({
   value, options, labels, onChange,
-}: {
-  value: T; options: T[]; labels?: Record<string, string>; onChange: (v: T) => void
-}) {
+}: { value: T; options: T[]; labels?: Record<string, string>; onChange: (v: T) => void }) {
   return (
     <div style={{ display: 'flex', gap: 3 }}>
       {options.map(opt => (
@@ -90,64 +173,36 @@ function SegBtn<T extends string>({
   )
 }
 
-const SQ_COLOR: Record<string, string> = {
-  FIRED:     '#facc15',
-  EXTRA_IN:  '#f97316',
-  ORIG_IN:   '#fb923c',
-  PRE_IN:    '#fbbf24',
-  EXTRA_OUT: '#818cf8',
-  ORIG_OUT:  '#a78bfa',
-  PRE_OUT:   '#c4b5fd',
-}
-const MO_COLOR: Record<string, string> = {
-  POS_UP: '#4ade80',
-  POS_DN: '#86efac',
-  NEG_DN: '#f87171',
-  NEG_UP: '#fca5a5',
-}
-
-function SqBadge({ state, fired }: { state: string | null; fired?: boolean | null }) {
-  if (!state) return <span style={{ color: 'var(--text-dim)' }}>—</span>
-  const color = SQ_COLOR[state] ?? '#94a3b8'
-  const label = fired ? '★ ' + state : state.replace('_', ' ')
-  return (
-    <span style={{
-      fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
-      padding: '2px 6px', borderRadius: 4,
-      background: `${color}18`, color, border: `1px solid ${color}44`,
-      whiteSpace: 'nowrap',
-    }}>{label}</span>
-  )
-}
-
-function MoBadge({ state }: { state: string | null }) {
-  if (!state) return <span style={{ color: 'var(--text-dim)' }}>—</span>
-  const color = MO_COLOR[state] ?? '#94a3b8'
-  return (
-    <span style={{
-      fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
-      padding: '2px 6px', borderRadius: 4,
-      background: `${color}18`, color, border: `1px solid ${color}44`,
-    }}>{state.replace('_', ' ')}</span>
-  )
-}
-
 function fmt(n: number | null, decimals = 2) {
   return n == null ? '—' : n.toFixed(decimals)
 }
-
 function fmtDate(iso: string | null) {
   if (!iso) return '—'
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
 }
 
+// ── Styles ─────────────────────────────────────────────────────────────────────
+const TH: React.CSSProperties = {
+  padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700,
+  letterSpacing: '0.07em', color: 'var(--text-dim)',
+  borderBottom: '1px solid var(--border)',
+  position: 'sticky', top: 0, background: 'var(--bg-panel)', zIndex: 1,
+  whiteSpace: 'nowrap',
+}
+const TD: React.CSSProperties = {
+  padding: '6px 8px', fontSize: 11,
+  borderBottom: '1px solid rgba(255,255,255,0.03)',
+  whiteSpace: 'nowrap',
+}
+
+// ── Main component ─────────────────────────────────────────────────────────────
 export default function LagSignalLog() {
-  const [rows, setRows]         = useState<LogRow[]>([])
-  const [loading, setLoading]   = useState(false)
-  const [error, setError]       = useState<string | null>(null)
-  const [outcome, setOutcome]   = useState<OutcomeFilter>('ALL')
-  const [sig, setSig]           = useState<SigFilter>('ALL')
-  const [search, setSearch]     = useState('')
+  const [rows, setRows]       = useState<LogRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState<string | null>(null)
+  const [outcome, setOutcome] = useState<OutcomeFilter>('ALL')
+  const [sig, setSig]         = useState<SigFilter>('ALL')
+  const [search, setSearch]   = useState('')
 
   const load = useCallback(async () => {
     setLoading(true); setError(null)
@@ -156,7 +211,7 @@ export default function LagSignalLog() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const d = await r.json()
       setRows(d.rows ?? [])
-    } catch (e) {
+    } catch {
       setError('Failed to load signal log')
     } finally {
       setLoading(false)
@@ -172,19 +227,15 @@ export default function LagSignalLog() {
     return true
   })
 
-  // Summary stats (closed trades only)
-  const closed   = filtered.filter(r => r.outcome !== 'OPEN')
-  const wins     = closed.filter(r => r.outcome === 'HIT_TARGET')
-  const winRate  = closed.length ? Math.round(wins.length / closed.length * 100) : null
-  const avgPnl   = closed.length
+  const closed  = filtered.filter(r => r.outcome !== 'OPEN')
+  const wins    = closed.filter(r => r.outcome === 'HIT_TARGET')
+  const winRate = closed.length ? Math.round(wins.length / closed.length * 100) : null
+  const avgPnl  = closed.length
     ? closed.reduce((s, r) => s + (r.pnl_pct ?? 0), 0) / closed.length
     : null
 
   return (
-    <div style={{
-      height: '100vh', display: 'flex', flexDirection: 'column',
-      background: 'var(--bg-base)', color: 'var(--text-primary)',
-    }}>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
 
       {/* Header */}
       <div style={{
@@ -192,14 +243,9 @@ export default function LagSignalLog() {
         borderBottom: '1px solid var(--border)', background: 'var(--bg-panel)',
         flexShrink: 0, flexWrap: 'wrap',
       }}>
-        <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.05em' }}>
-          LAG SIG LOG
-        </span>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-          {rows.length} entries
-        </span>
+        <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.05em' }}>LAG SIG LOG</span>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{rows.length} entries</span>
 
-        {/* Stats */}
         {closed.length > 0 && (
           <div style={{ display: 'flex', gap: 16, fontSize: 10, color: 'var(--text-dim)' }}>
             <span>
@@ -225,9 +271,7 @@ export default function LagSignalLog() {
         {/* Search */}
         <div style={{ position: 'relative' }}>
           <input
-            type="text"
-            placeholder="Ticker…"
-            value={search}
+            type="text" placeholder="Ticker…" value={search}
             onChange={e => setSearch(e.target.value)}
             style={{
               fontSize: 11, fontFamily: 'monospace', fontWeight: 700,
@@ -247,9 +291,7 @@ export default function LagSignalLog() {
         </div>
 
         <SegBtn<SigFilter>
-          value={sig}
-          options={['ALL', 'BUY', 'SELL']}
-          onChange={setSig}
+          value={sig} options={['ALL', 'BUY', 'SELL']} onChange={setSig}
         />
         <SegBtn<OutcomeFilter>
           value={outcome}
@@ -257,7 +299,6 @@ export default function LagSignalLog() {
           labels={{ ALL: 'All', OPEN: 'Open', HIT_TARGET: '✓ Target', HIT_STOP: '✗ Stop' }}
           onChange={setOutcome}
         />
-
         <button onClick={load} style={{
           fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 5,
           background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)',
@@ -265,7 +306,6 @@ export default function LagSignalLog() {
         }}>↻</button>
       </div>
 
-      {/* Error */}
       {error && <div style={{ padding: 16, color: '#f87171', fontSize: 12 }}>{error}</div>}
 
       {/* Table */}
@@ -276,25 +316,36 @@ export default function LagSignalLog() {
               <th style={TH}>TICKER</th>
               <th style={TH}>DATE</th>
               <th style={TH}>SIG</th>
-              <th style={{ ...TH, textAlign: 'right' }}>SCORE</th>
-              <th style={TH}>D SQ</th>
-              <th style={TH}>D MO</th>
-              <th style={TH}>W SQ</th>
-              <th style={TH}>W MO</th>
-              <th style={{ ...TH, textAlign: 'right' }}>ENTRY</th>
+              <th style={{ ...TH, textAlign: 'center' }}>SCORE</th>
+              {/* Daily SQZ */}
+              <th style={{ ...TH, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>SQZ D</th>
+              {/* Stacked MA */}
+              <th style={{ ...TH, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>SMA50</th>
+              <th style={{ ...TH, textAlign: 'center' }}>EMA8</th>
+              <th style={{ ...TH, textAlign: 'center', borderRight: '1px solid var(--border)' }}>EMA21</th>
+              {/* Moxie */}
+              <th style={{ ...TH }}>MOXIE</th>
+              {/* Trade levels */}
+              <th style={{ ...TH, textAlign: 'right', borderLeft: '1px solid var(--border)' }}>ENTRY</th>
               <th style={{ ...TH, textAlign: 'right' }}>TARGET</th>
               <th style={{ ...TH, textAlign: 'right' }}>STOP</th>
               <th style={{ ...TH, textAlign: 'right' }}>DIST %</th>
-              <th style={TH}>OUTCOME</th>
+              {/* Outcome */}
+              <th style={{ ...TH, borderLeft: '1px solid var(--border)' }}>OUTCOME</th>
               <th style={TH}>OUT DATE</th>
               <th style={{ ...TH, textAlign: 'right' }}>EXIT</th>
             </tr>
           </thead>
           <tbody>
             {filtered.map(r => {
-              const isBuy     = r.signal === 'BUY'
-              const sigColor  = isBuy ? '#4ade80' : '#f87171'
-              const targetDist = r.entry ? Math.abs((r.target - r.entry) / r.entry * 100) : null
+              const isBuy       = r.signal === 'BUY'
+              const sigColor    = isBuy ? '#4ade80' : '#f87171'
+              const direction   = isBuy ? 'LONG' : 'SHORT'
+              const targetDist  = r.entry ? Math.abs((r.target - r.entry) / r.entry * 100) : null
+              const p50 = r.sma50 && r.entry ? (r.entry - r.sma50) / r.sma50 * 100 : null
+              const p8  = r.ema8  && r.entry ? (r.entry - r.ema8)  / r.ema8  * 100 : null
+              const p21 = r.ema21 && r.entry ? (r.entry - r.ema21) / r.ema21 * 100 : null
+
               return (
                 <tr key={r.id}
                   style={{ background: 'transparent' }}
@@ -302,12 +353,12 @@ export default function LagSignalLog() {
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                 >
                   {/* Ticker */}
-                  <td style={{ ...TD, paddingLeft: 16 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <td style={{ ...TD, paddingLeft: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                       <img
                         src={`https://img.logo.dev/ticker/${r.ticker}?token=pk_fZOnZkh3QrCkdBG6NS8ckQ&size=128&format=png&retina=true`}
                         alt=""
-                        style={{ height: 24, width: 24, objectFit: 'contain', borderRadius: 4, flexShrink: 0 }}
+                        style={{ height: 22, width: 22, objectFit: 'contain', borderRadius: 4, flexShrink: 0 }}
                         onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                       <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12 }}>
@@ -316,12 +367,12 @@ export default function LagSignalLog() {
                     </div>
                   </td>
 
-                  {/* Signal date */}
-                  <td style={{ ...TD, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                  {/* Date */}
+                  <td style={{ ...TD, color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 10 }}>
                     {fmtDate(r.signal_date)}
                   </td>
 
-                  {/* Signal badge */}
+                  {/* Signal */}
                   <td style={TD}>
                     <span style={{
                       fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
@@ -329,37 +380,81 @@ export default function LagSignalLog() {
                       background: `${sigColor}22`, color: sigColor,
                       border: `1px solid ${sigColor}55`,
                     }}>
-                      {isBuy ? '▲ ' : '▼ '}{r.signal}
+                      {isBuy ? '▲ BUY' : '▼ SELL'}
                     </span>
                   </td>
 
                   {/* Score */}
-                  <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>
-                    {r.score != null ? r.score.toFixed(1) : '—'}
+                  <td style={{ ...TD, textAlign: 'center' }}>
+                    {r.score != null
+                      ? <ScorePill score={r.score} direction={direction} />
+                      : <span style={{ color: 'var(--text-dim)' }}>—</span>}
                   </td>
 
-                  {/* D SQ */}
-                  <td style={TD}>
-                    <SqBadge state={r.d_sq_state} fired={r.d_just_fired} />
+                  {/* Daily SQZ */}
+                  <td style={{ ...TD, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
+                    <SqCell
+                      state={r.d_sq_state}
+                      moState={r.d_mo_state}
+                      bars={r.d_bars_in_sq}
+                      fired={r.d_bars_fired}
+                      justFired={r.d_just_fired}
+                    />
                   </td>
 
-                  {/* D MO */}
-                  <td style={TD}>
-                    <MoBadge state={r.d_mo_state} />
+                  {/* SMA50 */}
+                  <td style={{ ...TD, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                      <Triangle above={r.entry != null && r.sma50 != null && r.entry > r.sma50} />
+                      {p50 != null && (
+                        <span style={{ fontSize: 9, fontFamily: 'monospace', color: p50 >= 0 ? '#4ade80' : '#f87171' }}>
+                          {p50 >= 0 ? '+' : ''}{p50.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
                   </td>
 
-                  {/* W SQ */}
-                  <td style={TD}>
-                    <SqBadge state={r.w_sq_state} />
+                  {/* EMA8 */}
+                  <td style={{ ...TD, textAlign: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                      <Triangle above={r.entry != null && r.ema8 != null && r.entry > r.ema8} />
+                      {p8 != null && (
+                        <span style={{ fontSize: 9, fontFamily: 'monospace', color: p8 >= 0 ? '#4ade80' : '#f87171' }}>
+                          {p8 >= 0 ? '+' : ''}{p8.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
                   </td>
 
-                  {/* W MO */}
+                  {/* EMA21 */}
+                  <td style={{ ...TD, textAlign: 'center', borderRight: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                      <Triangle above={r.entry != null && r.ema21 != null && r.entry > r.ema21} />
+                      {p21 != null && (
+                        <span style={{ fontSize: 9, fontFamily: 'monospace', color: p21 >= 0 ? '#4ade80' : '#f87171' }}>
+                          {p21 >= 0 ? '+' : ''}{p21.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                  </td>
+
+                  {/* Moxie */}
                   <td style={TD}>
-                    <MoBadge state={r.w_mo_state} />
+                    {r.moxie_w != null
+                      ? <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Check ok={isBuy ? r.moxie_w > 0 : r.moxie_w < 0} />
+                          <span style={{
+                            fontSize: 10, fontFamily: 'monospace',
+                            color: r.moxie_w >= 0 ? '#22d3ee' : '#f87171',
+                          }}>
+                            {r.moxie_w >= 0 ? '+' : ''}{r.moxie_w.toFixed(2)}
+                          </span>
+                        </div>
+                      : <span style={{ color: 'var(--text-dim)' }}>—</span>}
                   </td>
 
                   {/* Entry */}
-                  <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace' }}>
+                  <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace', borderLeft: '1px solid var(--border)' }}>
                     {fmt(r.entry)}
                   </td>
 
@@ -373,18 +468,18 @@ export default function LagSignalLog() {
                     {fmt(r.stop_price)}
                   </td>
 
-                  {/* Target dist % */}
+                  {/* Dist % */}
                   <td style={{ ...TD, textAlign: 'right', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
                     {targetDist != null ? `${targetDist.toFixed(1)}%` : '—'}
                   </td>
 
                   {/* Outcome */}
-                  <td style={TD}>
+                  <td style={{ ...TD, borderLeft: '1px solid var(--border)' }}>
                     <OutcomeBadge outcome={r.outcome} pnl={r.pnl_pct} />
                   </td>
 
                   {/* Outcome date */}
-                  <td style={{ ...TD, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                  <td style={{ ...TD, color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 10 }}>
                     {fmtDate(r.outcome_date)}
                   </td>
 
@@ -398,8 +493,10 @@ export default function LagSignalLog() {
 
             {filtered.length === 0 && !loading && (
               <tr>
-                <td colSpan={15} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 40 }}>
-                  {rows.length === 0 ? 'No signals logged yet — runs nightly after each scan.' : 'No entries match filters.'}
+                <td colSpan={16} style={{ ...TD, textAlign: 'center', color: 'var(--text-dim)', padding: 40 }}>
+                  {rows.length === 0
+                    ? 'No signals logged yet — runs nightly after each scan.'
+                    : 'No entries match filters.'}
                 </td>
               </tr>
             )}
