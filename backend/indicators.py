@@ -12,6 +12,8 @@ calc_moxie(close)                Moxie = MACD histogram × 3
                                  Caller must pass the NEXT HIGHER timeframe close
                                  (e.g. weekly close when scanning daily)
 calc_laguerre(close, gamma)      Laguerre RSI  (0–1 scale)
+calc_laguerre_signal(df)         Most recent Laguerre BUY/SELL crossover signal
+                                 Returns dict: signal, entry, target, bars_ago
 """
 
 import numpy as np
@@ -118,3 +120,82 @@ def calc_laguerre(
         out[i] = CU / denom if denom != 0 else 0.0
 
     return pd.Series(out, index=close.index)
+
+
+# ── Laguerre RSI Signal ───────────────────────────────────────────────────────
+
+def calc_laguerre_signal(
+    df:         pd.DataFrame,
+    gamma:      float = 0.6,
+    ob:         float = 0.8,
+    os_:        float = 0.2,
+    atr_len:    int   = 14,
+    atr_factor: float = 3.0,
+) -> dict:
+    """Detect the most recent Laguerre RSI BUY/SELL crossover (TOS logic).
+
+    Signal rules (translated from ThinkScript):
+      BUY  — RSI crosses above 0.2 (oversold),
+              OR RSI crosses above 0.8 while previously bearish (rsiu[1]==0)
+      SELL — RSI crosses below 0.8 (overbought),
+              OR RSI crosses below 0.2 while previously bullish (rsiu[1]==1)
+
+    Target = entry ± atr_factor × ATR(atr_len)   [same as TOS default 3×ATR14]
+
+    Returns
+    -------
+    dict with keys: signal ('BUY'|'SELL'|None), entry, target, bars_ago
+    """
+    close = df['Close']
+    rsi_s = calc_laguerre(
+        close, open_=df['Open'], high=df['High'], low=df['Low'], gamma=gamma
+    ).values.astype(float)
+
+    closes = close.values.astype(float)
+    highs  = df['High'].values.astype(float)
+    lows   = df['Low'].values.astype(float)
+    prev_c = np.concatenate([[np.nan], closes[:-1]])
+
+    tr  = np.maximum(highs - lows,
+          np.maximum(np.abs(highs - prev_c), np.abs(lows - prev_c)))
+    atr = pd.Series(tr).rolling(atr_len).mean().values
+
+    n    = len(rsi_s)
+    rsiu = np.zeros(n, dtype=np.int8)
+    for i in range(1, n):
+        pr, cr = rsi_s[i - 1], rsi_s[i]
+        if np.isnan(pr) or np.isnan(cr):
+            rsiu[i] = rsiu[i - 1]
+            continue
+        x_above_ob = pr < ob <= cr
+        x_above_os = pr < os_ <= cr
+        x_below_ob = pr >= ob > cr
+        if x_above_ob or x_above_os:
+            rsiu[i] = 1
+        elif rsiu[i - 1] == 1 and not x_below_ob and cr > os_:
+            rsiu[i] = 1
+
+    last_signal = last_entry = last_target = last_bars_ago = None
+    for i in range(1, n):
+        pr, cr    = rsi_s[i - 1], rsi_s[i]
+        prev_rsiu = rsiu[i - 1]
+        c, a      = closes[i], atr[i]
+        if np.isnan(pr) or np.isnan(cr) or np.isnan(c):
+            continue
+
+        buy  = (pr < os_ <= cr) or (prev_rsiu == 0 and pr < ob <= cr)
+        sell = (pr >= ob > cr)  or (prev_rsiu == 1 and pr >= os_ > cr)
+
+        if buy or sell:
+            last_signal   = 'BUY' if buy else 'SELL'
+            last_entry    = round(float(c), 2)
+            last_target   = round(float(c + atr_factor * a), 2) if buy and not np.isnan(a) \
+                       else round(float(c - atr_factor * a), 2) if not np.isnan(a) else None
+            last_bars_ago = n - 1 - i
+
+    return {
+        'signal'  : last_signal,
+        'entry'   : last_entry,
+        'target'  : last_target,
+        'bars_ago': last_bars_ago,
+    }

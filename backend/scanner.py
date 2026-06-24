@@ -289,7 +289,7 @@ def _score_swing(
 
 def _scan_swing_ticker(ticker: str) -> dict | None:
     """Full swing analysis for one ticker. Returns None on insufficient data."""
-    from indicators import calc_sma, calc_ema, calc_moxie, calc_laguerre
+    from indicators import calc_sma, calc_ema, calc_moxie, calc_laguerre, calc_laguerre_signal
 
     daily = load_daily_candles(ticker)
     if daily.empty or len(daily) < 60:
@@ -304,10 +304,12 @@ def _scan_swing_ticker(ticker: str) -> dict | None:
     ema8     = float(calc_ema(daily['Close'],  8).iloc[-1])
     ema21    = float(calc_ema(daily['Close'], 21).iloc[-1])
     moxie_w  = float(calc_moxie(weekly['Close']).iloc[-1])
-    laguerre = float(calc_laguerre(
+    lag_series = calc_laguerre(
         daily['Close'],
         open_=daily['Open'], high=daily['High'], low=daily['Low'],
-    ).iloc[-1])
+    )
+    laguerre   = float(lag_series.iloc[-1])
+    lag_sig    = calc_laguerre_signal(daily)
 
     # ── D / W / M squeeze ────────────────────────────────────────────────────
     d_sq = _run_squeeze(daily,   'D')
@@ -365,6 +367,10 @@ def _scan_swing_ticker(ticker: str) -> dict | None:
         'ema21'        : round(ema21, 2),
         'moxie_w'      : round(moxie_w, 4),
         'laguerre'     : round(laguerre, 4),
+        'lag_signal'   : lag_sig['signal'],
+        'lag_entry'    : lag_sig['entry'],
+        'lag_target'   : lag_sig['target'],
+        'lag_bars_ago' : lag_sig['bars_ago'],
         # VAW / VAM (in millions)
         'vaw_m'        : round(vaw / 1e6, 2),
         'vam_m'        : round(vam / 1e6, 2),
