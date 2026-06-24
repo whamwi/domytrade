@@ -464,12 +464,7 @@ _NEG_MO     = {'NEG_DN', 'NEG_UP'}
 
 
 def _log_lag_signals(results: list[dict], scan_date: str) -> None:
-    """Insert today's Laguerre signals that pass the NEARBY-squeeze filter.
-
-    Only signals where the squeeze fired within the last _NEARBY_WIN bars
-    AND momo aligns with the signal direction are logged.
-    Backtest shows this lifts win rate from ~25% (random) to ~32% (PF≈1.3).
-    """
+    """Insert all fresh Laguerre signals (lag_bars_ago == 0) into lag_signal_log."""
     db   = get_db()
     rows = []
     for r in results:
@@ -479,32 +474,10 @@ def _log_lag_signals(results: list[dict], scan_date: str) -> None:
         target = r['lag_target']
         if entry is None or target is None:
             continue
-
         signal = r['lag_signal']
-
-        # ── NEARBY condition ──────────────────────────────────────────────────
-        # Squeeze must have fired within the last _NEARBY_WIN bars
-        just_fired = r.get('d_just_fired', False)
-        bars_fired = r.get('d_bars_fired')       # bars since fire, None if not fired
-        sq_state   = r.get('d_sq_state', '')
-        nearby_ok  = just_fired or (
-            sq_state == 'FIRED'
-            and bars_fired is not None
-            and bars_fired <= _NEARBY_WIN
-        )
-        if not nearby_ok:
-            continue
-
-        # ── Momo alignment ────────────────────────────────────────────────────
-        mo = r.get('d_mo_state', '')
-        momo_ok = (signal == 'BUY' and mo in _POS_MO) or \
-                  (signal == 'SELL' and mo in _NEG_MO)
-        if not momo_ok:
-            continue
-
-        dist = abs(target - entry)
-        atr  = dist / 3.0
-        stop = round(entry - atr, 2) if signal == 'BUY' else round(entry + atr, 2)
+        dist   = abs(target - entry)
+        atr    = dist / 3.0
+        stop   = round(entry - atr, 2) if signal == 'BUY' else round(entry + atr, 2)
         rows.append({
             'ticker'     : r['ticker'],
             'signal_date': scan_date,
@@ -514,7 +487,6 @@ def _log_lag_signals(results: list[dict], scan_date: str) -> None:
             'stop_price' : stop,
             'outcome'    : 'OPEN',
         })
-
     if rows:
         db.table('lag_signal_log').upsert(rows, on_conflict='ticker,signal_date').execute()
 
