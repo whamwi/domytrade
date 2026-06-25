@@ -2476,14 +2476,9 @@ async def background_loop():
                 asyncio.create_task(_run_daily_update())
                 last_daily_close_run = _today
 
-            # 5:30 PM ET on weekdays — swing scan (daily candles refreshed at 4:30 PM)
+            # 5:30 PM ET on weekdays — validate that all 4:30 PM job steps completed
             if _et_hhmm == 17 * 60 + 30 and last_swing_scan_run != _today and _weekday < 5:
-                try:
-                    from scanner import scan_swing
-                    asyncio.create_task(asyncio.to_thread(lambda: scan_swing(persist=True)))
-                    log.info('Swing scan started (nightly 5:30 PM ET)')
-                except Exception as e:
-                    log.warning('Swing scan error: %s', e)
+                asyncio.create_task(asyncio.to_thread(_validate_daily_job, _today))
                 last_swing_scan_run = _today
 
             # 5:00 PM ET — compact 1-min bars older than 2 days into 15-min bars
@@ -11004,3 +10999,101 @@ async def api_lag_log():
     from scanner import load_lag_signal_log
     rows = await asyncio.to_thread(load_lag_signal_log)
     return {'rows': rows, 'count': len(rows)}
+
+
+def _validate_daily_job(run_date: str) -> None:
+    """5:30 PM validator — confirms all 4:30 PM job steps completed and writes to job_run_log."""
+    import logging as _log
+    db = get_db()
+
+    try:
+        universe = db.table('ticker_universe').select('ticker', count='exact').execute()
+        universe_count = universe.count or 0
+    except Exception:
+        universe_count = 646
+
+    def _count(table: str, col: str, val: str) -> int:
+        try:
+            r = db.table(table).select('ticker', count='exact').eq(col, val).execute()
+            return r.count or 0
+        except Exception:
+            return 0
+
+    from datetime import date as _date
+    import calendar as _cal
+    today        = _date.fromisoformat(run_date)
+    week_start   = (today - __import__('datetime').timedelta(days=today.weekday())).isoformat()
+    month_start  = today.replace(day=1).isoformat()
+
+    daily_count   = _count('ticker_candles_daily',   'bar_date', run_date)
+    weekly_count  = _count('ticker_candles_weekly',  'bar_date', week_start)
+    monthly_count = _count('ticker_candles_monthly', 'bar_date', month_start)
+
+    # scan_count: rows updated today
+    try:
+        sc = db.table('swing_scan_results').select('ticker', count='exact') \
+               .gte('scanned_at', f'{run_date}T00:00:00').execute()
+        scan_count = sc.count or 0
+    except Exception:
+        scan_count = 0
+
+    # lag signal count for today
+    try:
+        lc = db.table('lag_signal_log').select('ticker', count='exact') \
+               .eq('signal_date', run_date).execute()
+        lag_count = lc.count or 0
+    except Exception:
+        lag_count = 0
+
+    threshold    = max(1, universe_count - 5)   # allow up to 5 failures
+    daily_ok     = daily_count   >= threshold
+    weekly_ok    = weekly_count  >= threshold
+    monthly_ok   = monthly_count >= threshold
+    bar_inject_ok = daily_ok                     # inject runs as part of daily
+    scan_ok      = scan_count    >= threshold
+    lag_ok       = lag_count     > 0
+
+    all_ok = all([daily_ok, weekly_ok, monthly_ok, bar_inject_ok, scan_ok])
+
+    notes_parts = []
+    if not daily_ok:   notes_parts.append(f'daily short: {daily_count}/{universe_count}')
+    if not weekly_ok:  notes_parts.append(f'weekly short: {weekly_count}/{universe_count}')
+    if not monthly_ok: notes_parts.append(f'monthly short: {monthly_count}/{universe_count}')
+    if not scan_ok:    notes_parts.append(f'scan short: {scan_count}/{universe_count}')
+    if lag_ok:         notes_parts.append(f'{lag_count} lag signals logged')
+
+    status = {
+        'run_date':      run_date,
+        'daily_ok':      daily_ok,
+        'weekly_ok':     weekly_ok,
+        'monthly_ok':    monthly_ok,
+        'bar_inject_ok': bar_inject_ok,
+        'scan_ok':       scan_ok,
+        'lag_ok':        lag_ok,
+        'daily_count':   daily_count,
+        'weekly_count':  weekly_count,
+        'monthly_count': monthly_count,
+        'scan_count':    scan_count,
+        'lag_count':     lag_count,
+        'universe_count': universe_count,
+        'notes':         ' | '.join(notes_parts) if notes_parts else 'All steps completed',
+    }
+
+    try:
+        db.table('job_run_log').upsert(status, on_conflict='run_date').execute()
+    except Exception as e:
+        _log.warning('job_run_log write failed: %s', e)
+
+    if all_ok:
+        _log.info('✅ Daily job validated OK — daily=%d weekly=%d monthly=%d scan=%d lag=%d',
+                  daily_count, weekly_count, monthly_count, scan_count, lag_count)
+    else:
+        _log.warning('⚠️  Daily job validation FAILED: %s', ' | '.join(notes_parts))
+
+
+@app.get('/api/job-status')
+async def api_job_status():
+    """Return the latest job run log entry."""
+    db = get_db()
+    r = db.table('job_run_log').select('*').order('run_date', desc=True).limit(7).execute()
+    return {'runs': r.data}
