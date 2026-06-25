@@ -30,6 +30,7 @@ interface LogRow {
 
 type OutcomeFilter = 'ALL' | 'OPEN' | 'HIT_TARGET' | 'HIT_STOP'
 type SigFilter     = 'ALL' | 'BUY'  | 'SELL'
+type ScoreFilter   = 'ALL' | '5' | '4+' | '3+'
 
 // ── Shared scanner colours ─────────────────────────────────────────────────────
 const SQ_COLOR: Record<string, string> = {
@@ -200,9 +201,10 @@ export default function LagSignalLog() {
   const [rows, setRows]       = useState<LogRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState<string | null>(null)
-  const [outcome, setOutcome] = useState<OutcomeFilter>('ALL')
-  const [sig, setSig]         = useState<SigFilter>('ALL')
-  const [search, setSearch]   = useState('')
+  const [outcome, setOutcome]   = useState<OutcomeFilter>('ALL')
+  const [sig, setSig]           = useState<SigFilter>('ALL')
+  const [scoreF, setScoreF]     = useState<ScoreFilter>('ALL')
+  const [search, setSearch]     = useState('')
 
   const load = useCallback(async () => {
     setLoading(true); setError(null)
@@ -223,6 +225,9 @@ export default function LagSignalLog() {
   const filtered = rows.filter(r => {
     if (outcome !== 'ALL' && r.outcome !== outcome) return false
     if (sig     !== 'ALL' && r.signal  !== sig)     return false
+    if (scoreF === '5'  && (r.score ?? 0) < 5)      return false
+    if (scoreF === '4+' && (r.score ?? 0) < 4)      return false
+    if (scoreF === '3+' && (r.score ?? 0) < 3)      return false
     if (search && !r.ticker.toUpperCase().includes(search.toUpperCase())) return false
     return true
   })
@@ -290,6 +295,11 @@ export default function LagSignalLog() {
           )}
         </div>
 
+        <SegBtn<ScoreFilter>
+          value={scoreF} options={['ALL', '5', '4+', '3+']}
+          labels={{ ALL: 'All', '5': '★ 5', '4+': '≥4', '3+': '≥3' }}
+          onChange={setScoreF}
+        />
         <SegBtn<SigFilter>
           value={sig} options={['ALL', 'BUY', 'SELL']} onChange={setSig}
         />
