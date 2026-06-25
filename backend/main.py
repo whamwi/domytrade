@@ -10947,45 +10947,40 @@ async def api_swing_scan():
     from scanner import load_swing_results
     rows = await asyncio.to_thread(load_swing_results)
 
-    # Build price map from state['signals'] — same live data as VBH dashboard
-    price_map: dict[str, dict] = {}
+    # Build price map: prev_close keyed by ticker (used to compute RTH % change)
+    # prev_close = yesterday's RTH close from Schwab quotes (closePrice field)
+    prev_close_map: dict[str, float] = {}
     for sig in state['signals']:
         ticker = sig.get('symbol')
-        if ticker and ticker not in price_map:
-            last       = sig.get('last')
-            net_chg    = sig.get('net_change')
-            prev_close = sig.get('prev_close') or (last - net_chg if last and net_chg else None)
-            if last:
-                pct = round(net_chg / prev_close * 100, 2) if net_chg and prev_close else None
-                price_map[ticker] = {'price': round(last, 2), 'pct_change': pct}
+        if ticker and ticker not in prev_close_map:
+            last    = sig.get('last')
+            net_chg = sig.get('net_change')
+            pc      = sig.get('prev_close') or (last - net_chg if last and net_chg else None)
+            if pc:
+                prev_close_map[ticker] = pc
 
     # Find swing symbols not covered by state['signals'] — batch-fetch from Schwab
-    # Schwab caps batch size; chunk into 100 per call.
-    missing = [r['ticker'] for r in rows if r.get('ticker') and r['ticker'] not in price_map]
+    missing = [r['ticker'] for r in rows if r.get('ticker') and r['ticker'] not in prev_close_map]
     CHUNK = 100
     for i in range(0, len(missing), CHUNK):
         chunk = missing[i:i + CHUNK]
         try:
             quotes = await asyncio.to_thread(get_quotes, chunk)
             for sym, q in quotes.items():
-                last    = q.get('last') or 0
-                close   = q.get('close') or 0
-                net_pct = q.get('net_pct_change')
-                if last:
-                    pct = round(net_pct, 2) if net_pct else (
-                        round((last - close) / close * 100, 2) if close else None
-                    )
-                    price_map[sym] = {'price': round(last, 2), 'pct_change': pct}
+                close = q.get('close') or 0   # Schwab closePrice = yesterday's RTH close
+                if close:
+                    prev_close_map[sym] = close
         except Exception as e:
             log.warning('swing-scan Schwab batch quote error (chunk %d): %s', i // CHUNK, e)
 
+    # Overlay RTH % change: (scan_price - prev_close) / prev_close
+    # scan_price is the RTH close the scanner computed — never replaced with AH price.
     for row in rows:
-        p = price_map.get(row.get('ticker'))
-        if p:
-            row['scan_price'] = row.get('price')   # preserve EOD close from the scan
-            row['price'] = p['price']               # overwrite with live intraday price
-            if p['pct_change'] is not None:
-                row['pct_change'] = p['pct_change']
+        scan_p = row.get('price')          # RTH close stored by the scanner
+        row['scan_price'] = scan_p
+        pc = prev_close_map.get(row.get('ticker'))
+        if scan_p and pc:
+            row['pct_change'] = round((scan_p - pc) / pc * 100, 2)
 
     scanned_at = rows[0].get('scanned_at') if rows else None
     return {

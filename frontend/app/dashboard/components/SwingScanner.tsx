@@ -332,7 +332,7 @@ export default function SwingScanner() {
 
   useEffect(() => { load() }, [load])
 
-  // Refresh price + % change every 30s without re-sorting rows
+  // Refresh pct_change every 30s (RTH-based: scan_price vs prev_close)
   useEffect(() => {
     const id = setInterval(async () => {
       try {
@@ -341,18 +341,16 @@ export default function SwingScanner() {
         const d = await r.json() as ScanResponse
         setData(prev => {
           if (!prev) return d
-          const priceMap = new Map(d.rows.map(r => [r.ticker, { price: r.price, pct_change: r.pct_change }]))
+          const pctMap = new Map(d.rows.map(r => [r.ticker, r.pct_change]))
           return {
             ...prev,
             rows: prev.rows.map(row => {
-              const updated = priceMap.get(row.ticker)
-              if (!updated) return row
-              return { ...row, price: updated.price, pct_change: updated.pct_change }
-              // scan_price is intentionally NOT updated — it stays as EOD close
+              const pct = pctMap.get(row.ticker)
+              return pct != null ? { ...row, pct_change: pct } : row
             }),
           }
         })
-      } catch { /* silent — keep stale prices */ }
+      } catch { /* silent */ }
     }, 30_000)
     return () => clearInterval(id)
   }, [])
@@ -630,7 +628,7 @@ export default function SwingScanner() {
                             {r.ticker}
                           </span>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'monospace', fontSize: 10 }}>
-                            <span style={{ color: 'var(--text-dim)' }}>${r.price.toFixed(2)}</span>
+                            <span style={{ color: 'var(--text-dim)' }}>${(r.scan_price ?? r.price).toFixed(2)}</span>
                             {r.pct_change != null && (
                               <span style={{ color: r.pct_change >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>
                                 {r.pct_change >= 0 ? '+' : ''}{r.pct_change.toFixed(2)}%
