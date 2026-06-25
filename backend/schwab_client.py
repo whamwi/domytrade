@@ -300,12 +300,14 @@ def get_quotes(symbols: list[str]) -> dict:
         last_price = (q.get('lastPrice') or 0) if is_futures else (q.get('lastPrice') or q.get('mark', 0))
         out[sym] = {
             'last'      : last_price,
-            'mark'      : q.get('mark', 0),          # RTH close — stable after 4 PM, unaffected by AH trades
+            'mark'      : q.get('mark', 0),          # AH bid-ask midpoint — NOT the RTH close when AH trading is active
             'open'      : q.get('openPrice', 0),
             'high'      : q.get('highPrice', 0),
             'low'       : q.get('lowPrice', 0),
-            'close'     : q.get('closePrice', 0),
+            'close'     : q.get('closePrice', 0),    # previous session's close
             'volume'    : q.get('totalVolume', 0),
+            # postMarketChange = lastPrice - RTH_close; used to back out today's RTH close
+            'post_market_change': q.get('postMarketChange', 0),
             # Futures-specific: change from previous CME settlement price
             'net_change'    : q.get('netChange', 0),
             # Daily % change — used by MAG10 weighted pct calculation

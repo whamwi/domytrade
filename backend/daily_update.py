@@ -164,19 +164,24 @@ def update_tf(db, tickers: list[str], tf: str):
 # ── Today's bar injection (quotes-based, handles Schwab history lag) ──────────
 
 def _inject_today_bar(db, tickers: list[str]) -> None:
-    """Upsert today's OHLCV bar from Schwab quotes using mark as the close.
+    """Upsert today's OHLCV bar using the RTH close from Schwab quotes.
 
     Schwab's price history API lags ~1 business day.  The quotes endpoint
-    has two price fields:
-      - lastPrice : most recent trade — includes after-hours trades (wrong after 4 PM)
-      - mark      : RTH close price — fixed at the 4 PM closing auction, unaffected by AH
-    Using mark gives the correct regular-session close regardless of when this runs.
+    does not have a direct 'RTH close' field, but it provides:
+      - lastPrice        : most recent trade (AH price during after-hours)
+      - postMarketChange : lastPrice - RTH_close
+
+    So: RTH_close = lastPrice - postMarketChange
+    When there is no AH trading, postMarketChange=0 and lastPrice IS the RTH close.
+    When AH trading is active, this correctly strips out the AH move.
+
+    NOTE: 'mark' (bid-ask mid) tracks AH prices and is NOT reliable as the RTH close.
     """
     from zoneinfo import ZoneInfo
     ET = ZoneInfo('America/New_York')
     today_str = datetime.now(ET).date().isoformat()
     stocks = [t for t in tickers if not t.startswith('/')]
-    log(f"Injecting today's bar ({today_str}) from Schwab mark (RTH close) for {len(stocks)} symbols")
+    log(f"Injecting today's bar ({today_str}) using RTH close (last - postMarketChange) for {len(stocks)} symbols")
 
     CHUNK = 100
     ok = 0
@@ -186,8 +191,9 @@ def _inject_today_bar(db, tickers: list[str]) -> None:
         rows = []
         for ticker in chunk:
             q = quotes.get(ticker, {})
-            # mark = RTH close (stable after 4 PM); fall back to last during market hours
-            close = q.get('mark') or q.get('last')
+            last        = float(q.get('last') or 0)
+            post_change = float(q.get('post_market_change') or 0)
+            close       = last - post_change   # RTH close = last - AH move
             if not close:
                 continue
             rows.append({
