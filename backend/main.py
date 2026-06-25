@@ -11004,7 +11004,8 @@ async def api_lag_log():
 def _validate_daily_job(run_date: str) -> None:
     """5:30 PM validator — confirms all 4:30 PM job steps completed and writes to job_run_log."""
     import logging as _log
-    db = get_db()
+    from db import get_db as _get_db
+    db = _get_db()
 
     try:
         universe = db.table('ticker_universe').select('ticker', count='exact').execute()
@@ -11094,6 +11095,7 @@ def _validate_daily_job(run_date: str) -> None:
 @app.get('/api/job-status')
 async def api_job_status():
     """Return the latest job run log entry."""
-    db = get_db()
+    from db import get_db as _get_db
+    db = _get_db()
     r = db.table('job_run_log').select('*').order('run_date', desc=True).limit(7).execute()
     return {'runs': r.data}
