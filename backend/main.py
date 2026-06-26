@@ -2317,7 +2317,6 @@ async def background_loop():
     last_daily_refresh      = time.time()
     last_contract_refresh   = time.time()
     last_global_markets     = 0.0  # force refresh on first tick
-    last_edge_signal_refresh = 0.0  # force refresh on first tick
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
@@ -2407,6 +2406,9 @@ async def background_loop():
             # (headers arrive fast, body trickles) can't block the whole cycle.
             try:
                 await asyncio.wait_for(refresh_all_1min(), timeout=45)
+                # Fire edge signal compute immediately after fresh bars land in DB
+                # (futures only, ~30s max lag vs ~90s with a separate 60s timer)
+                asyncio.create_task(_refresh_edge_signals())
             except asyncio.TimeoutError:
                 log.warning('refresh_all_1min timed out (45s) — skipping this cycle')
             except Exception as e:
@@ -2441,11 +2443,6 @@ async def background_loop():
                 except Exception as e:
                     log.warning('refresh_strip_opens error: %s', e)
                 last_strip_refresh = time.time()
-
-            # Edge Signal refresh — every 60s for futures (max 1-min lag after bar close)
-            if time.time() - last_edge_signal_refresh >= 60:
-                asyncio.create_task(_refresh_edge_signals())
-                last_edge_signal_refresh = time.time()
 
             # Proactive global-markets refresh — 15 min during US hours, 30 min during
             # Asian session (6 PM – 8 AM ET).  _refresh_global_markets() honours its own
