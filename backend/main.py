@@ -590,26 +590,10 @@ async def compute_all_stats():
             state['stats_con'][sid]    = compute_stats_con(con_candles, api)
             state['stats_wide'][sid]   = compute_stats_wide(con_candles, api)
 
-            # Persist stats to DB
-            stat_rows = []
-            for h in range(24):
-                for model, stats_dict in [('AGG',  state['stats_agg'][sid]),
-                                           ('CON',  state['stats_con'][sid]),
-                                           ('WIDE', state['stats_wide'][sid])]:
-                    l1, l2, l3, l4 = stats_dict.get(h, (0, 0, 0, 0))
-                    stat_rows.append({
-                        'symbol_id'    : sid,
-                        'model'        : model,
-                        'hour_et'      : h,
-                        'l1'           : l1,
-                        'l2'           : l2,
-                        'l3'           : l3,
-                        'l4'           : l4,
-                        'sample_count' : None,
-                        'lookback_days': AGG_DAYS if model == 'AGG' else CON_DAYS,
-                        'computed_at'  : datetime.now(ET).isoformat(),
-                    })
-            upsert_vbh_stats(stat_rows)
+            # Do NOT persist futures stats to DB — those come from the weekly
+            # ThinkScript import (vbh_import_weekly.py, lookback_days=-1).
+            # Upserting here would overwrite TOS-validated L values with dynamic
+            # candle-derived values every time Railway restarts.
 
             log.info('  %-8s  bars=%d', tick, len(con_candles))
             await asyncio.sleep(0.4)
