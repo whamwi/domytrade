@@ -1804,18 +1804,19 @@ def _agg_1min_to_5min_closes(bars: list[dict]) -> list[float]:
 
 
 async def _refresh_edge_signals() -> None:
-    """Compute TOS Edge Signal for all tracked symbols from 3 days of 5-min closes.
+    """Compute TOS Edge Signal for futures from 3 days of 5-min closes.
 
-    Uses the same 1-min DB cache as the SqueezePRO computation.
-    Called every ~5 min from background_loop so the signal tracks intraday momentum.
+    Futures only — runs every ~60s so the signal appears within 1 min of a
+    5-min bar close. Uses the same 1-min DB cache as the SqueezePRO computation.
     """
     sym_list = state.get('symbols', [])
     if not sym_list:
         return
 
+    futures = [s for s in sym_list if s['ticker'].split(':')[0].startswith('/')]
     active = 0
     seen: set[int] = set()
-    for s in sym_list:
+    for s in futures:
         sid = s['id']
         if sid in seen:
             continue
@@ -1830,7 +1831,7 @@ async def _refresh_edge_signals() -> None:
         except Exception as e:
             log.debug('edge signal %s: %s', s['ticker'], e)
 
-    log.info('Edge signals refreshed — %d active / %d symbols', active, len(seen))
+    log.info('Edge signals (futures) — %d active / %d symbols', active, len(seen))
 
 
 async def refresh_strip_opens():
@@ -2441,8 +2442,8 @@ async def background_loop():
                     log.warning('refresh_strip_opens error: %s', e)
                 last_strip_refresh = time.time()
 
-            # Edge Signal refresh — every 5 minutes (matches 5-min bar close cadence)
-            if time.time() - last_edge_signal_refresh >= 300:
+            # Edge Signal refresh — every 60s for futures (max 1-min lag after bar close)
+            if time.time() - last_edge_signal_refresh >= 60:
                 asyncio.create_task(_refresh_edge_signals())
                 last_edge_signal_refresh = time.time()
 
