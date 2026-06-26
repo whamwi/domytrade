@@ -1885,6 +1885,9 @@ async def _refresh_edge_signals() -> None:
                 prev         = state['lag_signal'].get(sid) or {}
                 locked_bucket = prev.get('bucket') if isinstance(prev, dict) else None
 
+                log.info('LAG %s  sig=%s entry=%s bars_ago=%s is_init=%s locked=%s cur=%s',
+                         s['ticker'], lag['signal'], lag['entry'], bars_ago,
+                         is_init, locked_bucket, cur_bucket)
                 if lag['signal'] and lag['entry'] is not None and lag['target'] is not None:
                     fresh = bars_ago == 0 and locked_bucket != cur_bucket
                     if is_init or fresh:
@@ -1899,11 +1902,12 @@ async def _refresh_edge_signals() -> None:
                             'stop':   stop,
                             'bucket': cur_bucket if bars_ago == 0 else None,
                         }
+                        log.info('LAG %s  → STATE UPDATED to %s @ %s', s['ticker'], lag['signal'], lag['entry'])
                 elif is_init:
-                    state['lag_signal'][sid] = None  # mark initialised, no signal yet
-                # else: sticky — leave previous value in place
+                    state['lag_signal'][sid] = None
+                    log.info('LAG %s  → no signal on init', s['ticker'])
         except Exception as e:
-            log.debug('edge/lag signal %s: %s', s['ticker'], e)
+            log.warning('edge/lag signal %s: %s', s['ticker'], e)
 
     log.info('Edge signals (futures) — %d active / %d symbols', active, len(seen))
 
