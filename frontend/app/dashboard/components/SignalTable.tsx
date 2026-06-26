@@ -3,7 +3,6 @@
 import { useState, useRef } from 'react'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
-import SwingBar from './SwingBar'
 import { ETF_META } from './etfMeta'
 import ETFPanel, { EtfPanelInfo } from './ETFPanel'
 import FuturesPanel, { FuturesPanelInfo } from './FuturesPanel'
@@ -61,6 +60,11 @@ export interface Signal {
   sq_reason?:  string | null
   // TOS Edge Signals confirmation
   edge_signal?: 'BULL' | 'BEAR' | null
+  // Laguerre RSI signal on 5-min bars (futures only)
+  lag_signal?: 'BUY' | 'SELL' | null
+  lag_entry?:  number | null
+  lag_target?: number | null
+  lag_stop?:   number | null
 }
 
 export interface SymbolInfo {
@@ -108,19 +112,22 @@ function fmt(price: number): string {
 }
 
 const COLS = [
-  { label: '#',           align: 'left'   },
-  { label: 'SYMBOL',      align: 'left'   },
-  { label: 'LAST',        align: 'right'  },
-  { label: 'CHG',         align: 'right'  },
-  { label: 'MODEL',       align: 'left'   },  // active signal model
-  { label: 'EDGE',        align: 'center' },  // TOS Edge Signals confirmation
-  { label: 'SIDE',        align: 'left'   },
-  { label: 'ALERT',       align: 'left'   },
-  { label: 'ENTRY',       align: 'right'  },
-  { label: 'STOP',        align: 'right'  },
-  { label: 'TARGET',      align: 'right'  },
-  { label: 'DAILY SWING', align: 'left'   },
-]
+  { label: '#',        align: 'left'   },
+  { label: 'SYMBOL',   align: 'left'   },
+  { label: 'LAST',     align: 'right'  },
+  { label: 'CHG',      align: 'right'  },
+  { label: 'MODEL',    align: 'left'   },
+  { label: 'EDGE',     align: 'center' },
+  { label: 'SIDE',     align: 'left'   },
+  { label: 'ENTRY',    align: 'right'  },
+  { label: 'STOP',     align: 'right'  },
+  { label: 'TARGET',   align: 'right'  },
+  // LAG section — sep: true draws a left border to separate groups
+  { label: 'LAG',      align: 'center', sep: true },
+  { label: 'L·ENTRY',  align: 'right'  },
+  { label: 'L·STOP',   align: 'right'  },
+  { label: 'L·TARGET', align: 'right'  },
+] as const
 
 // ── On-demand AI Advisory button ──────────────────────────────────────────────
 type AiVerdict = 'ENTER' | 'WAIT' | 'SKIP'
@@ -306,6 +313,26 @@ function EdgeCell({ signal }: { signal?: 'BULL' | 'BEAR' | null }) {
       }
     >
       {isBull ? '▲' : '▼'} {signal}
+    </span>
+  )
+}
+
+// ── Laguerre 5-min signal badge ──────────────────────────────────────────────
+function LagSignalCell({ signal }: { signal?: 'BUY' | 'SELL' | null }) {
+  if (!signal) return <Dash />
+  const isBuy = signal === 'BUY'
+  const col   = isBuy ? '#4ade80' : '#f87171'
+  return (
+    <span
+      style={{
+        fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+        padding: '2px 6px', borderRadius: 4,
+        background: `${col}22`, color: col,
+        border: `1px solid ${col}55`,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {isBuy ? '▲' : '▼'} {signal}
     </span>
   )
 }
@@ -500,7 +527,11 @@ function HeaderRow() {
         <th
           key={col.label}
           className={`px-3 py-3 text-xs font-semibold uppercase tracking-widest text-${col.align}`}
-          style={{ color: 'var(--text-dim)', whiteSpace: 'nowrap' }}
+          style={{
+            color: 'var(--text-dim)',
+            whiteSpace: 'nowrap',
+            ...('sep' in col && col.sep ? { borderLeft: '1px solid var(--border)' } : {}),
+          }}
         >
           {col.label}
         </th>
@@ -828,60 +859,6 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
         </span>
       </td>
 
-      {/* ALERT — TRENDING / NEAR / ENTRY state */}
-      <td className="px-3 py-2.5">
-        {sig.is_reference ? (
-          // Prev-session reference levels (weekend / holiday) — show PREV badge,
-          // no pulsing animation, bot will not arm on these signals
-          <span
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wider"
-            style={{ background: 'rgba(100,116,139,0.12)', color: '#94a3b8', letterSpacing: '0.05em' }}
-            title="Reference levels from previous session — market closed"
-          >
-            PREV
-          </span>
-        ) : sig.signal_state === 'TRENDING' ? (
-          <span
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold tracking-wider"
-            style={{
-              background: sig.side === 'LONG' ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)',
-              color:      sig.side === 'LONG' ? '#4ade80'                : '#f87171',
-              animation: 'pulse 2s infinite',
-            }}
-          >
-            <span style={{ fontSize: 8 }}>●</span>
-            {sig.side === 'LONG' ? 'Buy Dips' : 'Sell Rallies'}
-          </span>
-        ) : sig.signal_state === 'ENTRY' ? (
-          <span
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
-            style={{
-              background: sig.side === 'LONG' ? 'rgba(74,222,128,0.18)' : 'rgba(248,113,113,0.18)',
-              color: sig.side === 'LONG' ? '#4ade80' : '#f87171',
-              animation: 'pulse 1.5s infinite',
-            }}
-          >
-            <span style={{ fontSize: 8 }}>●</span> ENTRY
-          </span>
-        ) : sig.signal_state === 'NEAR' || sig.near_gray ? (
-          <span
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
-            style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', animation: 'pulse 2s infinite' }}
-          >
-            <span style={{ fontSize: 8 }}>●</span> NEAR
-          </span>
-        ) : sig.signal_state === 'NEUTRAL' ? (
-          <span
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wider"
-            style={{ background: 'rgba(100,116,139,0.12)', color: '#64748b' }}
-          >
-            NEUTRAL
-          </span>
-        ) : (
-          <Dash />
-        )}
-      </td>
-
       {/* ENTRY — tooltip shows h_high / h_low */}
       <td className="px-3 py-2.5 text-right tabular-nums" style={{ position: 'relative' }}>
         <EntryCell sig={sig} />
@@ -892,18 +869,31 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
         {fmt(sig.stop)}
       </td>
 
-      {/* TARGET (gray T2) */}
+      {/* TARGET */}
       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#4ade80', fontSize: '13px' }}>
         {fmt(sig.target)}
       </td>
 
-      {/* DAILY SWING */}
-      <td className="px-3 py-2.5">
-        <SwingBar
-          swingPct={sig.swing_pct}
-          currentRange={sig.current_range}
-          typicalRange={sig.typical_range}
-        />
+      {/* ── LAG section separator ── */}
+
+      {/* LAG SIG */}
+      <td className="px-3 py-2.5 text-center" style={{ borderLeft: '1px solid var(--border)' }}>
+        <LagSignalCell signal={sig.lag_signal} />
+      </td>
+
+      {/* L·ENTRY */}
+      <td className="px-3 py-2.5 text-right tabular-nums" style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+        {sig.lag_entry != null ? fmt(sig.lag_entry) : <Dash />}
+      </td>
+
+      {/* L·STOP */}
+      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#f87171', fontSize: '13px' }}>
+        {sig.lag_stop != null ? fmt(sig.lag_stop) : <Dash />}
+      </td>
+
+      {/* L·TARGET */}
+      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#4ade80', fontSize: '13px' }}>
+        {sig.lag_target != null ? fmt(sig.lag_target) : <Dash />}
       </td>
 
     </tr>
@@ -1007,24 +997,6 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
       {/* SIDE — grayed out */}
       <td className="px-3 py-2 text-center"><Dash /></td>
 
-      {/* ALERT — subtle CLOSED chip for off-hours equities, dash otherwise */}
-      <td className="px-3 py-2">
-        {offHoursEquity ? (
-          <span
-            className="inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wider"
-            style={{
-              background: 'rgba(100,116,139,0.08)',
-              color:      'rgba(100,116,139,0.4)',
-              border:     '1px solid rgba(100,116,139,0.12)',
-            }}
-          >
-            CLOSED
-          </span>
-        ) : (
-          <Dash />
-        )}
-      </td>
-
       {/* ENTRY */}
       <td className="px-3 py-2 text-center"><Dash /></td>
 
@@ -1034,7 +1006,10 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
       {/* TARGET */}
       <td className="px-3 py-2 text-center"><Dash /></td>
 
-      {/* DAILY SWING */}
+      {/* LAG section */}
+      <td className="px-3 py-2 text-center" style={{ borderLeft: '1px solid var(--border)' }}><Dash /></td>
+      <td className="px-3 py-2 text-center"><Dash /></td>
+      <td className="px-3 py-2 text-center"><Dash /></td>
       <td className="px-3 py-2 text-center"><Dash /></td>
     </tr>
   )

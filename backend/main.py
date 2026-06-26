@@ -27,6 +27,7 @@ from schwab_client import (get_quotes, get_candles, get_daily_candles,
                            front_month_code, _trader_get)
 import vbh_engine
 from vbh_engine import compute_stats, compute_stats_con, compute_stats_wide, make_signal
+from indicators import calc_laguerre_signal
 from squeeze import calc_squeeze_5min, squeeze_confirms_signal
 import market_profile_rules as _mp_rules
 from db import (get_active_symbols, upsert_ohlc, get_ohlc,
@@ -184,6 +185,7 @@ state = {
     'cr_date'           : None, # date string — CR is reset each new trading day
     'cr_sticky'         : {},   # {f"{sid}_CR": int} — remaining cycles to keep NEAR visible (max 4)
     'edge_signal'       : {},   # {symbol_id: 'BULL'|'BEAR'|None} — TOS Edge Signals confirmation
+    'lag_signal'        : {},   # {symbol_id: {signal, entry, target, stop}|None} — Laguerre 5-min signal
 }
 
 
@@ -1161,6 +1163,17 @@ async def refresh_signals():
                 s['prev_close']  = round(prev_close, 4)
                 s['net_change']  = round(net_chg_raw, 4)
                 s['edge_signal'] = state['edge_signal'].get(sid)
+                _lag = state['lag_signal'].get(sid)
+                if _lag:
+                    s['lag_signal'] = _lag['signal']
+                    s['lag_entry']  = _lag['entry']
+                    s['lag_target'] = _lag['target']
+                    s['lag_stop']   = _lag['stop']
+                else:
+                    s['lag_signal'] = None
+                    s['lag_entry']  = None
+                    s['lag_target'] = None
+                    s['lag_stop']   = None
                 # Squeeze confirmation — 4 major market futures only
                 if tick in MARKET_TICKERS:
                     _sq = state['squeeze'].get(sid)
@@ -1789,6 +1802,29 @@ async def _warm_fib_cache(tickers: list[str]) -> None:
     log.info('Fib cache warmed — %d/%d tickers ready (%d skipped <60 bars)', warmed, len(tickers), skipped)
 
 
+def _agg_1min_to_5min_ohlc(bars: list[dict]) -> pd.DataFrame:
+    """Aggregate 1-min bars to 5-min OHLC DataFrame for indicator use."""
+    from datetime import datetime
+    buckets: dict[int, dict] = {}
+    for b in bars:
+        try:
+            dt     = datetime.fromisoformat(b['bar_time'].replace('Z', '+00:00'))
+            bucket = int(dt.timestamp()) // 300
+            if bucket not in buckets:
+                buckets[bucket] = {'Open': float(b['open']), 'High': float(b['high']),
+                                   'Low':  float(b['low']),  'Close': float(b['close'])}
+            else:
+                entry = buckets[bucket]
+                entry['High']  = max(entry['High'], float(b['high']))
+                entry['Low']   = min(entry['Low'],  float(b['low']))
+                entry['Close'] = float(b['close'])
+        except Exception:
+            continue
+    if not buckets:
+        return pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'])
+    return pd.DataFrame([buckets[k] for k in sorted(buckets.keys())])
+
+
 def _agg_1min_to_5min_closes(bars: list[dict]) -> list[float]:
     """Aggregate 1-min bars to 5-min closes (last 1-min close in each 5-min bucket)."""
     from datetime import datetime, timezone
@@ -1828,8 +1864,28 @@ async def _refresh_edge_signals() -> None:
             state['edge_signal'][sid] = signal
             if signal:
                 active += 1
+
+            # Laguerre RSI signal on 5-min OHLC (same 3-day window)
+            ohlc_df = _agg_1min_to_5min_ohlc(rows)
+            if len(ohlc_df) >= 30:
+                lag = calc_laguerre_signal(ohlc_df)
+                if lag['signal'] and lag['entry'] is not None and lag['target'] is not None:
+                    dist = abs(lag['target'] - lag['entry'])
+                    atr  = dist / 3.0
+                    stop = round(lag['entry'] - atr, 2) if lag['signal'] == 'BUY' \
+                           else round(lag['entry'] + atr, 2)
+                    state['lag_signal'][sid] = {
+                        'signal': lag['signal'],
+                        'entry':  lag['entry'],
+                        'target': lag['target'],
+                        'stop':   stop,
+                    }
+                else:
+                    state['lag_signal'][sid] = None
+            else:
+                state['lag_signal'][sid] = None
         except Exception as e:
-            log.debug('edge signal %s: %s', s['ticker'], e)
+            log.debug('edge/lag signal %s: %s', s['ticker'], e)
 
     log.info('Edge signals (futures) — %d active / %d symbols', active, len(seen))
 
