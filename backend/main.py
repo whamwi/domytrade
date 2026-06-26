@@ -1873,14 +1873,16 @@ async def _refresh_edge_signals() -> None:
                 active += 1
 
             # Laguerre RSI signal on completed 5-min bars (exclude developing bucket).
-            # Sticky: only update state when a fresh crossover fires on the most
-            # recently closed bar (bars_ago == 0). Otherwise keep the previous signal
-            # so it doesn't flip between refreshes — mirrors TOS arrow-at-bar behaviour.
+            # Warm-up: on first run after restart, seed state from the most recent
+            # historical crossover (any bars_ago). After that, only update when a fresh
+            # crossover fires on the last closed bar (bars_ago == 0) — sticky otherwise.
             ohlc_df = _agg_1min_to_5min_ohlc(rows, exclude_current=True)
             if len(ohlc_df) >= 30:
-                lag = calc_laguerre_signal(ohlc_df)
-                if (lag['signal'] and lag['entry'] is not None
-                        and lag['target'] is not None and lag.get('bars_ago') == 0):
+                lag      = calc_laguerre_signal(ohlc_df)
+                bars_ago = lag.get('bars_ago')
+                is_init  = sid not in state['lag_signal']
+                if lag['signal'] and lag['entry'] is not None and lag['target'] is not None \
+                        and (is_init or bars_ago == 0):
                     dist = abs(lag['target'] - lag['entry'])
                     atr  = dist / 3.0
                     stop = round(lag['entry'] - atr, 2) if lag['signal'] == 'BUY' \
@@ -1891,6 +1893,8 @@ async def _refresh_edge_signals() -> None:
                         'target': lag['target'],
                         'stop':   stop,
                     }
+                elif is_init:
+                    state['lag_signal'][sid] = None  # mark as initialised, no signal yet
                 # else: leave previous sticky value in place
         except Exception as e:
             log.debug('edge/lag signal %s: %s', s['ticker'], e)
