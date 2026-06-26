@@ -1710,8 +1710,6 @@ async def refresh_daily_candles(incremental: bool = False) -> None:
     if not incremental:
         await _warm_fib_cache(all_tickers)
 
-    # Always refresh Edge Signals after any daily candle update
-    await _refresh_edge_signals()
 
 
 async def refresh_swing_candles() -> None:
@@ -1791,40 +1789,48 @@ async def _warm_fib_cache(tickers: list[str]) -> None:
     log.info('Fib cache warmed — %d/%d tickers ready (%d skipped <60 bars)', warmed, len(tickers), skipped)
 
 
+def _agg_1min_to_5min_closes(bars: list[dict]) -> list[float]:
+    """Aggregate 1-min bars to 5-min closes (last 1-min close in each 5-min bucket)."""
+    from datetime import datetime, timezone
+    buckets: dict[int, float] = {}
+    for b in bars:
+        try:
+            dt     = datetime.fromisoformat(b['bar_time'].replace('Z', '+00:00'))
+            bucket = int(dt.timestamp()) // 300   # floor to 5-min boundary
+            buckets[bucket] = float(b['close'])
+        except Exception:
+            continue
+    return [buckets[k] for k in sorted(buckets.keys())]
+
+
 async def _refresh_edge_signals() -> None:
-    """Compute TOS Edge Signal status for all tracked symbols from daily closes."""
+    """Compute TOS Edge Signal for all tracked symbols from 3 days of 5-min closes.
+
+    Uses the same 1-min DB cache as the SqueezePRO computation.
+    Called every ~5 min from background_loop so the signal tracks intraday momentum.
+    """
     sym_list = state.get('symbols', [])
     if not sym_list:
         return
 
-    # Build maps: base_ticker → symbol_id and base_ticker → DB lookup ticker
-    ticker_to_sid: dict[str, int] = {}
-    aliases = {'/MES': '/ES', '/MYM': '/YM', '/MNQ': '/NQ',
-               '/MCL': '/CL', '/MGC': '/GC', '/M2K': '/RTY'}
-    for s in sym_list:
-        base = s['ticker'].split(':')[0]
-        canonical = aliases.get(base, base)
-        ticker_to_sid[canonical] = s['id']   # mini-contracts map to canonical sid
-
-    tickers = list(ticker_to_sid.keys())
-    try:
-        all_bars = await asyncio.to_thread(get_daily_candles_batch, tickers, 90)
-    except Exception as e:
-        log.warning('_refresh_edge_signals batch query failed: %s', e)
-        return
-
     active = 0
-    for ticker, rows in all_bars.items():
-        sid = ticker_to_sid.get(ticker)
-        if sid is None:
+    seen: set[int] = set()
+    for s in sym_list:
+        sid = s['id']
+        if sid in seen:
             continue
-        closes = [float(r['close']) for r in rows if r.get('close') is not None]
-        signal = vbh_engine.compute_edge_signal(closes)
-        state['edge_signal'][sid] = signal
-        if signal:
-            active += 1
+        seen.add(sid)
+        try:
+            rows   = await asyncio.to_thread(get_1min_range, sid, 3)
+            closes = _agg_1min_to_5min_closes(rows)
+            signal = vbh_engine.compute_edge_signal(closes)
+            state['edge_signal'][sid] = signal
+            if signal:
+                active += 1
+        except Exception as e:
+            log.debug('edge signal %s: %s', s['ticker'], e)
 
-    log.info('Edge signals refreshed — %d active / %d symbols', active, len(tickers))
+    log.info('Edge signals refreshed — %d active / %d symbols', active, len(seen))
 
 
 async def refresh_strip_opens():
@@ -2299,6 +2305,7 @@ async def background_loop():
     asyncio.create_task(refresh_etf_holdings())
     asyncio.create_task(refresh_ytd())
     asyncio.create_task(refresh_daily_candles(incremental=False))  # full 90-day batch
+    asyncio.create_task(_refresh_edge_signals())                   # prime edge signals from 5-min bars
     asyncio.create_task(_refresh_global_markets())                 # prime Asia + FX immediately
     asyncio.create_task(refresh_stock_profiles())                  # stock fundamentals via yfinance
 
@@ -2309,6 +2316,7 @@ async def background_loop():
     last_daily_refresh      = time.time()
     last_contract_refresh   = time.time()
     last_global_markets     = 0.0  # force refresh on first tick
+    last_edge_signal_refresh = 0.0  # force refresh on first tick
     last_daily_close_run    = ''   # 'YYYY-MM-DD' of last 4:30 PM run
     last_1min_agg_run       = ''   # 'YYYY-MM-DD' of last 5:00 PM 1-min → 15-min aggregation
     last_vbh_update_run     = ''   # 'YYYY-MM-DD' of last 5:30 AM VBH table update
@@ -2432,6 +2440,11 @@ async def background_loop():
                 except Exception as e:
                     log.warning('refresh_strip_opens error: %s', e)
                 last_strip_refresh = time.time()
+
+            # Edge Signal refresh — every 5 minutes (matches 5-min bar close cadence)
+            if time.time() - last_edge_signal_refresh >= 300:
+                asyncio.create_task(_refresh_edge_signals())
+                last_edge_signal_refresh = time.time()
 
             # Proactive global-markets refresh — 15 min during US hours, 30 min during
             # Asian session (6 PM – 8 AM ET).  _refresh_global_markets() honours its own
