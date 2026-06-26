@@ -1872,30 +1872,36 @@ async def _refresh_edge_signals() -> None:
             if signal:
                 active += 1
 
-            # Laguerre RSI signal on completed 5-min bars (exclude developing bucket).
-            # Warm-up: on first run after restart, seed state from the most recent
-            # historical crossover (any bars_ago). After that, only update when a fresh
-            # crossover fires on the last closed bar (bars_ago == 0) — sticky otherwise.
-            ohlc_df = _agg_1min_to_5min_ohlc(rows, exclude_current=True)
+            # Laguerre RSI on live 5-min OHLC (developing bar included for real-time match).
+            # Per-bucket lock: state updates at most once per 5-min bar so mid-bar noise
+            # (RSI hovering near 0.2/0.8) can't cause rapid BUY→SELL→BUY within a bar.
+            # Warm-up: on first run after restart, seed from history (any bars_ago).
+            ohlc_df = _agg_1min_to_5min_ohlc(rows)
             if len(ohlc_df) >= 30:
-                lag      = calc_laguerre_signal(ohlc_df)
-                bars_ago = lag.get('bars_ago')
-                is_init  = sid not in state['lag_signal']
-                if lag['signal'] and lag['entry'] is not None and lag['target'] is not None \
-                        and (is_init or bars_ago == 0):
-                    dist = abs(lag['target'] - lag['entry'])
-                    atr  = dist / 3.0
-                    stop = round(lag['entry'] - atr, 2) if lag['signal'] == 'BUY' \
-                           else round(lag['entry'] + atr, 2)
-                    state['lag_signal'][sid] = {
-                        'signal': lag['signal'],
-                        'entry':  lag['entry'],
-                        'target': lag['target'],
-                        'stop':   stop,
-                    }
+                lag          = calc_laguerre_signal(ohlc_df)
+                bars_ago     = lag.get('bars_ago')
+                is_init      = sid not in state['lag_signal']
+                cur_bucket   = int(time.time()) // 300
+                prev         = state['lag_signal'].get(sid) or {}
+                locked_bucket = prev.get('bucket') if isinstance(prev, dict) else None
+
+                if lag['signal'] and lag['entry'] is not None and lag['target'] is not None:
+                    fresh = bars_ago == 0 and locked_bucket != cur_bucket
+                    if is_init or fresh:
+                        dist = abs(lag['target'] - lag['entry'])
+                        atr  = dist / 3.0
+                        stop = round(lag['entry'] - atr, 2) if lag['signal'] == 'BUY' \
+                               else round(lag['entry'] + atr, 2)
+                        state['lag_signal'][sid] = {
+                            'signal': lag['signal'],
+                            'entry':  lag['entry'],
+                            'target': lag['target'],
+                            'stop':   stop,
+                            'bucket': cur_bucket if bars_ago == 0 else None,
+                        }
                 elif is_init:
-                    state['lag_signal'][sid] = None  # mark as initialised, no signal yet
-                # else: leave previous sticky value in place
+                    state['lag_signal'][sid] = None  # mark initialised, no signal yet
+                # else: sticky — leave previous value in place
         except Exception as e:
             log.debug('edge/lag signal %s: %s', s['ticker'], e)
 
