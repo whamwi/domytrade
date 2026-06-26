@@ -1802,14 +1802,21 @@ async def _warm_fib_cache(tickers: list[str]) -> None:
     log.info('Fib cache warmed — %d/%d tickers ready (%d skipped <60 bars)', warmed, len(tickers), skipped)
 
 
-def _agg_1min_to_5min_ohlc(bars: list[dict]) -> pd.DataFrame:
-    """Aggregate 1-min bars to 5-min OHLC DataFrame for indicator use."""
+def _agg_1min_to_5min_ohlc(bars: list[dict], exclude_current: bool = False) -> pd.DataFrame:
+    """Aggregate 1-min bars to 5-min OHLC DataFrame for indicator use.
+
+    exclude_current: drop the developing (not-yet-closed) 5-min bucket so
+    crossover indicators don't react to incomplete mid-bar OHLC.
+    """
     from datetime import datetime
+    now_bucket = int(time.time()) // 300 if exclude_current else None
     buckets: dict[int, dict] = {}
     for b in bars:
         try:
             dt     = datetime.fromisoformat(b['bar_time'].replace('Z', '+00:00'))
             bucket = int(dt.timestamp()) // 300
+            if exclude_current and bucket >= now_bucket:
+                continue
             if bucket not in buckets:
                 buckets[bucket] = {'Open': float(b['open']), 'High': float(b['high']),
                                    'Low':  float(b['low']),  'Close': float(b['close'])}
@@ -1865,11 +1872,15 @@ async def _refresh_edge_signals() -> None:
             if signal:
                 active += 1
 
-            # Laguerre RSI signal on 5-min OHLC (same 3-day window)
-            ohlc_df = _agg_1min_to_5min_ohlc(rows)
+            # Laguerre RSI signal on completed 5-min bars (exclude developing bucket).
+            # Sticky: only update state when a fresh crossover fires on the most
+            # recently closed bar (bars_ago == 0). Otherwise keep the previous signal
+            # so it doesn't flip between refreshes — mirrors TOS arrow-at-bar behaviour.
+            ohlc_df = _agg_1min_to_5min_ohlc(rows, exclude_current=True)
             if len(ohlc_df) >= 30:
                 lag = calc_laguerre_signal(ohlc_df)
-                if lag['signal'] and lag['entry'] is not None and lag['target'] is not None:
+                if (lag['signal'] and lag['entry'] is not None
+                        and lag['target'] is not None and lag.get('bars_ago') == 0):
                     dist = abs(lag['target'] - lag['entry'])
                     atr  = dist / 3.0
                     stop = round(lag['entry'] - atr, 2) if lag['signal'] == 'BUY' \
@@ -1880,10 +1891,7 @@ async def _refresh_edge_signals() -> None:
                         'target': lag['target'],
                         'stop':   stop,
                     }
-                else:
-                    state['lag_signal'][sid] = None
-            else:
-                state['lag_signal'][sid] = None
+                # else: leave previous sticky value in place
         except Exception as e:
             log.debug('edge/lag signal %s: %s', s['ticker'], e)
 
