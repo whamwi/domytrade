@@ -22,6 +22,7 @@ T1 (1:1 risk-reward from ThinkScript label):
   long_t1    = 2 * rlh - long_stop
   short_t1   = rhl - (rlh - long_stop)
 """
+import math as _math
 from collections import defaultdict
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -649,3 +650,109 @@ def make_signal(
         })
 
     return results or None
+
+
+def compute_edge_signal(closes: list[float]) -> str | None:
+    """
+    TOS Indicators 'Edge Signals' study — VBH confirmation signal.
+
+    Returns the most recently fired signal type from the full close history:
+      'BULL' — Dynamic RSI was in bearish regime; WAE momentum just flipped up.
+      'BEAR' — Dynamic RSI was in bullish regime; WAE momentum just flipped down.
+      None   — no signal has fired yet in the available history.
+
+    Needs ≥50 daily closes (oldest-first) for meaningful results.
+    """
+    n = len(closes)
+    if n < 50:
+        return None
+
+    # ── Wilder's RSI(20) ─────────────────────────────────────────────────────
+    rsi_period = 20
+    rsi_vals: list[float | None] = [None] * n
+
+    avg_gain = avg_loss = 0.0
+    for i in range(1, rsi_period + 1):
+        d = closes[i] - closes[i - 1]
+        if d > 0:
+            avg_gain += d
+        else:
+            avg_loss += -d
+    avg_gain /= rsi_period
+    avg_loss /= rsi_period
+    rsi_vals[rsi_period] = (100 - 100 / (1 + avg_gain / avg_loss)) if avg_loss else 100.0
+
+    for i in range(rsi_period + 1, n):
+        d = closes[i] - closes[i - 1]
+        avg_gain = (avg_gain * (rsi_period - 1) + max(d, 0.0)) / rsi_period
+        avg_loss = (avg_loss * (rsi_period - 1) + max(-d, 0.0)) / rsi_period
+        rsi_vals[i] = (100 - 100 / (1 + avg_gain / avg_loss)) if avg_loss else 100.0
+
+    # ── RSI Bollinger Bands (SMA20 ± 1σ/2σ of RSI) ───────────────────────────
+    bb_period = 20
+    candle_states: list[str | None] = [None] * n
+
+    for i in range(rsi_period + bb_period - 1, n):
+        window = [rsi_vals[j] for j in range(i - bb_period + 1, i + 1) if rsi_vals[j] is not None]
+        if len(window) < bb_period:
+            continue
+        avg = sum(window) / bb_period
+        sd  = _math.sqrt(sum((x - avg) ** 2 for x in window) / bb_period)
+        r   = rsi_vals[i]
+        if r is None:
+            continue
+        if r < avg - 2 * sd:
+            candle_states[i] = 'SOS'     # severely oversold — dark red
+        elif r < avg - sd:
+            candle_states[i] = 'OS'      # oversold — red
+        elif r >= avg + 2 * sd:
+            candle_states[i] = 'SOB'     # severely overbought — dark green
+        elif r >= avg + sd:
+            candle_states[i] = 'OB'      # overbought — green
+        else:
+            candle_states[i] = 'NEUTRAL'
+
+    # ── Waddah Attar Explosion: MACD(20,40) change × 150 ─────────────────────
+    k_fast = 2 / (20 + 1)
+    k_slow = 2 / (40 + 1)
+    ema_fast = ema_slow = closes[0]
+    macd_vals: list[float] = []
+    for c in closes:
+        ema_fast = c * k_fast + ema_fast * (1 - k_fast)
+        ema_slow = c * k_slow + ema_slow * (1 - k_slow)
+        macd_vals.append(ema_fast - ema_slow)
+
+    t1_vals: list[float | None] = [None] + [
+        (macd_vals[i] - macd_vals[i - 1]) * 150 for i in range(1, n)
+    ]
+
+    # ── Regime carry + trigger ────────────────────────────────────────────────
+    bearish_carry = False
+    bullish_carry = False
+    last_signal: str | None = None
+    start = rsi_period + bb_period - 1
+
+    for i in range(start, n):
+        # Update carry state from the 7-bar RSI-colour window
+        if i >= start + 6:
+            w7 = [candle_states[j] for j in range(i - 6, i + 1)]
+            bear_ct = sum(1 for x in w7 if x in ('SOS', 'OS'))
+            bull_ct = sum(1 for x in w7 if x in ('SOB', 'OB'))
+            if bear_ct >= 5:
+                bearish_carry = True
+                bullish_carry = False
+            elif bull_ct >= 5:
+                bullish_carry = True
+                bearish_carry = False
+
+        t1      = t1_vals[i]
+        t1_prev = t1_vals[i - 1] if i > 0 else None
+        if t1 is None or t1_prev is None:
+            continue
+
+        if bearish_carry and t1 > 0 and t1_prev <= 0:
+            last_signal = 'BULL'
+        elif bullish_carry and t1 < 0 and t1_prev >= 0:
+            last_signal = 'BEAR'
+
+    return last_signal

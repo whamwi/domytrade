@@ -59,6 +59,8 @@ export interface Signal {
   mo_state?:   string | null
   sq_confirm?: 'CONFIRMED' | 'CAUTION' | 'NEGATED' | 'NEUTRAL' | null
   sq_reason?:  string | null
+  // TOS Edge Signals confirmation
+  edge_signal?: 'BULL' | 'BEAR' | null
 }
 
 export interface SymbolInfo {
@@ -111,7 +113,7 @@ const COLS = [
   { label: 'LAST',        align: 'right'  },
   { label: 'CHG',         align: 'right'  },
   { label: 'MODEL',       align: 'left'   },  // active signal model
-  { label: 'PROFILE',     align: 'center' },  // hour personality: AGG · CON · WIDE
+  { label: 'EDGE',        align: 'center' },  // TOS Edge Signals confirmation
   { label: 'SIDE',        align: 'left'   },
   { label: 'ALERT',       align: 'left'   },
   { label: 'ENTRY',       align: 'right'  },
@@ -284,6 +286,27 @@ function AiAdvisoryButton({ symbol, model, side }: { symbol: string; model: stri
         </>
       )}
     </div>
+  )
+}
+
+// ── Edge Signal badge ─────────────────────────────────────────────────────────
+function EdgeCell({ signal }: { signal?: 'BULL' | 'BEAR' | null }) {
+  if (!signal) return <Dash />
+  const isBull = signal === 'BULL'
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
+      style={isBull
+        ? { background: 'rgba(74,222,128,0.15)', color: '#4ade80' }
+        : { background: 'rgba(248,113,113,0.15)', color: '#f87171' }
+      }
+      title={isBull
+        ? 'Bull edge: RSI was oversold + WAE momentum flipped up'
+        : 'Bear edge: RSI was overbought + WAE momentum flipped down'
+      }
+    >
+      {isBull ? '▲' : '▼'} {signal}
+    </span>
   )
 }
 
@@ -788,14 +811,9 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
         </span>
       </td>
 
-      {/* SCORE — asset personality for this row's model + current hour */}
+      {/* EDGE — TOS Edge Signal confirmation */}
       <td className="px-3 py-2.5 text-center">
-        <HourScoreCell
-          ticker={sig.symbol.split(':')[0]}
-          scores={personalityData?.[sig.symbol.split(':')[0]]}
-          hour={personalityHour ?? -1}
-          model={sig.model}
-        />
+        <EdgeCell signal={sig.edge_signal} />
       </td>
 
       {/* SIDE */}
@@ -983,14 +1001,8 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
       {/* MODEL */}
       <td className="px-3 py-2 text-center"><Dash /></td>
 
-      {/* SCORE — asset personality hour score */}
-      <td className="px-3 py-2 text-center">
-        <HourScoreCell
-          ticker={sym.ticker}
-          scores={personalityData?.[sym.ticker]}
-          hour={personalityHour ?? -1}
-        />
-      </td>
+      {/* EDGE — no active signal, dash */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
 
       {/* SIDE — grayed out */}
       <td className="px-3 py-2 text-center"><Dash /></td>

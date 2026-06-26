@@ -183,6 +183,7 @@ state = {
     'cr_breached'       : {},   # {symbol_id: 'LONG'|'SHORT'|None} — which CR extreme was first breached
     'cr_date'           : None, # date string — CR is reset each new trading day
     'cr_sticky'         : {},   # {f"{sid}_CR": int} — remaining cycles to keep NEAR visible (max 4)
+    'edge_signal'       : {},   # {symbol_id: 'BULL'|'BEAR'|None} — TOS Edge Signals confirmation
 }
 
 
@@ -1159,6 +1160,7 @@ async def refresh_signals():
                 s['signal_hour'] = signal_hour.isoformat()
                 s['prev_close']  = round(prev_close, 4)
                 s['net_change']  = round(net_chg_raw, 4)
+                s['edge_signal'] = state['edge_signal'].get(sid)
                 # Squeeze confirmation — 4 major market futures only
                 if tick in MARKET_TICKERS:
                     _sq = state['squeeze'].get(sid)
@@ -1708,6 +1710,9 @@ async def refresh_daily_candles(incremental: bool = False) -> None:
     if not incremental:
         await _warm_fib_cache(all_tickers)
 
+    # Always refresh Edge Signals after any daily candle update
+    await _refresh_edge_signals()
+
 
 async def refresh_swing_candles() -> None:
     """Fetch last 2 days of daily candles for ticker_universe symbols NOT in symbols table.
@@ -1784,6 +1789,42 @@ async def _warm_fib_cache(tickers: list[str]) -> None:
         except Exception as e:
             log.debug('warm fib %s: %s', ticker, e)
     log.info('Fib cache warmed — %d/%d tickers ready (%d skipped <60 bars)', warmed, len(tickers), skipped)
+
+
+async def _refresh_edge_signals() -> None:
+    """Compute TOS Edge Signal status for all tracked symbols from daily closes."""
+    sym_list = state.get('symbols', [])
+    if not sym_list:
+        return
+
+    # Build maps: base_ticker → symbol_id and base_ticker → DB lookup ticker
+    ticker_to_sid: dict[str, int] = {}
+    aliases = {'/MES': '/ES', '/MYM': '/YM', '/MNQ': '/NQ',
+               '/MCL': '/CL', '/MGC': '/GC', '/M2K': '/RTY'}
+    for s in sym_list:
+        base = s['ticker'].split(':')[0]
+        canonical = aliases.get(base, base)
+        ticker_to_sid[canonical] = s['id']   # mini-contracts map to canonical sid
+
+    tickers = list(ticker_to_sid.keys())
+    try:
+        all_bars = await asyncio.to_thread(get_daily_candles_batch, tickers, 90)
+    except Exception as e:
+        log.warning('_refresh_edge_signals batch query failed: %s', e)
+        return
+
+    active = 0
+    for ticker, rows in all_bars.items():
+        sid = ticker_to_sid.get(ticker)
+        if sid is None:
+            continue
+        closes = [float(r['close']) for r in rows if r.get('close') is not None]
+        signal = vbh_engine.compute_edge_signal(closes)
+        state['edge_signal'][sid] = signal
+        if signal:
+            active += 1
+
+    log.info('Edge signals refreshed — %d active / %d symbols', active, len(tickers))
 
 
 async def refresh_strip_opens():
