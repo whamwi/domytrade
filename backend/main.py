@@ -49,7 +49,7 @@ ET = ZoneInfo('America/New_York')
 AGG_DAYS = 30
 CON_DAYS = 90
 STATS_REFRESH_HOURS = 24
-SIGNAL_REFRESH_SECS = 30
+SIGNAL_REFRESH_SECS = 10
 HL_REFRESH_SECS     = 10   # fast H/L accumulator — closes gap with TOS tick-by-tick
 PRICE_REFRESH_SECS  =  5   # fast price-only push via WebSocket
 
