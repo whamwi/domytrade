@@ -118,6 +118,7 @@ const COLS = [
   { label: 'CHG',      align: 'right'  },
   { label: 'MODEL',    align: 'left'   },
   { label: 'EDGE',     align: 'center' },
+  { label: 'SIGNAL',   align: 'center' },
   { label: 'SIDE',     align: 'left'   },
   { label: 'ENTRY',    align: 'right'  },
   { label: 'STOP',     align: 'right'  },
@@ -313,6 +314,23 @@ function EdgeCell({ signal }: { signal?: 'BULL' | 'BEAR' | null }) {
       }
     >
       {isBull ? '▲' : '▼'} {signal}
+    </span>
+  )
+}
+
+// ── Signal state badge ────────────────────────────────────────────────────────
+function SignalStateCell({ state }: { state?: 'NEAR' | 'ENTRY' | 'TRENDING' | null }) {
+  if (!state || state === 'TRENDING') return <Dash />
+  const isEntry = state === 'ENTRY'
+  return (
+    <span
+      className="inline-flex items-center rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider"
+      style={isEntry
+        ? { background: 'rgba(74,222,128,0.18)', color: '#4ade80' }
+        : { background: 'rgba(251,191,36,0.15)',  color: '#fbbf24' }
+      }
+    >
+      {isEntry ? 'Enter' : 'Near'}
     </span>
   )
 }
@@ -847,6 +865,11 @@ function ActiveRow({ sig, rank, onEtfClick, onFuturesClick, onStockClick, ytdMap
         <EdgeCell signal={sig.edge_signal} />
       </td>
 
+      {/* SIGNAL — Near / Enter */}
+      <td className="px-3 py-2.5 text-center">
+        <SignalStateCell state={sig.signal_state} />
+      </td>
+
       {/* SIDE */}
       <td className="px-3 py-2.5">
         <span
@@ -992,6 +1015,9 @@ function NoSignalRow({ sym, rank, onEtfClick, onFuturesClick, onStockClick, ytdM
       <td className="px-3 py-2 text-center"><Dash /></td>
 
       {/* EDGE — no active signal, dash */}
+      <td className="px-3 py-2 text-center"><Dash /></td>
+
+      {/* SIGNAL */}
       <td className="px-3 py-2 text-center"><Dash /></td>
 
       {/* SIDE — grayed out */}
