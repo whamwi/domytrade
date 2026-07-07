@@ -371,26 +371,10 @@ def run_update(tickers: list[str] | None = None,
             time.sleep(0.4)
             continue
 
-        # ── VBH stats (futures always; stocks only when vbh_for_stocks=True) ─
-        if do_vbh:
-            bars = get_30min(sid, LOOKBACK_DAYS_30)
-            if not bars:
-                log.warning('VBH update: no 30-min bars in DB for %s', ticker)
-                failed.append(ticker)
-                time.sleep(0.4)
-                continue
-
-            stat_rows = _compute_vbh_rows(sid, bars)
-            upsert_vbh_stats(stat_rows)
-
-            rth = [r['sample_count'] for r in stat_rows
-                   if r['model'] == 'AGG' and 9 <= r['hour_et'] < 17]
-            log.info('VBH %s: %d new 30m bars → %d hourly, %d–%d obs/RTH hour',
-                     ticker, len(rows_30min), len(hourly_rows),
-                     min(rth) if rth else 0, max(rth) if rth else 0)
-        else:
-            log.info('VBH %s: %d new 30m bars stored (VBH recompute scheduled for weekend)',
-                     ticker, len(rows_30min))
+        # VBH stats are owned by the TOS import (vbh_import_weekly.py → vbh_stats).
+        # The updater only maintains the OHLC tables; it never writes to vbh_stats.
+        log.info('VBH %s: %d new 30m bars stored (vbh_stats owned by TOS import)',
+                 ticker, len(rows_30min))
 
         ok.append(ticker)
         time.sleep(0.4)   # rate-limit between symbols
