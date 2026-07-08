@@ -3851,6 +3851,24 @@ async def reload_db_stats():
             'db_symbols': len(vbh_engine._stats_db)}
 
 
+@app.post('/api/run-daily-update')
+async def run_daily_update_now():
+    """Manually trigger daily_update.py (same job the scheduler fires at 4:30 PM ET)."""
+    import subprocess as _sp
+    async def _run():
+        result = await asyncio.to_thread(
+            lambda: _sp.run(
+                ['python3', 'daily_update.py'],
+                cwd=os.path.dirname(__file__),
+                capture_output=True, text=True,
+            )
+        )
+        log.info('Manual daily_update.py: exit=%d stdout=%s stderr=%s',
+                 result.returncode, result.stdout[-500:], result.stderr[-200:])
+    asyncio.create_task(_run())
+    return {'status': 'started', 'note': 'daily_update.py running in background — check /api/job-status in ~5 min'}
+
+
 # ── AI Futures Agent ───────────────────────────────────────────────────────────
 
 AGENT_FUTURES = ['/ES', '/NQ', '/YM', '/RTY', '/GC']
