@@ -2567,7 +2567,7 @@ async def background_loop():
             _today   = _now_et.date().isoformat()
             _et_hhmm = _now_et.hour * 60 + _now_et.minute
 
-            if 16 * 60 + 30 <= _et_hhmm < 17 * 60 and last_daily_close_run != _today:
+            if 16 * 60 + 30 <= _et_hhmm < 17 * 60 and last_daily_close_run != _today and _weekday < 5:
                 asyncio.create_task(refresh_daily_candles(incremental=True))
                 # Full D/W/M candle update for all 646 ticker_universe symbols
                 async def _run_daily_update():
