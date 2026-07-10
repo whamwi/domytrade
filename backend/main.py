@@ -9712,23 +9712,47 @@ async def api_market_profile(symbol: str):
     now_et = datetime.now(ET)
     today  = now_et.date()
 
-    try:
-        raw_bars = await asyncio.to_thread(get_candles, symbol, 5, 30)
-    except Exception as exc:
-        err_str = str(exc)
-        if ('invalid_grant' in err_str or 'refresh_token' in err_str.lower()
-                or '401' in err_str
-                or 'oauth/token' in err_str          # 400 from failed token refresh
-                or 'unsupported_token_type' in err_str
-                or 'token is invalid' in err_str.lower()):
+    # 1. Read 1-min bars from DB (populated continuously by background_loop)
+    raw_bars: list[dict] = []
+    sym_obj = next((s for s in state['symbols'] if s['ticker'] == symbol), None)
+    if sym_obj:
+        from db import get_1min_range as _get_1min_range
+        try:
+            db_rows = await asyncio.to_thread(_get_1min_range, sym_obj['id'], 5)
+            if db_rows:
+                raw_bars = [
+                    {
+                        'datetime': int(datetime.fromisoformat(r['bar_time']).timestamp() * 1000),
+                        'open':  float(r['open']),
+                        'high':  float(r['high']),
+                        'low':   float(r['low']),
+                        'close': float(r['close']),
+                        'volume': r.get('volume', 0),
+                    }
+                    for r in db_rows
+                ]
+        except Exception as _db_exc:
+            log.warning('market-profile DB read failed for %s: %s', symbol, _db_exc)
+
+    # 2. Fallback: live Schwab call (30-min, confirmed to work for futures)
+    if not raw_bars:
+        try:
+            raw_bars = await asyncio.to_thread(get_candles, symbol, 5, 30)
+        except Exception as exc:
+            err_str = str(exc)
+            if ('invalid_grant' in err_str or 'refresh_token' in err_str.lower()
+                    or '401' in err_str
+                    or 'oauth/token' in err_str
+                    or 'unsupported_token_type' in err_str
+                    or 'token is invalid' in err_str.lower()):
+                return JSONResponse(status_code=503, content={
+                    'error': 'token_expired',
+                    'message': 'Schwab token expired — run renew_schwab_token.py to restore live data.',
+                })
             return JSONResponse(status_code=503, content={
-                'error': 'token_expired',
-                'message': 'Schwab token expired — run renew_schwab_token.py to restore live data.',
+                'error': 'schwab_unavailable',
+                'message': f'Could not reach Schwab API: {err_str[:120]}',
             })
-        return JSONResponse(status_code=503, content={
-            'error': 'schwab_unavailable',
-            'message': f'Could not reach Schwab API: {err_str[:120]}',
-        })
 
     # Classify bars into RTH and overnight sessions.
     # All bars belonging to the same overnight session are keyed to the date
