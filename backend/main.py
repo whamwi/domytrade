@@ -9713,7 +9713,7 @@ async def api_market_profile(symbol: str):
     today  = now_et.date()
 
     try:
-        raw_1min = await asyncio.to_thread(get_candles, symbol, 5, 1)
+        raw_bars = await asyncio.to_thread(get_candles, symbol, 5, 30)
     except Exception as exc:
         err_str = str(exc)
         if ('invalid_grant' in err_str or 'refresh_token' in err_str.lower()
@@ -9740,7 +9740,7 @@ async def api_market_profile(symbol: str):
     # Weekday pre-market → same calendar day
     rth_by_date: dict = {}
     on_by_date:  dict = {}
-    for c in raw_1min:
+    for c in raw_bars:
         dt    = datetime.fromtimestamp(c['datetime'] / 1000, tz=timezone.utc).astimezone(ET)
         d     = dt.date()
         t_min = dt.hour * 60 + dt.minute
